@@ -10,18 +10,33 @@ const app = express();
 const httpServer = createServer(app);
 
 // Allowed origins
+// Allowed origins
 const allowedOrigins = [
     "http://localhost:3000",
     "https://w-app-beryl.vercel.app",
+    "https://w-app-sigma.vercel.app", // Added sigma just in case
     process.env.FRONTEND_URL
-].filter((origin): origin is string => !!origin); // Filter out undefined/null/empty
+].filter((origin): origin is string => !!origin);
 
-// Enable CORS and increase JSON limit for Base64 media
-app.use(cors({
-    origin: allowedOrigins,
+const corsOptions = {
+    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+        console.log("CORS Check for Origin:", origin);
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+
+        if (allowedOrigins.indexOf(origin) !== -1 || origin.startsWith("http://localhost")) {
+            callback(null, true);
+        } else {
+            console.log("Blocked by CORS:", origin);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
     methods: ["GET", "POST"],
     credentials: true
-}));
+};
+
+// Enable CORS and increase JSON limit for Base64 media
+app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
 
 // Health Check / Root Endpoint
@@ -30,11 +45,8 @@ app.get("/", (req, res) => {
 });
 
 const io = new Server(httpServer, {
-    cors: {
-        origin: allowedOrigins,
-        methods: ["GET", "POST"],
-        credentials: true
-    }
+    cors: corsOptions, // Use same dynamic config
+    transports: ["websocket", "polling"] // Allow both
 });
 
 // Valid only for this scope

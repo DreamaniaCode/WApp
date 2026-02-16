@@ -11,7 +11,13 @@ export const useSocket = () => {
 
     useEffect(() => {
         if (!socket) {
-            socket = io(API_URL);
+            console.log("Initializing Socket.io...", API_URL);
+            socket = io(API_URL, {
+                withCredentials: true,
+                transports: ["polling", "websocket"],
+                reconnectionAttempts: 5,
+                reconnectionDelay: 1000,
+            } as any);
         }
 
         function onConnect() {
