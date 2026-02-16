@@ -2,20 +2,20 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import express from "express";
 import cors from "cors";
-import { Client, LocalAuth } from "whatsapp-web.js";
+import { Client, LocalAuth, MessageMedia } from "whatsapp-web.js";
 
 const port = 3001;
 
 const app = express();
 const httpServer = createServer(app);
 
-// Enable CORS for frontend (localhost:3000)
+// Enable CORS and increase JSON limit for Base64 media
 app.use(cors({
     origin: "http://localhost:3000",
     methods: ["GET", "POST"],
     credentials: true
 }));
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
 
 const io = new Server(httpServer, {
     cors: {
@@ -60,6 +60,11 @@ client.on("auth_failure", (msg) => {
     io.emit("auth_failure", msg);
 });
 
+client.on("loading_screen", (percent, message) => {
+    console.log("LOADING SCREEN", percent, message);
+    io.emit("loading_screen", { percent, message });
+});
+
 client.initialize();
 
 // Socket.IO connection
@@ -95,7 +100,7 @@ io.on("connection", (socket) => {
 // Custom API endpoint
 app.post("/api/send-bulk", async (req, res) => {
     // @ts-ignore
-    const { validNumbers, message, delay = 1000 } = req.body;
+    const { validNumbers, message, minDelay = 1000, maxDelay = 3000, attachments = [] } = req.body;
 
     if (!isReady) {
         // @ts-ignore
@@ -107,8 +112,23 @@ app.post("/api/send-bulk", async (req, res) => {
         for (const number of validNumbers) {
             try {
                 const formattedNumber = number.includes("@c.us") ? number : `${number}@c.us`;
-                await client.sendMessage(formattedNumber, message);
+
+                // Send text message if exists
+                if (message && message.trim()) {
+                    await client.sendMessage(formattedNumber, message);
+                }
+
+                // Send attachments
+                for (const attachment of attachments) {
+                    const { mimetype, data, filename } = attachment;
+                    const media = new MessageMedia(mimetype, data, filename);
+                    await client.sendMessage(formattedNumber, media);
+                }
+
                 console.log(`Sent to ${number}`);
+
+                // Random delay between min and max
+                const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
                 await new Promise(resolve => setTimeout(resolve, delay));
             } catch (e) {
                 console.error(`Failed to send to ${number}`, e);

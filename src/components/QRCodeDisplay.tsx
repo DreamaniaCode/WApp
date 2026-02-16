@@ -12,6 +12,7 @@ export function QRCodeDisplay({ socket }: QRCodeDisplayProps) {
     const [qrCode, setQrCode] = useState<string>("");
     const [isReady, setIsReady] = useState<boolean>(false);
     const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+    const [loadingMessage, setLoadingMessage] = useState<string>("");
 
     useEffect(() => {
         if (!socket) return;
@@ -21,6 +22,7 @@ export function QRCodeDisplay({ socket }: QRCodeDisplayProps) {
             setQrCode(qr);
             setIsReady(false);
             setIsAuthenticated(false);
+            setLoadingMessage("");
         });
 
         socket.on("ready", () => {
@@ -28,10 +30,17 @@ export function QRCodeDisplay({ socket }: QRCodeDisplayProps) {
             setIsReady(true);
             setIsAuthenticated(true);
             setQrCode("");
+            setLoadingMessage("");
         });
 
         socket.on("authenticated", () => {
+            console.log("Authenticated event received");
             setIsAuthenticated(true);
+        });
+
+        socket.on("loading_screen", (data: { percent: number; message: string }) => {
+            console.log("Loading:", data.message);
+            setLoadingMessage(data.message);
         });
 
         // Request status on mount
@@ -41,6 +50,7 @@ export function QRCodeDisplay({ socket }: QRCodeDisplayProps) {
             socket.off("qr");
             socket.off("ready");
             socket.off("authenticated");
+            socket.off("loading_screen");
         };
     }, [socket]);
 
@@ -52,6 +62,14 @@ export function QRCodeDisplay({ socket }: QRCodeDisplayProps) {
                         <CheckCircle className="w-16 h-16 mb-2" />
                         <h3 className="text-xl font-bold text-gray-800">WhatsApp Connected</h3>
                         <p className="text-sm text-gray-500 mt-1">Ready to send messages</p>
+                    </div>
+                ) : isAuthenticated ? (
+                    <div className="flex flex-col items-center text-blue-600 animate-pulse duration-1000">
+                        <Loader2 className="w-12 h-12 mb-3 animate-spin" />
+                        <h3 className="text-lg font-semibold text-gray-800">Restoring Session...</h3>
+                        <p className="text-sm text-gray-500 mt-1">
+                            {loadingMessage || "Please wait a moment"}
+                        </p>
                     </div>
                 ) : qrCode ? (
                     <div className="flex flex-col items-center animate-in fade-in zoom-in duration-300">

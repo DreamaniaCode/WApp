@@ -5,7 +5,8 @@ import { useSocket } from "@/lib/socket";
 import { QRCodeDisplay } from "@/components/QRCodeDisplay";
 import { BulkSender } from "@/components/BulkSender";
 import { ContactsManager } from "@/components/ContactsManager";
-import { MessageSquare, Users, Settings, LogOut, LayoutDashboard } from "lucide-react";
+import { Settings } from "@/components/Settings";
+import { MessageSquare, Users, Settings as SettingsIcon, LogOut, LayoutDashboard } from "lucide-react";
 
 export default function Home() {
   const { socket, isConnected } = useSocket();
@@ -43,7 +44,7 @@ export default function Home() {
             onClick={() => setActiveTab("settings")}
             className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-colors ${activeTab === "settings" ? "bg-gray-100 text-gray-900" : "text-gray-600 hover:bg-gray-50"}`}
           >
-            <Settings className="w-5 h-5" />
+            <SettingsIcon className="w-5 h-5" />
             Settings
           </button>
         </nav>
@@ -98,10 +99,7 @@ export default function Home() {
           )}
 
           {activeTab === "settings" && (
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-              <h2 className="text-lg font-semibold mb-4">Settings</h2>
-              <p className="text-gray-500">Settings implementation coming soon.</p>
-            </div>
+            <Settings />
           )}
         </div>
       </main>

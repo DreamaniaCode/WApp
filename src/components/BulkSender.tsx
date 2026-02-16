@@ -1,17 +1,56 @@
 "use client";
 
-import { useState } from "react";
-import { Send, Upload, Clock, AlertCircle } from "lucide-react";
+import { useState, useRef } from "react";
+import { Send, Upload, Clock, AlertCircle, FileText, X } from "lucide-react";
+
+interface Attachment {
+    filename: string;
+    mimetype: string;
+    data: string; // Base64
+}
 
 export function BulkSender() {
     const [numbers, setNumbers] = useState("");
     const [message, setMessage] = useState("");
     const [isLoading, setIsLoading] = useState(false);
     const [status, setStatus] = useState<{ type: "success" | "error"; msg: string } | null>(null);
+    const [attachments, setAttachments] = useState<Attachment[]>([]);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.files && e.target.files.length > 0) {
+            const file = e.target.files[0];
+            const reader = new FileReader();
+
+            reader.onload = () => {
+                const base64String = reader.result as string;
+                // Remove data URL prefix (e.g., "data:image/png;base64,")
+                const base64Data = base64String.split(",")[1];
+
+                setAttachments(prev => [...prev, {
+                    filename: file.name,
+                    mimetype: file.type,
+                    data: base64Data
+                }]);
+            };
+
+            reader.readAsDataURL(file);
+        }
+    };
+
+    const removeAttachment = (index: number) => {
+        setAttachments(prev => prev.filter((_, i) => i !== index));
+    };
+
 
     const handleSend = async () => {
         setIsLoading(true);
         setStatus(null);
+
+        // Get settings
+        const minDelay = parseInt(localStorage.getItem("whatsapp_min_delay") || "1000");
+        const maxDelay = parseInt(localStorage.getItem("whatsapp_max_delay") || "3000");
+
 
         try {
             // Basic validation
@@ -24,14 +63,20 @@ export function BulkSender() {
                 throw new Error("No valid numbers found.");
             }
 
-            if (!message.trim()) {
-                throw new Error("Message cannot be empty.");
+            if (!message.trim() && attachments.length === 0) {
+                throw new Error("Message or attachment is required.");
             }
 
             const response = await fetch("http://localhost:3001/api/send-bulk", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ validNumbers, message }),
+                body: JSON.stringify({
+                    validNumbers,
+                    message,
+                    minDelay,
+                    maxDelay,
+                    attachments
+                }),
             });
 
             const data = await response.json();
@@ -43,6 +88,7 @@ export function BulkSender() {
             setStatus({ type: "success", msg: `Bulk sending started for ${validNumbers.length} numbers.` });
             setNumbers("");
             setMessage("");
+            setAttachments([]);
         } catch (err: any) {
             setStatus({ type: "error", msg: err.message });
         } finally {
@@ -73,12 +119,6 @@ export function BulkSender() {
                     value={numbers}
                     onChange={(e) => setNumbers(e.target.value)}
                 />
-                <div className="flex justify-between mt-1">
-                    <span className="text-xs text-gray-400">Supported formats: International format recommended</span>
-                    <button className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1">
-                        <Upload className="w-3 h-3" /> Import CSV
-                    </button>
-                </div>
             </div>
 
             <div className="mb-6">
@@ -86,25 +126,54 @@ export function BulkSender() {
                     Message Content
                 </label>
                 <textarea
-                    className="w-full text-black h-40 p-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
+                    className="w-full text-black h-40 p-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all mb-2"
                     placeholder="Type your message here..."
                     value={message}
                     onChange={(e) => setMessage(e.target.value)}
                 />
-                <span className="text-xs text-gray-400 mt-1 block">
-                    Variables like {`{{name}}`} are not supported in this version.
-                </span>
+
+                {/* Attachments Section */}
+                <div className="flex flex-wrap gap-2 mb-3">
+                    {attachments.map((att, i) => (
+                        <div key={i} className="bg-gray-100 px-3 py-1 rounded-full flex items-center gap-2 text-sm text-gray-700 border border-gray-200">
+                            <FileText className="w-3 h-3" />
+                            <span className="max-w-[150px] truncate">{att.filename}</span>
+                            <button onClick={() => removeAttachment(i)} className="text-gray-400 hover:text-red-500">
+                                <X className="w-3 h-3" />
+                            </button>
+                        </div>
+                    ))}
+                </div>
+
+                <div className="flex justify-between items-center">
+                    <input
+                        type="file"
+                        ref={fileInputRef}
+                        className="hidden"
+                        onChange={handleFileChange}
+                    />
+                    <button
+                        onClick={() => fileInputRef.current?.click()}
+                        className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1 border border-blue-200 px-3 py-1.5 rounded-lg hover:bg-blue-50 transition-colors"
+                    >
+                        <Upload className="w-4 h-4" /> Attach File
+                    </button>
+
+                    <span className="text-xs text-gray-400">
+                        Variables like {`{{name}}`} are not supported.
+                    </span>
+                </div>
             </div>
 
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between border-t border-gray-100 pt-4">
                 <div className="flex items-center gap-2 text-sm text-gray-500">
                     <Clock className="w-4 h-4" />
-                    <span>Delay: ~1-3s (Prevent Ban)</span>
+                    <span>Using Custom Delay Settings</span>
                 </div>
                 <button
                     onClick={handleSend}
-                    disabled={isLoading || !numbers || !message}
-                    className={`px-6 py-2.5 rounded-lg text-white font-medium flex items-center gap-2 transition-all ${isLoading || !numbers || !message ? "bg-gray-300 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700 shadow-md hover:shadow-lg"}`}
+                    disabled={isLoading || !numbers || (!message && attachments.length === 0)}
+                    className={`px-6 py-2.5 rounded-lg text-white font-medium flex items-center gap-2 transition-all ${isLoading || !numbers || (!message && attachments.length === 0) ? "bg-gray-300 cursor-not-allowed" : "bg-blue-600 hover:bg-blue-700 shadow-md hover:shadow-lg"}`}
                 >
                     {isLoading ? "Sending..." : "Send Campaign"}
                     {!isLoading && <Send className="w-4 h-4" />}
