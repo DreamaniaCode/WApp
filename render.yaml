@@ -10,6 +10,6 @@ services:
       - key: FRONTEND_URL
         value: https://w-app-sigma.vercel.app
       - key: NEXT_PUBLIC_API_URL
-        value: https://wapp-backend.onrender.com # Change this if Render gives you a different URL
+        value: https://wapp-backend-tyvq.onrender.com
       - key: PUPPETEER_EXECUTABLE_PATH
         value: /usr/bin/chromium
