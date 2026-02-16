@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: wapp-backend
+    env: docker
+    plan: free # Change to 'starter' if you need more RAM for Puppeteer
+    region: frankfurt # Or your preferred region
+    envVars:
+      - key: PORT
+        value: 3001
+      - key: FRONTEND_URL
+        sync: false # Set this to your Vercel URL
+      - key: NEXT_PUBLIC_API_URL
+        sync: false # Set this to the URL Render gives you
+      - key: PUPPETEER_EXECUTABLE_PATH
+        value: /usr/bin/chromium
+    disk:
+      name: wwebjs-auth
+      mountPath: /app/.wwebjs_auth
+      sizeGB: 1
