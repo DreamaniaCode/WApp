@@ -24,6 +24,11 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '50mb' }));
 
+// Health Check / Root Endpoint
+app.get("/", (req, res) => {
+    res.send("WhatsApp Backend is Running 🚀");
+});
+
 const io = new Server(httpServer, {
     cors: {
         origin: allowedOrigins,
@@ -38,11 +43,24 @@ let isReady = false;
 let client: Client;
 
 const initializeClient = () => {
+    console.log("Initializing WhatsApp Client...", {
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
+        headless: true
+    });
+
     client = new Client({
         authStrategy: new LocalAuth(),
         puppeteer: {
             headless: true,
-            args: ["--no-sandbox", "--disable-setuid-sandbox"],
+            args: [
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-accelerated-2d-canvas",
+                "--no-first-run",
+                "--no-zygote",
+                "--disable-gpu"
+            ],
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
         },
     });
