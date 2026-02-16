@@ -8,8 +8,8 @@ services:
       - key: PORT
         value: 3001
       - key: FRONTEND_URL
-        sync: false # Set this to your Vercel URL
+        value: https://w-app-sigma.vercel.app
       - key: NEXT_PUBLIC_API_URL
-        sync: false # Set this to the URL Render gives you
+        value: https://wapp-backend.onrender.com # Change this if Render gives you a different URL
       - key: PUPPETEER_EXECUTABLE_PATH
         value: /usr/bin/chromium
