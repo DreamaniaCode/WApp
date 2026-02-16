@@ -5,6 +5,7 @@ import { QRCodeSVG } from "qrcode.react";
 import { Loader2, CheckCircle, Smartphone } from "lucide-react";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { API_URL } from "@/lib/config";
+import { RefreshButton } from "./RefreshButton";
 
 interface QRCodeDisplayProps {
     socket: any;
@@ -88,7 +89,7 @@ export function QRCodeDisplay({ socket }: QRCodeDisplayProps) {
                         <Loader2 className="w-12 h-12 mb-3 animate-spin" />
                         <h3 className="text-lg font-semibold text-gray-800">{t("loading")}</h3>
                         <p className="text-sm text-gray-500 mt-1">
-                            {loadingMessage || "Please wait a moment"}
+                            {loadingMessage || "Authenticated, loading..."}
                         </p>
                     </div>
                 ) : qrCode ? (
@@ -100,12 +101,25 @@ export function QRCodeDisplay({ socket }: QRCodeDisplayProps) {
                             <Smartphone className="w-4 h-4" />
                             {t("scanQr")}
                         </p>
+                        <button
+                            onClick={() => socket.emit("refresh_qr")}
+                            className="mt-4 text-xs text-gray-400 hover:text-blue-600 underline"
+                        >
+                            Refresh QR Code
+                        </button>
                     </div>
                 ) : (
                     <div className="flex flex-col items-center text-gray-400 py-10">
                         <Loader2 className="w-10 h-10 animate-spin mb-3 text-blue-500" />
-                        <p className="text-sm font-medium">{t("loading")}</p>
-                        <p className="text-xs text-gray-400 mt-1">Please wait while client initializes</p>
+                        <p className="text-sm font-medium text-gray-700 mb-1">
+                            {loadingMessage || "Initializing Server..."}
+                        </p>
+                        <p className="text-xs text-gray-400 text-center max-w-[200px]">
+                            This may take up to 60s on free hosting.
+                        </p>
+
+                        {/* Manual Refresh Button after Timeout Effect */}
+                        <RefreshButton socket={socket} />
                     </div>
                 )}
             </div>

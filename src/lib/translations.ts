@@ -17,8 +17,8 @@ export const translations = {
         tapMenu: "Tap Menu or Settings and select Linked Devices",
         tapLink: "Tap on Link a Device",
         pointPhone: "Point your phone to this screen to capture the code",
-        whatsappReady: "WhatsApp Ready",
-        whatsappReadyDesc: "You can now send messages.",
+        whatsappReady: "Connected",
+        whatsappReadyDesc: "Campaign Details",
         disconnect: "Disconnect",
 
         // Bulk Sender
@@ -83,8 +83,8 @@ export const translations = {
         tapMenu: "Appuyez sur Menu ou Réglages et sélectionnez Appareils connectés",
         tapLink: "Appuyez sur Connecter un appareil",
         pointPhone: "Pointez votre téléphone vers cet écran pour scanner le code",
-        whatsappReady: "WhatsApp Prêt",
-        whatsappReadyDesc: "Vous pouvez maintenant envoyer des messages.",
+        whatsappReady: "Connecté",
+        whatsappReadyDesc: "Détails de la campagne",
         disconnect: "Déconnecter",
 
         // Bulk Sender

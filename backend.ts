@@ -79,7 +79,10 @@ const initializeClient = () => {
         client.initialize();
     });
 
-    client.initialize();
+    client.initialize().catch(err => {
+        console.error("Initialization failed:", err);
+        io.emit("error", "Failed to initialize WhatsApp client");
+    });
 };
 
 initializeClient();
@@ -93,10 +96,28 @@ io.on("connection", (socket: any) => {
         socket.emit("ready", true);
     } else if (qrCodeData) {
         socket.emit("qr", qrCodeData);
+    } else {
+        // Immediate feedback on connection
+        socket.emit("loading_screen", { percent: 10, message: "Starting server..." });
     }
 
     socket.on("disconnect", () => {
         console.log("Client disconnected");
+    });
+
+    socket.on("refresh_qr", async () => {
+        console.log("Manual refresh requested");
+        try {
+            if (client) {
+                await client.destroy();
+            }
+        } catch (e) {
+            console.error("Error destroying client:", e);
+        }
+        isReady = false;
+        qrCodeData = "";
+        io.emit("loading_screen", { percent: 0, message: "Restarting client..." });
+        initializeClient();
     });
 
     // Handle sending messages via socket (or use REST API)
@@ -122,7 +143,7 @@ io.on("connection", (socket: any) => {
             socket.emit("qr", qrCodeData);
         } else {
             // If neither, we might be loading or waiting for QR
-            socket.emit("loading_screen", { percent: 0, message: "Initializing..." });
+            socket.emit("loading_screen", { percent: 0, message: "Initializing WhatsApp..." });
         }
     });
 });
