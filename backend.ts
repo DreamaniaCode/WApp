@@ -5,14 +5,20 @@ import cors from "cors";
 import { Client, LocalAuth, MessageMedia } from "whatsapp-web.js";
 
 const port = process.env.PORT || 3001;
-const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
 
 const app = express();
 const httpServer = createServer(app);
 
+// Allowed origins
+const allowedOrigins = [
+    "http://localhost:3000",
+    "https://w-app-beryl.vercel.app",
+    process.env.FRONTEND_URL
+].filter((origin): origin is string => !!origin); // Filter out undefined/null/empty
+
 // Enable CORS and increase JSON limit for Base64 media
 app.use(cors({
-    origin: frontendUrl,
+    origin: allowedOrigins,
     methods: ["GET", "POST"],
     credentials: true
 }));
@@ -20,7 +26,7 @@ app.use(express.json({ limit: '50mb' }));
 
 const io = new Server(httpServer, {
     cors: {
-        origin: frontendUrl,
+        origin: allowedOrigins,
         methods: ["GET", "POST"],
         credentials: true
     }
