@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import { Loader2, CheckCircle, Smartphone } from "lucide-react";
 import { useLanguage } from "@/contexts/LanguageContext";
@@ -17,6 +17,15 @@ export function QRCodeDisplay({ socket }: QRCodeDisplayProps) {
     const [isReady, setIsReady] = useState<boolean>(false);
     const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
     const [loadingMessage, setLoadingMessage] = useState<string>("");
+
+    // Refs to track state in polling closure
+    const isReadyRef = useRef(isReady);
+    const qrCodeRef = useRef(qrCode);
+
+    useEffect(() => {
+        isReadyRef.current = isReady;
+        qrCodeRef.current = qrCode;
+    }, [isReady, qrCode]);
 
     useEffect(() => {
         if (!socket) return;
@@ -50,13 +59,51 @@ export function QRCodeDisplay({ socket }: QRCodeDisplayProps) {
         // Request status on mount
         socket.emit("status");
 
+        let pollInterval: NodeJS.Timeout;
+
+        // Polling Fallback: If socket fails to deliver status within 5s, start HTTP polling
+        const pollingTimeout = setTimeout(() => {
+            // Use refs to check the latest state
+            if (!isReadyRef.current && !qrCodeRef.current) {
+                console.log("Socket slow/failed, starting HTTP polling...");
+                pollInterval = setInterval(async () => {
+                    // Use ref to check the latest state
+                    if (isReadyRef.current) {
+                        clearInterval(pollInterval); // Stop polling if we became ready via socket
+                        return;
+                    }
+                    try {
+                        const res = await fetch(`${API_URL}/api/qr-status`);
+                        const data = await res.json();
+
+                        if (data.isReady) {
+                            setIsReady(true);
+                            setIsAuthenticated(true);
+                            setQrCode("");
+                            setLoadingMessage("");
+                            clearInterval(pollInterval);
+                        } else if (data.qrCode) {
+                            setQrCode(data.qrCode);
+                            // Only update if changed to avoid flicker? React handles state diff mostly.
+                        } else if (data.message) {
+                            setLoadingMessage(data.message);
+                        }
+                    } catch (e) {
+                        console.error("Polling failed", e);
+                    }
+                }, 3000);
+            }
+        }, 5000);
+
         return () => {
             socket.off("qr");
             socket.off("ready");
             socket.off("authenticated");
             socket.off("loading_screen");
+            clearTimeout(pollingTimeout);
+            if (pollInterval) clearInterval(pollInterval);
         };
-    }, [socket]);
+    }, [socket]); // Dependencies remain [socket] to avoid re-registering listeners
 
     const handleLogout = async () => {
         try {

@@ -23,12 +23,11 @@ RUN npm install
 # Copy source
 COPY . .
 
-# Build Next.js and Backend
-RUN npm run build
+# Build Backend Only (Skip Next.js build to save time/resources)
+RUN npm run build:backend
 
-# Expose ports (Next.js and Backend)
-EXPOSE 3000
+# Expose port (Backend Only)
 EXPOSE 3001
 
-# Start both services
-CMD ["npm", "run", "start:custom"]
+# Start Backend
+CMD ["npm", "run", "start:backend"]

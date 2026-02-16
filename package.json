@@ -10,6 +10,7 @@
     "build": "next build && npm run build:backend",
     "start": "next start",
     "start:custom": "concurrently \"npm run start\" \"node dist/backend.js\"",
+    "start:backend": "node dist/backend.js",
     "lint": "eslint"
   },
   "dependencies": {

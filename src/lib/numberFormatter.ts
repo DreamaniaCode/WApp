@@ -4,6 +4,11 @@ export function formatPhoneNumber(number: string): string {
     let cleaned = number.replace(/\D/g, "");
 
     // Moroccan Number Logic
+    // If length is 9 (e.g. 612345678), prepend 0 to make it 0612345678
+    if (cleaned.length === 9 && (cleaned.startsWith("6") || cleaned.startsWith("7"))) {
+        cleaned = "0" + cleaned;
+    }
+
     // If it starts with 06 or 07 and length is 10, replace 0 with 212
     if ((cleaned.startsWith("06") || cleaned.startsWith("07")) && cleaned.length === 10) {
         cleaned = "212" + cleaned.substring(1);

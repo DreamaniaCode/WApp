@@ -171,6 +171,16 @@ function replaceVariables(template: string, variables?: Record<string, string>):
     return template.replace(/{{(\w+)}}/g, (_, key) => variables[key] || `{{${key}}}`);
 }
 
+// Polling fallback endpoint
+app.get("/api/qr-status", (req, res) => {
+    res.json({
+        isReady,
+        isAuthenticated: isReady, // Simplified for this context, client uses ready=true as authenticated
+        qrCode: isReady ? null : qrCodeData,
+        message: isReady ? "Connected" : (qrCodeData ? "Scan QR" : "Initializing...")
+    });
+});
+
 // Custom API endpoint
 app.post("/api/send-bulk", async (req, res) => {
     const { recipients, message, minDelay = 1000, maxDelay = 3000, attachments = [] } = req.body as BulkSendRequest;
