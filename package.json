@@ -5,20 +5,24 @@
   "scripts": {
     "dev": "next dev",
     "dev:custom": "concurrently \"npm run dev\" \"npm run backend\"",
+    "build:backend": "tsc --project tsconfig.server.json",
     "backend": "nodemon --exec ts-node --project tsconfig.server.json backend.ts",
-    "build": "next build",
+    "build": "next build && npm run build:backend",
     "start": "next start",
+    "start:custom": "concurrently \"npm run start\" \"node dist/backend.js\"",
     "lint": "eslint"
   },
   "dependencies": {
+    "@types/papaparse": "^5.5.2",
     "concurrently": "^9.2.1",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "lucide-react": "^0.564.0",
-    "next": "^15.1.4",
+    "next": "^15.1.6",
+    "papaparse": "^5.5.3",
     "qrcode.react": "^4.2.0",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
     "whatsapp-web.js": "^1.34.6"

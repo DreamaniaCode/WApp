@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import io from "socket.io-client";
+import { API_URL } from "./config";
 
 let socket: any;
 
@@ -10,7 +11,7 @@ export const useSocket = () => {
 
     useEffect(() => {
         if (!socket) {
-            socket = io("http://localhost:3001");
+            socket = io(API_URL);
         }
 
         function onConnect() {

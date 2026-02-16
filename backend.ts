@@ -4,14 +4,15 @@ import express from "express";
 import cors from "cors";
 import { Client, LocalAuth, MessageMedia } from "whatsapp-web.js";
 
-const port = 3001;
+const port = process.env.PORT || 3001;
+const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
 
 const app = express();
 const httpServer = createServer(app);
 
 // Enable CORS and increase JSON limit for Base64 media
 app.use(cors({
-    origin: "http://localhost:3000",
+    origin: frontendUrl,
     methods: ["GET", "POST"],
     credentials: true
 }));
@@ -19,56 +20,72 @@ app.use(express.json({ limit: '50mb' }));
 
 const io = new Server(httpServer, {
     cors: {
-        origin: "http://localhost:3000",
+        origin: frontendUrl,
         methods: ["GET", "POST"],
         credentials: true
     }
 });
 
-// Initialize WhatsApp Client
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        headless: true,
-        args: ["--no-sandbox"],
-    },
-});
-
 // Valid only for this scope
 let qrCodeData = "";
 let isReady = false;
+let client: Client;
 
-client.on("qr", (qr) => {
-    console.log("QR RECEIVED", qr);
-    qrCodeData = qr;
-    io.emit("qr", qr);
-});
+const initializeClient = () => {
+    client = new Client({
+        authStrategy: new LocalAuth(),
+        puppeteer: {
+            headless: true,
+            args: ["--no-sandbox", "--disable-setuid-sandbox"],
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+        },
+    });
 
-client.on("ready", () => {
-    console.log("Client is ready!");
-    isReady = true;
-    io.emit("ready", true);
-});
+    client.on("qr", (qr) => {
+        console.log("QR RECEIVED", qr);
+        qrCodeData = qr;
+        isReady = false;
+        io.emit("qr", qr);
+    });
 
-client.on("authenticated", () => {
-    console.log("Authenticated");
-    io.emit("authenticated", true);
-});
+    client.on("ready", () => {
+        console.log("Client is ready!");
+        isReady = true;
+        qrCodeData = "";
+        io.emit("ready", true);
+    });
 
-client.on("auth_failure", (msg) => {
-    console.error("AUTHENTICATION FAILURE", msg);
-    io.emit("auth_failure", msg);
-});
+    client.on("authenticated", () => {
+        console.log("Authenticated");
+        io.emit("authenticated", true);
+    });
 
-client.on("loading_screen", (percent, message) => {
-    console.log("LOADING SCREEN", percent, message);
-    io.emit("loading_screen", { percent, message });
-});
+    client.on("auth_failure", (msg) => {
+        console.error("AUTHENTICATION FAILURE", msg);
+        io.emit("auth_failure", msg);
+        isReady = false;
+    });
 
-client.initialize();
+    client.on("loading_screen", (percent, message) => {
+        console.log("LOADING SCREEN", percent, message);
+        io.emit("loading_screen", { percent, message });
+    });
+
+    client.on("disconnected", (reason) => {
+        console.log("Client was disconnected", reason);
+        isReady = false;
+        qrCodeData = "";
+        io.emit("disconnected", reason);
+        client.initialize();
+    });
+
+    client.initialize();
+};
+
+initializeClient();
 
 // Socket.IO connection
-io.on("connection", (socket) => {
+io.on("connection", (socket: any) => {
     console.log("Client connected");
 
     // Send current status
@@ -83,61 +100,189 @@ io.on("connection", (socket) => {
     });
 
     // Handle sending messages via socket (or use REST API)
-    socket.on("sendMessage", async (data) => {
+    socket.on("sendMessage", async (data: { number: string; message: string }) => {
         const { number, message } = data;
         try {
             // Ensure number format is correct (suffix @c.us)
             const formattedNumber = number.includes("@c.us") ? number : `${number}@c.us`;
             await client.sendMessage(formattedNumber, message);
             socket.emit("messageSent", { number, status: "success" });
-        } catch (error) {
+        } catch (error: any) {
             console.error("Error sending message:", error);
             socket.emit("messageError", { number, error: "Failed to send" });
         }
     });
+
+    // Handle status request from frontend
+    socket.on("status", () => {
+        if (isReady) {
+            socket.emit("ready", true);
+            socket.emit("authenticated", true);
+        } else if (qrCodeData) {
+            socket.emit("qr", qrCodeData);
+        } else {
+            // If neither, we might be loading or waiting for QR
+            socket.emit("loading_screen", { percent: 0, message: "Initializing..." });
+        }
+    });
 });
+
+interface BulkSendRequest {
+    recipients: { number: string; variables?: Record<string, string> }[];
+    message?: string;
+    minDelay?: number;
+    maxDelay?: number;
+    attachments?: {
+        mimetype: string;
+        data: string;
+        filename: string;
+    }[];
+}
+
+function replaceVariables(template: string, variables?: Record<string, string>): string {
+    if (!variables || !template) return template;
+    return template.replace(/{{(\w+)}}/g, (_, key) => variables[key] || `{{${key}}}`);
+}
 
 // Custom API endpoint
 app.post("/api/send-bulk", async (req, res) => {
-    // @ts-ignore
-    const { validNumbers, message, minDelay = 1000, maxDelay = 3000, attachments = [] } = req.body;
+    const { recipients, message, minDelay = 1000, maxDelay = 3000, attachments = [] } = req.body as BulkSendRequest;
 
     if (!isReady) {
-        // @ts-ignore
-        return res.status(503).json({ error: "WhatsApp client not ready" });
+        res.status(503).json({ error: "WhatsApp client not ready" });
+        return;
+    }
+
+    if ((!recipients || recipients.length === 0)) {
+        res.status(400).json({ error: "No recipients provided" });
+        return;
     }
 
     // Process in background
     (async () => {
-        for (const number of validNumbers) {
+        let successCount = 0;
+        let failedCount = 0;
+        const total = recipients.length;
+
+        for (let i = 0; i < total; i++) {
+            const recipient = recipients[i];
+
+            // Emit progress
+            io.emit("bulk_progress", {
+                total,
+                current: i + 1,
+                success: successCount,
+                failed: failedCount,
+                status: `Sending to ${recipient.number}...`
+            });
+
             try {
+                let number = recipient.number;
+                // Basic cleanup if needed, though frontend should handle it
+                number = number.replace(/\D/g, "");
+
                 const formattedNumber = number.includes("@c.us") ? number : `${number}@c.us`;
 
-                // Send text message if exists
-                if (message && message.trim()) {
-                    await client.sendMessage(formattedNumber, message);
-                }
+                // Personalize message
+                const personalizedMessage = replaceVariables(message || "", recipient.variables);
+                const hasAttachments = attachments && attachments.length > 0;
 
-                // Send attachments
-                for (const attachment of attachments) {
-                    const { mimetype, data, filename } = attachment;
-                    const media = new MessageMedia(mimetype, data, filename);
-                    await client.sendMessage(formattedNumber, media);
+                if (hasAttachments) {
+                    // Send first attachment with caption (if message exists)
+                    const firstAtt = attachments[0];
+                    const media = new MessageMedia(firstAtt.mimetype, firstAtt.data, firstAtt.filename);
+
+                    const options: any = {};
+                    if (personalizedMessage && personalizedMessage.trim()) {
+                        options.caption = personalizedMessage;
+                    }
+
+                    await client.sendMessage(formattedNumber, media, options);
+
+                    // Send remaining attachments
+                    for (let j = 1; j < attachments.length; j++) {
+                        const att = attachments[j];
+                        const media = new MessageMedia(att.mimetype, att.data, att.filename);
+                        await client.sendMessage(formattedNumber, media);
+                    }
+                } else {
+                    // Send text message if exists and no attachments
+                    if (personalizedMessage && personalizedMessage.trim()) {
+                        await client.sendMessage(formattedNumber, personalizedMessage);
+                    }
                 }
 
                 console.log(`Sent to ${number}`);
+                successCount++;
+
+                // Emit success for this item
+                io.emit("bulk_progress", {
+                    total,
+                    current: i + 1,
+                    success: successCount,
+                    failed: failedCount,
+                    status: `Sent to ${recipient.number}`,
+                    lastResult: {
+                        number: recipient.number,
+                        status: "success"
+                    }
+                });
 
                 // Random delay between min and max
                 const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
                 await new Promise(resolve => setTimeout(resolve, delay));
-            } catch (e) {
-                console.error(`Failed to send to ${number}`, e);
+            } catch (e: any) {
+                console.error(`Failed to send to ${recipient.number}`, e);
+                failedCount++;
+                io.emit("bulk_progress", {
+                    total,
+                    current: i + 1,
+                    success: successCount,
+                    failed: failedCount,
+                    status: `Failed to send to ${recipient.number}: ${e.message || "Unknown error"}`,
+                    lastResult: {
+                        number: recipient.number,
+                        status: "failed",
+                        error: e.message || "Unknown error"
+                    }
+                });
             }
         }
+
+        // Final completion event
+        io.emit("bulk_progress", {
+            total,
+            current: total,
+            success: successCount,
+            failed: failedCount,
+            status: "Completed"
+        });
+
     })();
 
-    // @ts-ignore
-    res.json({ success: true, message: "Bulk sending started" });
+    res.json({ success: true, message: `Bulk sending started for ${recipients.length} recipients` });
+});
+
+app.post("/api/logout", async (req, res) => {
+    try {
+        await client.logout();
+        // Client re-initialization is handled by the 'disconnected' event listener
+        // But for safety/explicit constraints, we could trigger it if needed.
+        // The 'disconnected' event above already calls client.initialize()
+        isReady = false;
+        qrCodeData = "";
+        res.json({ success: true, message: "Logged out successfully" });
+    } catch (e: any) {
+        console.error("Logout failed", e);
+        // Force destroy if logout fails
+        try {
+            await client.destroy();
+            client.initialize();
+            res.json({ success: true, message: "Logged out (forced)" });
+        } catch (err: any) {
+            res.status(500).json({ error: "Logout failed: " + err.message });
+        }
+    }
 });
 
 httpServer.listen(port, () => {

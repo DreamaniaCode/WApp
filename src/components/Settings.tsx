@@ -2,8 +2,10 @@
 
 import { useState, useEffect } from "react";
 import { Save, Clock, AlertTriangle } from "lucide-react";
+import { useLanguage } from "@/contexts/LanguageContext";
 
 export function Settings() {
+    const { t } = useLanguage();
     const [minDelay, setMinDelay] = useState(1000);
     const [maxDelay, setMaxDelay] = useState(3000);
     const [saved, setSaved] = useState(false);
@@ -34,7 +36,7 @@ export function Settings() {
     return (
         <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 max-w-2xl w-full mx-auto">
             <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
-                <Clock className="w-5 h-5 text-gray-700" /> Sending Settings
+                <Clock className="w-5 h-5 text-gray-700" /> {t("delaySettings")}
             </h2>
 
             <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-6">
@@ -52,7 +54,7 @@ export function Settings() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                 <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Minimum Delay (ms)
+                        {t("minDelay")}
                     </label>
                     <input
                         type="number"
@@ -63,7 +65,7 @@ export function Settings() {
                 </div>
                 <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                        Maximum Delay (ms)
+                        {t("maxDelay")}
                     </label>
                     <input
                         type="number"
@@ -79,7 +81,7 @@ export function Settings() {
                     onClick={handleSave}
                     className={`px-6 py-2 rounded-lg font-medium flex items-center gap-2 transition-all ${saved ? "bg-green-600 hover:bg-green-700 text-white" : "bg-blue-600 hover:bg-blue-700 text-white"}`}
                 >
-                    {saved ? "Settings Saved" : "Save Changes"}
+                    {saved ? t("settingsSaved") : t("saveSettings")}
                     <Save className="w-4 h-4" />
                 </button>
             </div>
