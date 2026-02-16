@@ -1,0 +1,58 @@
+2026/02/16-09:52:15.354 1430 Reusing MANIFEST E:\AntiGravity\WApp\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/02/16-09:52:15.355 1430 Recovering log #141
+2026/02/16-09:52:15.358 1430 Reusing old log E:\AntiGravity\WApp\.wwebjs_auth\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/000141.log 
+2026/02/16-09:52:15.358 1430 Delete type=2 #140
+2026/02/16-09:52:15.642 238c Level-0 table #146: started
+2026/02/16-09:52:15.678 238c Level-0 table #146: 28284 bytes OK
+2026/02/16-09:52:15.700 238c Delete type=0 #141
+2026/02/16-09:52:15.725 238c Manual compaction at level-0 from '\x007\x00\x00\x00' @ 72057594037927935 : 1 .. '\x008\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/02/16-09:52:15.732 238c Level-0 table #148: started
+2026/02/16-09:52:15.775 238c Level-0 table #148: 894 bytes OK
+2026/02/16-09:52:15.779 238c Delete type=0 #145
+2026/02/16-09:52:15.780 238c Manual compaction at level-0 from '\x008\x00\x00\x00' @ 72057594037927935 : 1 .. '\x009\x00\x00\x00' @ 0 : 0; will stop at '\x008\x01\x02\x03\x00\x00\x00\x00\x00\x00\xf0?' @ 60001 : 0
+2026/02/16-09:52:15.780 238c Compacting 1@0 + 1@1 files
+2026/02/16-09:52:15.792 238c Generated table #149@0: 892 keys, 20206 bytes
+2026/02/16-09:52:15.792 238c Compacted 1@0 + 1@1 files => 20206 bytes
+2026/02/16-09:52:15.796 238c compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/02/16-09:52:15.797 238c Delete type=2 #148
+2026/02/16-09:52:15.799 1430 Manual compaction at level-0 from '\x008\x01\x02\x03\x00\x00\x00\x00\x00\x00\xf0?' @ 60001 : 0 .. '\x009\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/02/16-09:52:15.801 1430 Level-0 table #151: started
+2026/02/16-09:52:15.805 1430 Level-0 table #151: 5457 bytes OK
+2026/02/16-09:52:15.807 1430 Delete type=2 #146
+2026/02/16-09:52:15.807 1430 Delete type=0 #147
+2026/02/16-09:52:15.822 1430 Manual compaction at level-0 from '\x009\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00:\x00\x00\x00' @ 0 : 0; will stop at '\x00=\x00\x00\xc8\x11\x00w\x00o\x00r\x00k\x00e\x00r\x00_\x00w\x00a\x00m\x00_\x00e\x00v\x00e\x00n\x00t\x00s' @ 60322 : 1
+2026/02/16-09:52:15.823 1430 Compacting 1@0 + 1@1 files
+2026/02/16-09:52:15.828 1430 Generated table #152@0: 1122 keys, 23129 bytes
+2026/02/16-09:52:15.828 1430 Compacted 1@0 + 1@1 files => 23129 bytes
+2026/02/16-09:52:15.829 1430 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/02/16-09:52:15.829 1430 Delete type=2 #151
+2026/02/16-09:52:15.830 1430 Manual compaction at level-0 from '\x00=\x00\x00\xc8\x11\x00w\x00o\x00r\x00k\x00e\x00r\x00_\x00w\x00a\x00m\x00_\x00e\x00v\x00e\x00n\x00t\x00s' @ 60322 : 1 .. '\x00:\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/02/16-09:52:15.830 1430 Level-0 table #154: started
+2026/02/16-09:52:15.848 1430 Level-0 table #154: 507 bytes OK
+2026/02/16-09:52:15.851 1430 Delete type=2 #149
+2026/02/16-09:52:15.851 1430 Delete type=0 #150
+2026/02/16-09:52:15.852 1430 Manual compaction at level-0 from '\x00;\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00<\x00\x00\x00' @ 0 : 0; will stop at '\x00;\x02\x02\x03\x00\x00\x00\x00\x00\x00\xf0?' @ 60440 : 0
+2026/02/16-09:52:15.852 1430 Compacting 1@0 + 1@1 files
+2026/02/16-09:52:15.861 1430 Generated table #155@0: 1097 keys, 22454 bytes
+2026/02/16-09:52:15.861 1430 Compacted 1@0 + 1@1 files => 22454 bytes
+2026/02/16-09:52:15.861 1430 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/02/16-09:52:15.862 1430 Delete type=2 #154
+2026/02/16-09:52:15.862 1430 Manual compaction at level-0 from '\x00;\x02\x02\x03\x00\x00\x00\x00\x00\x00\xf0?' @ 60440 : 0 .. '\x00<\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/02/16-09:52:15.864 1430 Level-0 table #157: started
+2026/02/16-09:52:15.869 1430 Level-0 table #157: 4567 bytes OK
+2026/02/16-09:52:15.870 1430 Delete type=2 #152
+2026/02/16-09:52:15.871 1430 Delete type=0 #153
+2026/02/16-09:52:15.888 1430 Manual compaction at level-0 from '\x006\x00\x00\x00' @ 72057594037927935 : 1 .. '\x007\x00\x00\x00' @ 0 : 0; will stop at '\x006\x0a\x02\x03\x00\x00\x00\x00\x00\x00\xf0?' @ 60785 : 0
+2026/02/16-09:52:15.888 1430 Compacting 1@0 + 1@1 files
+2026/02/16-09:52:15.894 1430 Generated table #158@0: 1033 keys, 10891 bytes
+2026/02/16-09:52:15.894 1430 Compacted 1@0 + 1@1 files => 10891 bytes
+2026/02/16-09:52:15.895 1430 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/02/16-09:52:15.895 1430 Delete type=2 #157
+2026/02/16-09:52:15.896 1430 Manual compaction at level-0 from '\x006\x0a\x02\x03\x00\x00\x00\x00\x00\x00\xf0?' @ 60785 : 0 .. '\x007\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/02/16-09:52:15.896 1430 Manual compaction at level-1 from '\x006\x00\x00\x00' @ 72057594037927935 : 1 .. '\x007\x00\x00\x00' @ 0 : 0; will stop at '\x00=\x00\x00\xc8\x11\x00w\x00o\x00r\x00k\x00e\x00r\x00_\x00w\x00a\x00m\x00_\x00e\x00v\x00e\x00n\x00t\x00s' @ 60322 : 1
+2026/02/16-09:52:15.896 1430 Compacting 1@1 + 1@2 files
+2026/02/16-09:52:15.906 1430 Generated table #159@1: 334 keys, 4704 bytes
+2026/02/16-09:52:15.906 1430 Compacted 1@1 + 1@2 files => 4704 bytes
+2026/02/16-09:52:15.911 1430 compacted to: files[ 0 0 1 0 0 0 0 ]
+2026/02/16-09:52:15.911 1430 Delete type=2 #158
+2026/02/16-09:52:15.912 1430 Manual compaction at level-1 from '\x00=\x00\x00\xc8\x11\x00w\x00o\x00r\x00k\x00e\x00r\x00_\x00w\x00a\x00m\x00_\x00e\x00v\x00e\x00n\x00t\x00s' @ 60322 : 1 .. '\x007\x00\x00\x00' @ 0 : 0; will stop at (end)
