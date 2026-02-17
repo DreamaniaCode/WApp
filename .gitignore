@@ -24,6 +24,7 @@ ts-debug.log*
 
 # local env files
 .env*.local
+.env
 
 # vercel
 .vercel
@@ -37,3 +38,8 @@ next-env.d.ts
 .wwebjs_cache/
 dist/
 *.log
+
+/src/generated/prisma
+
+# electron builder
+/release

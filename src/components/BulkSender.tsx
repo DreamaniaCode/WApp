@@ -32,8 +32,29 @@ export function BulkSender({ socket }: BulkSenderProps) {
     const [status, setStatus] = useState<{ type: "success" | "error"; msg: string } | null>(null);
     const [attachments, setAttachments] = useState<Attachment[]>([]);
     const [availableVars, setAvailableVars] = useState<string[]>([]);
-    const [progress, setProgress] = useState<{ total: number; current: number; success: number; failed: number; status: string } | null>(null);
+    const [progress, setProgress] = useState<{ total: number; current: number; success: number; failed: number; status: string; countdown?: number } | null>(null);
     const [reportData, setReportData] = useState<any[]>([]);
+
+    const [history, setHistory] = useState<any[]>([]);
+
+    const fetchHistory = async () => {
+        try {
+            const res = await fetch(`${API_URL}/api/messages`, {
+                headers: { "Content-Type": "application/json" },
+                credentials: "include"
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setHistory(data);
+            }
+        } catch (error) {
+            console.error("Failed to fetch history", error);
+        }
+    };
+
+    useEffect(() => {
+        fetchHistory();
+    }, []);
 
     useEffect(() => {
         if (!socket) return;
@@ -52,6 +73,7 @@ export function BulkSender({ socket }: BulkSenderProps) {
                     type: "success",
                     msg: `Finished: ${data.success} sent, ${data.failed} failed.`
                 });
+                fetchHistory(); // Refresh history after campaign
             }
         });
 
@@ -210,6 +232,7 @@ export function BulkSender({ socket }: BulkSenderProps) {
             const response = await fetch(`${API_URL}/api/send-bulk`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
+                credentials: "include", // Required for NextAuth session cookie
                 body: JSON.stringify({
                     recipients,
                     message,
@@ -282,6 +305,11 @@ export function BulkSender({ socket }: BulkSenderProps) {
                             <span>{progress.current}/{progress.total}</span>
                             <span>Success: {progress.success} | Failed: {progress.failed}</span>
                         </div>
+                        {progress.countdown !== undefined && progress.countdown > 0 && (
+                             <div className="mt-2 text-center text-lg font-bold text-orange-500 animate-pulse">
+                                 Next message in {progress.countdown}s...
+                             </div>
+                        )}
                     </div>
                 )}
 
@@ -432,6 +460,48 @@ export function BulkSender({ socket }: BulkSenderProps) {
                         <li>~{t("strikethrough")}~</li>
                         <li>{t("variablesTip")}</li>
                     </ul>
+                </div>
+            </div>
+
+
+
+            {/* History Section */ }
+            <div className="col-span-1 lg:col-span-2 mt-8 bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
+                    <Clock className="w-5 h-5 text-gray-600" /> Recent History
+                </h2>
+                <div className="overflow-x-auto">
+                    <table className="w-full text-sm text-left">
+                        <thead className="text-xs text-gray-700 uppercase bg-gray-50">
+                            <tr>
+                                <th className="px-4 py-3">Time</th>
+                                <th className="px-4 py-3">Number</th>
+                                <th className="px-4 py-3">Message</th>
+                                <th className="px-4 py-3">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {history.length === 0 ? (
+                                <tr>
+                                    <td colSpan={4} className="px-4 py-3 text-center text-gray-500">No recent messages</td>
+                                </tr>
+                            ) : (
+                                history.map((msg: any) => (
+                                    <tr key={msg.id} className="bg-white border-b hover:bg-gray-50">
+                                        <td className="px-4 py-3">{new Date(msg.createdAt).toLocaleString()}</td>
+                                        <td className="px-4 py-3 font-medium">{msg.number}</td>
+                                        <td className="px-4 py-3 truncate max-w-xs" title={msg.message}>{msg.message}</td>
+                                        <td className="px-4 py-3">
+                                            <span className={`px-2 py-1 rounded-full text-xs ${msg.status === 'success' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                                                {msg.status}
+                                            </span>
+                                            {msg.error && <span className="ml-2 text-red-500 text-xs truncate" title={msg.error}>{msg.error}</span>}
+                                        </td>
+                                    </tr>
+                                ))
+                            )}
+                        </tbody>
+                    </table>
                 </div>
             </div>
         </div>

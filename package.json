@@ -2,25 +2,68 @@
   "name": "temp_app",
   "version": "0.1.0",
   "private": true,
+  "main": "main_electron.js",
   "scripts": {
     "dev": "next dev",
     "dev:custom": "concurrently \"npm run dev\" \"npm run backend\"",
     "build:backend": "tsc --project tsconfig.server.json",
-    "backend": "nodemon --exec ts-node --project tsconfig.server.json backend.ts",
+    "backend": "tsx watch backend.ts",
     "build": "next build && npm run build:backend",
     "start": "next start",
-    "start:custom": "concurrently \"npm run start\" \"node dist/backend.js\"",
-    "start:backend": "node dist/backend.js",
-    "lint": "eslint"
+    "start:custom": "concurrently \"npm run start\" \"npm run start:backend\"",
+    "start:backend": "tsx backend.ts",
+    "lint": "eslint",
+    "electron:dev": "concurrently \"cross-env PORT=3000 tsx backend.ts\" \"wait-on tcp:3000 && electron .\"",
+    "dist": "npm run build && electron-builder"
+  },
+  "build": {
+    "appId": "com.wapp.desktop",
+    "productName": "WApp",
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "files": [
+      "main_electron.js",
+      "dist/**/*",
+      "shell/**/*",
+      "package.json",
+      "node_modules/**/*",
+      ".next/**/*",
+      "public/**/*",
+      "prisma/**/*",
+      "src/utils/**/*",
+      "src/lib/**/*"
+    ],
+    "directories": {
+      "output": "release"
+    }
   },
   "dependencies": {
+    "@next-auth/prisma-adapter": "^1.0.7",
+    "@prisma/adapter-pg": "^7.4.0",
+    "@prisma/client": "^7.4.0",
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cookie": "^0.6.0",
+    "@types/fs-extra": "^11.0.4",
     "@types/papaparse": "^5.5.2",
+    "@types/pg": "^8.16.0",
+    "bcryptjs": "^3.0.3",
     "concurrently": "^9.2.1",
+    "cookie": "^1.1.1",
     "cors": "^2.8.6",
-    "express": "^5.2.1",
+    "dotenv": "^17.3.1",
+    "express": "^4.21.2",
+    "fs-extra": "^11.3.3",
     "lucide-react": "^0.564.0",
     "next": "16.1.6",
+    "next-auth": "^4.24.13",
     "papaparse": "^5.5.3",
+    "pg": "^8.18.0",
+    "prisma": "^7.4.0",
     "qrcode.react": "^4.2.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
@@ -32,17 +75,22 @@
     "@eslint/eslintrc": "^3.3.3",
     "@tailwindcss/postcss": "^4",
     "@types/cors": "^2.8.19",
-    "@types/express": "^5.0.6",
+    "@types/express": "^4.17.21",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/socket.io": "^3.0.1",
     "@types/socket.io-client": "^1.4.36",
+    "cross-env": "^10.1.0",
+    "electron": "^31.0.0",
+    "electron-builder": "^26.7.0",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "nodemon": "^3.1.11",
     "tailwindcss": "^4",
     "ts-node": "^10.9.2",
-    "typescript": "^5"
+    "tsx": "^4.21.0",
+    "typescript": "^5",
+    "wait-on": "^9.0.4"
   }
 }

@@ -18,6 +18,7 @@ export const metadata: Metadata = {
 };
 
 import { LanguageProvider } from "@/contexts/LanguageContext";
+import AuthContext from "./providers/AuthContext";
 
 export default function RootLayout({
   children,
@@ -29,9 +30,11 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        <LanguageProvider>
-          {children}
-        </LanguageProvider>
+        <AuthContext>
+          <LanguageProvider>
+            {children}
+          </LanguageProvider>
+        </AuthContext>
       </body>
     </html>
   );

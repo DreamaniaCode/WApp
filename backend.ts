@@ -1,29 +1,53 @@
+import "dotenv/config";
 import { createServer } from "http";
-import { Server } from "socket.io";
+import { Server, Socket } from "socket.io";
 import express from "express";
 import cors from "cors";
-import { Client, LocalAuth, MessageMedia } from "whatsapp-web.js";
+const { Client, RemoteAuth, MessageMedia } = require("whatsapp-web.js");
+import { PostgresStore } from "./src/utils/PostgresStore";
+import { prisma } from "./src/lib/prisma";
+import * as cookie from "cookie";
+import { decode } from "next-auth/jwt";
+import bcrypt from "bcryptjs";
+import next from "next";
+import { parse } from "url";
 
-const port = process.env.PORT || 3001;
+const port = parseInt(process.env.PORT || "3000", 10);
+const dev = process.env.NODE_ENV !== "production";
+const nextApp = next({ dev });
+const handle = nextApp.getRequestHandler();
 
 const app = express();
 const httpServer = createServer(app);
 
-// Allowed origins
-// Allowed origins
+// Prevent crashes from RemoteAuth race conditions
+process.on('unhandledRejection', (reason: any, promise) => {
+    if (reason && reason.code === 'ENOENT' && reason.path?.includes('wwebjs_temp_session')) {
+        console.warn('Suppressing known RemoteAuth race condition error:', reason.message);
+        return;
+    }
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', (error: any) => {
+    if (error && error.code === 'ENOENT' && error.path?.includes('wwebjs_temp_session')) {
+        console.warn('Suppressing known RemoteAuth race condition error:', error.message);
+        return;
+    }
+    console.error('Uncaught Exception:', error);
+});
+
+// Allowed origins - logic slightly different now since we are same origin mostly, but keep for safety
 const allowedOrigins = [
     "http://localhost:3000",
     "https://w-app-beryl.vercel.app",
-    "https://w-app-sigma.vercel.app", // Added sigma just in case
+    "https://w-app-sigma.vercel.app",
     process.env.FRONTEND_URL
 ].filter((origin): origin is string => !!origin);
 
 const corsOptions = {
     origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-        console.log("CORS Check for Origin:", origin);
-        // Allow requests with no origin (like mobile apps or curl requests)
         if (!origin) return callback(null, true);
-
         if (allowedOrigins.indexOf(origin) !== -1 || origin.startsWith("http://localhost")) {
             callback(null, true);
         } else {
@@ -32,36 +56,79 @@ const corsOptions = {
         }
     },
     methods: ["GET", "POST"],
-    credentials: true
+    credentials: true // Important for passing cookies
 };
 
-// Enable CORS and increase JSON limit for Base64 media
 app.use(cors(corsOptions));
 app.use(express.json({ limit: '50mb' }));
 
-// Health Check / Root Endpoint
-app.get("/", (req, res) => {
-    res.send("WhatsApp Backend is Running 🚀");
-});
+// Note: Removed the root GET "/" route to let Next.js handle it.
 
 const io = new Server(httpServer, {
-    cors: corsOptions, // Use same dynamic config
-    transports: ["websocket", "polling"] // Allow both
+    cors: corsOptions,
+    transports: ["websocket", "polling"]
 });
 
-// Valid only for this scope
-let qrCodeData = "";
-let isReady = false;
-let client: Client;
+// --- Multi-Tenancy Session Management ---
 
-const initializeClient = () => {
-    console.log("Initializing WhatsApp Client...", {
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
-        headless: true
-    });
+interface UserSession {
+    client: any;
+    qrCode: string;
+    isReady: boolean;
+    loadingPercent: number;
+    loadingMessage: string;
+}
 
-    client = new Client({
-        authStrategy: new LocalAuth(),
+// Map to store sessions: userId -> UserSession
+const sessions = new Map<string, UserSession>();
+const store = new PostgresStore();
+
+/**
+ * Retrieves or creates a session for a given user.
+ * Initializes the WhatsApp client if it doesn't exist.
+ */
+const getOrCreateSession = async (userId: string, socket?: Socket): Promise<UserSession> => {
+    let session = sessions.get(userId);
+
+    if (!session) {
+        console.log(`Creating new session for user: ${userId}`);
+        session = {
+            client: null,
+            qrCode: "",
+            isReady: false,
+            loadingPercent: 0,
+            loadingMessage: "Initializing..."
+        };
+        sessions.set(userId, session);
+        await initializeClient(userId, session);
+    } 
+    
+    // If socket is provided, join the user's room
+    if (socket) {
+        socket.join(userId);
+    }
+    
+    return session;
+};
+
+const initializeClient = async (userId: string, session: UserSession) => {
+    console.log(`Initializing Client for ${userId}...`);
+    
+    // Ensure we don't re-initialize an existing client that is working
+    if (session.client) {
+         return;
+    }
+
+    session.loadingMessage = "Starting WhatsApp Client...";
+    session.loadingPercent = 10;
+    io.to(userId).emit("loading_screen", { percent: 10, message: "Starting WhatsApp Client..." });
+
+    const client = new Client({
+        authStrategy: new RemoteAuth({
+            clientId: `session-${userId}`, // Unique session ID per user
+            store: store,
+            backupSyncIntervalMs: 300000
+        }),
         puppeteer: {
             headless: true,
             args: [
@@ -77,92 +144,210 @@ const initializeClient = () => {
         },
     });
 
-    client.on("qr", (qr) => {
-        console.log("QR RECEIVED", qr);
-        qrCodeData = qr;
-        isReady = false;
-        io.emit("qr", qr);
+    session.client = client;
+
+    client.on("qr", (qr: string) => {
+        console.log(`QR RECEIVED for ${userId}`);
+        session.qrCode = qr;
+        session.isReady = false;
+        session.loadingMessage = "Scan QR Code";
+        session.loadingPercent = 0;
+        io.to(userId).emit("qr", qr);
     });
 
     client.on("ready", () => {
-        console.log("Client is ready!");
-        isReady = true;
-        qrCodeData = "";
-        io.emit("ready", true);
+        console.log(`Client Ready for ${userId}!`);
+        session.isReady = true;
+        session.qrCode = "";
+        session.loadingMessage = "Client Ready";
+        session.loadingPercent = 100;
+        io.to(userId).emit("ready", true);
+    });
+
+    client.on("remote_session_saved", () => {
+        console.log(`Session saved for ${userId}`);
     });
 
     client.on("authenticated", () => {
-        console.log("Authenticated");
-        io.emit("authenticated", true);
+        console.log(`Authenticated ${userId}`);
+        session.loadingMessage = "Authenticated";
+        session.loadingPercent = 50;
+        io.to(userId).emit("authenticated", true);
     });
 
-    client.on("auth_failure", (msg) => {
-        console.error("AUTHENTICATION FAILURE", msg);
-        io.emit("auth_failure", msg);
-        isReady = false;
+    client.on("auth_failure", (msg: string) => {
+        console.error(`Auth Failure for ${userId}`, msg);
+        io.to(userId).emit("auth_failure", msg);
+        session.isReady = false;
     });
 
-    client.on("loading_screen", (percent, message) => {
-        console.log("LOADING SCREEN", percent, message);
-        io.emit("loading_screen", { percent, message });
+    // Capture generic errors to prevent crashes
+    client.on("error", (err: any) => {
+        console.error(`Client Error for ${userId}:`, err);
+        // Don't emit to UI unless critical, just log
     });
 
-    client.on("disconnected", (reason) => {
-        console.log("Client was disconnected", reason);
-        isReady = false;
-        qrCodeData = "";
-        io.emit("disconnected", reason);
-        client.initialize();
+    client.on("loading_screen", (percent: number, message: string) => {
+        if (percent !== 0 && message !== "") {
+             session.loadingPercent = percent;
+             session.loadingMessage = message;
+             io.to(userId).emit("loading_screen", { percent, message });
+        }
     });
 
-    client.initialize().catch(err => {
-        console.error("Initialization failed:", err);
-        io.emit("error", "Failed to initialize WhatsApp client");
+    client.on("disconnected", (reason: string) => {
+        console.log(`Disconnected ${userId}:`, reason);
+        const currentSession = sessions.get(userId);
+        if (currentSession) {
+            currentSession.isReady = false;
+            currentSession.qrCode = "";
+        }
+        io.to(userId).emit("disconnected", reason);
+        
+        // If the disconnection was NOT initiated by logout (e.g. phone disconnected), 
+        // we might want to clean up or let the user reconnect manually.
+        // For now, we leave the session object but mark as not ready.
     });
+
+    try {
+        await client.initialize();
+    } catch (err: any) {
+         console.error(`Initialization error for ${userId}:`, err);
+         session.isReady = false;
+         io.to(userId).emit("disconnected", "Initialization failed");
+    }
 };
 
-initializeClient();
+// Start a timer to clean up inactive sessions periodically?
+// For now, we rely on memory or manual logout.
 
-// Socket.IO connection
-io.on("connection", (socket: any) => {
-    console.log("Client connected");
+// --- Socket.IO Connection Handling ---
 
-    // Send current status
-    if (isReady) {
+io.use(async (socket, next) => {
+    try {
+        // Authenticate Socket connection using NextAuth session cookie
+        const cookies = cookie.parse(socket.request.headers.cookie || "");
+        const sessionToken = cookies["next-auth.session-token"] || cookies["__Secure-next-auth.session-token"];
+
+        if (!sessionToken) {
+            return next(new Error("Authentication error: No session token"));
+        }
+
+        const decoded = await decode({
+            token: sessionToken,
+            secret: process.env.NEXTAUTH_SECRET || "",
+        });
+
+        if (!decoded || !decoded.email) {
+            return next(new Error("Authentication error: Invalid token"));
+        }
+        
+        // Find user in DB to get ID
+        const user = await prisma.user.findUnique({
+             where: { email: decoded.email as string }
+        });
+
+        if (!user) {
+            return next(new Error("Authentication error: User not found"));
+        }
+
+        // Attach user info to socket
+        socket.data.userId = user.id;
+        socket.data.email = user.email;
+        next();
+
+    } catch (err) {
+        console.error("Socket Auth Error:", err);
+        next(new Error("Authentication error"));
+    }
+});
+
+io.on("connection", async (socket: any) => {
+    const userId = socket.data.userId;
+    console.log(`Socket connected: ${userId} (${socket.data.email})`);
+    
+    // Join a room named after the userId for targeted emitting
+    socket.join(userId);
+
+    // Get or Create Session
+    const session = await getOrCreateSession(userId, socket);
+
+    // Send current state to newly connected socket
+    if (session.isReady) {
         socket.emit("ready", true);
-    } else if (qrCodeData) {
-        socket.emit("qr", qrCodeData);
+        socket.emit("authenticated", true);
+    } else if (session.qrCode) {
+        socket.emit("qr", session.qrCode);
     } else {
-        // Immediate feedback on connection
-        socket.emit("loading_screen", { percent: 10, message: "Starting server..." });
+        socket.emit("loading_screen", { 
+            percent: session.loadingPercent, 
+            message: session.loadingMessage 
+        });
     }
 
     socket.on("disconnect", () => {
-        console.log("Client disconnected");
+        // We do NOT destroy the session on socket disconnect (tab close), 
+        // ensuring persistence.
+        console.log(`Socket disconnected: ${userId}`);
+    });
+
+    socket.on("request_pairing_code", async (data: { phoneNumber: string }) => {
+        const currentSession = sessions.get(userId);
+        if (!currentSession || !currentSession.client) {
+             socket.emit("error", { message: "Client not initialized" });
+             return;
+        }
+        
+        try {
+            const sanitizedNumber = data.phoneNumber.replace(/\D/g, "");
+            const page = currentSession.client.pupPage;
+             if (page) {
+                try {
+                    await page.exposeFunction('onCodeReceivedEvent', (code: string) => code);
+                } catch (e) {}
+            }
+            const code = await currentSession.client.requestPairingCode(sanitizedNumber);
+            socket.emit("pairing_code", { code });
+        } catch (err: any) {
+            socket.emit("error", { message: "Failed: " + err.message });
+        }
     });
 
     socket.on("refresh_qr", async () => {
-        console.log("Manual refresh requested");
-        try {
-            if (client) {
-                await client.destroy();
-            }
-        } catch (e) {
-            console.error("Error destroying client:", e);
+        console.log(`Refresh QR requested by ${userId}`);
+        const currentSession = sessions.get(userId);
+        if (currentSession && currentSession.client) {
+             try {
+                await currentSession.client.destroy();
+             } catch(e) { console.error("Error destroying client", e); }
         }
-        isReady = false;
-        qrCodeData = "";
-        io.emit("loading_screen", { percent: 0, message: "Restarting client..." });
-        initializeClient();
+        
+        // Reset session state
+        if (currentSession) {
+            currentSession.client = null;
+            currentSession.qrCode = "";
+            currentSession.isReady = false;
+            currentSession.loadingMessage = "Restarting...";
+            currentSession.loadingPercent = 0;
+            io.to(userId).emit("loading_screen", { percent: 0, message: "Restarting client..." });
+            
+            // Re-init
+            await initializeClient(userId, currentSession);
+        }
     });
 
     // Handle sending messages via socket (or use REST API)
     socket.on("sendMessage", async (data: { number: string; message: string }) => {
+        const currentSession = sessions.get(userId);
+        if (!currentSession || !currentSession.client || !currentSession.isReady) {
+            socket.emit("messageError", { number: data.number, error: "WhatsApp client not ready" });
+            return;
+        }
+
         const { number, message } = data;
         try {
-            // Ensure number format is correct (suffix @c.us)
             const formattedNumber = number.includes("@c.us") ? number : `${number}@c.us`;
-            await client.sendMessage(formattedNumber, message);
+            await currentSession.client.sendMessage(formattedNumber, message);
             socket.emit("messageSent", { number, status: "success" });
         } catch (error: any) {
             console.error("Error sending message:", error);
@@ -170,72 +355,108 @@ io.on("connection", (socket: any) => {
         }
     });
 
-    // Handle status request from frontend
     socket.on("status", () => {
-        if (isReady) {
+        // Re-emit status
+        const currentSession = sessions.get(userId);
+        if (!currentSession) return;
+        
+        if (currentSession.isReady) {
             socket.emit("ready", true);
             socket.emit("authenticated", true);
-        } else if (qrCodeData) {
-            socket.emit("qr", qrCodeData);
+        } else if (currentSession.qrCode) {
+            socket.emit("qr", currentSession.qrCode);
         } else {
-            // If neither, we might be loading or waiting for QR
-            socket.emit("loading_screen", { percent: 0, message: "Initializing WhatsApp..." });
+             socket.emit("loading_screen", { 
+                percent: currentSession.loadingPercent, 
+                message: currentSession.loadingMessage 
+            });
         }
     });
 });
 
+
+// --- Helper Functions ---
+
+const replaceVariables = (template: string, variables?: Record<string, string>) => {
+    if (!variables) return template;
+    return template.replace(/{{(\w+)}}/g, (_, key) => variables[key] || `{{${key}}}`);
+};
+
+const getUserFromRequest = async (req: express.Request): Promise<string | null> => {
+    try {
+        const cookies = cookie.parse(req.headers.cookie || "");
+        const sessionToken = cookies["next-auth.session-token"] || cookies["__Secure-next-auth.session-token"];
+        
+        if (!sessionToken) return null;
+
+        const decoded = await decode({
+            token: sessionToken,
+            secret: process.env.NEXTAUTH_SECRET || ""
+        });
+
+        if (!decoded || !decoded.email) return null;
+        
+        // Cache this? For now, DB lookup ensures validity
+        const user = await prisma.user.findUnique({
+            where: { email: decoded.email as string },
+            select: { id: true }
+        });
+        
+        return user ? user.id : null;
+    } catch (e) {
+        console.error("Auth check failed:", e);
+        return null;
+    }
+};
+
 interface BulkSendRequest {
     recipients: { number: string; variables?: Record<string, string> }[];
-    message?: string;
+    message: string;
     minDelay?: number;
     maxDelay?: number;
-    attachments?: {
-        mimetype: string;
-        data: string;
-        filename: string;
-    }[];
+    attachments?: { filename: string; mimetype: string; data: string }[];
 }
 
-function replaceVariables(template: string, variables?: Record<string, string>): string {
-    if (!variables || !template) return template;
-    return template.replace(/{{(\w+)}}/g, (_, key) => variables[key] || `{{${key}}}`);
-}
-
-// Polling fallback endpoint
-app.get("/api/qr-status", (req, res) => {
-    res.json({
-        isReady,
-        isAuthenticated: isReady, // Simplified for this context, client uses ready=true as authenticated
-        qrCode: isReady ? null : qrCodeData,
-        message: isReady ? "Connected" : (qrCodeData ? "Scan QR" : "Initializing...")
-    });
-});
-
-// Custom API endpoint
+// REST API endpoint for bulk sending
 app.post("/api/send-bulk", async (req, res) => {
-    const { recipients, message, minDelay = 1000, maxDelay = 3000, attachments = [] } = req.body as BulkSendRequest;
-
-    if (!isReady) {
-        res.status(503).json({ error: "WhatsApp client not ready" });
+    const userId = await getUserFromRequest(req);
+    if (!userId) {
+        res.status(401).json({ error: "Unauthorized" });
         return;
     }
+
+    const session = sessions.get(userId);
+
+    if (!session || !session.client || !session.isReady) {
+        res.status(503).json({ error: "WhatsApp client not connected/ready" });
+        return;
+    }
+
+    const { recipients, message, minDelay = 1000, maxDelay = 3000, attachments = [] } = req.body as BulkSendRequest;
 
     if ((!recipients || recipients.length === 0)) {
         res.status(400).json({ error: "No recipients provided" });
         return;
     }
 
+    // Acknowledge request immediately
+    res.json({ message: `Started sending to ${recipients.length} recipients` });
+
     // Process in background
     (async () => {
         let successCount = 0;
         let failedCount = 0;
         const total = recipients.length;
+        const client = session.client;
 
         for (let i = 0; i < total; i++) {
             const recipient = recipients[i];
+            
+            // Calculate delay for NEXT message (if not last)
+            const randomDelay = Math.floor(Math.random() * (maxDelay - minDelay + 1) + minDelay);
 
-            // Emit progress
-            io.emit("bulk_progress", {
+            // Emit progress with Status
+            io.to(userId).emit("bulk_progress", {
                 total,
                 current: i + 1,
                 success: successCount,
@@ -243,115 +464,392 @@ app.post("/api/send-bulk", async (req, res) => {
                 status: `Sending to ${recipient.number}...`
             });
 
+            let number = recipient.number.replace(/\D/g, "");
+            let msgStatus = "failed";
+            let errorMessage = "";
+
             try {
-                let number = recipient.number;
-                // Basic cleanup if needed, though frontend should handle it
-                number = number.replace(/\D/g, "");
-
                 const formattedNumber = number.includes("@c.us") ? number : `${number}@c.us`;
-
-                // Personalize message
                 const personalizedMessage = replaceVariables(message || "", recipient.variables);
                 const hasAttachments = attachments && attachments.length > 0;
 
                 if (hasAttachments) {
-                    // Send first attachment with caption (if message exists)
                     const firstAtt = attachments[0];
                     const media = new MessageMedia(firstAtt.mimetype, firstAtt.data, firstAtt.filename);
-
                     const options: any = {};
-                    if (personalizedMessage && personalizedMessage.trim()) {
-                        options.caption = personalizedMessage;
-                    }
-
+                    if (personalizedMessage && personalizedMessage.trim()) options.caption = personalizedMessage;
+                    
                     await client.sendMessage(formattedNumber, media, options);
 
-                    // Send remaining attachments
                     for (let j = 1; j < attachments.length; j++) {
                         const att = attachments[j];
                         const media = new MessageMedia(att.mimetype, att.data, att.filename);
                         await client.sendMessage(formattedNumber, media);
                     }
                 } else {
-                    // Send text message if exists and no attachments
                     if (personalizedMessage && personalizedMessage.trim()) {
                         await client.sendMessage(formattedNumber, personalizedMessage);
                     }
                 }
 
-                console.log(`Sent to ${number}`);
+                console.log(`User ${userId} sent to ${number}`);
                 successCount++;
+                msgStatus = "success";
+                
+                // Save Contact
+                try {
+                    await prisma.contact.upsert({
+                        where: { number_userId: { number, userId } },
+                        update: { name: recipient.variables?.name || number },
+                        create: { number, userId, name: recipient.variables?.name || number }
+                    });
+                } catch(e) { console.error("Contact save error", e); }
 
-                // Emit success for this item
-                io.emit("bulk_progress", {
-                    total,
-                    current: i + 1,
-                    success: successCount,
-                    failed: failedCount,
-                    status: `Sent to ${recipient.number}`,
-                    lastResult: {
-                        number: recipient.number,
-                        status: "success"
-                    }
-                });
-
-                // Random delay between min and max
-                const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
-                await new Promise(resolve => setTimeout(resolve, delay));
-            } catch (e: any) {
-                console.error(`Failed to send to ${recipient.number}`, e);
+            } catch (error: any) {
+                console.error(`Send error for ${number}:`, error);
+                errorMessage = error.message;
                 failedCount++;
-                io.emit("bulk_progress", {
-                    total,
-                    current: i + 1,
-                    success: successCount,
-                    failed: failedCount,
-                    status: `Failed to send to ${recipient.number}: ${e.message || "Unknown error"}`,
-                    lastResult: {
-                        number: recipient.number,
-                        status: "failed",
-                        error: e.message || "Unknown error"
+            }
+
+            // Save History
+            try {
+                await prisma.messageHistory.create({
+                    data: {
+                        userId,
+                        number,
+                        message: replaceVariables(message || "", recipient.variables),
+                        status: msgStatus,
+                        error: errorMessage
                     }
                 });
+            } catch (e) { console.error("History save error", e); }
+
+            // Update Report UI
+            io.to(userId).emit("bulk_progress", {
+                total,
+                current: i + 1,
+                success: successCount,
+                failed: failedCount,
+                status: msgStatus === "success" ? "Sent" : "Failed",
+                lastResult: {
+                    number,
+                    status: msgStatus,
+                    error: errorMessage,
+                    time: new Date().toISOString()
+                }
+            });
+
+            // Delay with Countdown (only if not last)
+            if (i < total - 1) {
+                const step = 1000;
+                let remaining = randomDelay;
+                
+                while (remaining > 0) {
+                     io.to(userId).emit("bulk_progress", {
+                        total,
+                        current: i + 1,
+                        success: successCount,
+                        failed: failedCount,
+                        status: `Waiting ${Math.ceil(remaining/1000)}s...`,
+                        countdown: Math.ceil(remaining/1000) // Helper for UI
+                    });
+                    
+                    const waitTime = Math.min(remaining, step);
+                    await new Promise(resolve => setTimeout(resolve, waitTime));
+                    remaining -= waitTime;
+                }
             }
         }
 
-        // Final completion event
-        io.emit("bulk_progress", {
+        io.to(userId).emit("bulk_progress", {
             total,
             current: total,
             success: successCount,
             failed: failedCount,
-            status: "Completed"
+            status: "Completed",
+            countdown: 0
         });
 
     })();
-
-    res.json({ success: true, message: `Bulk sending started for ${recipients.length} recipients` });
 });
 
-app.post("/api/logout", async (req, res) => {
+
+// Polling fallback endpoint
+app.get("/api/qr-status", (req, res) => {
+    // This endpoint is less useful with multi-tenancy, as it can't know which user's status to return.
+    // It would need a userId in the request, e.g., from a query param or auth token.
+    // For now, returning a generic message or requiring auth.
+    res.status(400).json({ error: "Please use authenticated socket connection for status updates." });
+});
+
+
+// Stats API
+app.get("/api/stats", async (req, res) => {
+    const userId = await getUserFromRequest(req);
+    if (!userId) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+    }
+
     try {
-        await client.logout();
-        // Client re-initialization is handled by the 'disconnected' event listener
-        // But for safety/explicit constraints, we could trigger it if needed.
-        // The 'disconnected' event above already calls client.initialize()
-        isReady = false;
-        qrCodeData = "";
-        res.json({ success: true, message: "Logged out successfully" });
+        const history = await (prisma as any).messageHistory.findMany({ 
+            where: { userId },
+            orderBy: { createdAt: 'desc' },
+            take: 100 // Limit for now
+        });
+
+        // Simple aggregation
+        const successful = history.filter((m: any) => m.status === 'success').length;
+        const failed = history.filter((m: any) => m.status === 'failed').length;
+        
+        // This month stats
+        const now = new Date();
+        const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+        const thisMonth = history.filter((m: any) => new Date(m.createdAt) >= firstDay).length;
+
+        res.json({
+            successful,
+            failed,
+            total: successful + failed,
+            thisMonth,
+            history // also return history for the list
+        });
     } catch (e: any) {
-        console.error("Logout failed", e);
-        // Force destroy if logout fails
-        try {
-            await client.destroy();
-            client.initialize();
-            res.json({ success: true, message: "Logged out (forced)" });
-        } catch (err: any) {
-            res.status(500).json({ error: "Logout failed: " + err.message });
-        }
+        res.status(500).json({ error: e.message });
     }
 });
 
-httpServer.listen(port, () => {
-    console.log(`> Backend Ready on http://localhost:${port}`);
+// History API (Full/Paginated)
+app.get("/api/messages", async (req, res) => {
+    const userId = await getUserFromRequest(req);
+    if (!userId) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+    }
+
+    try {
+        const messages = await prisma.messageHistory.findMany({
+            where: { userId },
+            orderBy: { createdAt: 'desc' },
+            take: 100
+        });
+        res.json(messages);
+    } catch (e: any) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// User Management API
+app.get("/api/users", async (req, res) => {
+    // Ideally check if admin, but for now allow any authenticated user to view
+    const userId = await getUserFromRequest(req);
+    if (!userId) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+    }
+
+    try {
+        const users = await prisma.user.findMany({
+            select: { id: true, name: true, email: true, createdAt: true }
+        });
+        res.json(users);
+    } catch (e: any) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/users", async (req, res) => {
+    const userId = await getUserFromRequest(req);
+    if (!userId) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+    }
+
+    try {
+        const { email, password, name } = req.body;
+        if (!email || !password) {
+            res.status(400).json({ error: "Email and password required" });
+            return;
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 10);
+        
+        const user = await prisma.user.create({
+            data: {
+                email,
+                password: hashedPassword,
+                name
+            },
+            select: { id: true, name: true, email: true, createdAt: true }
+        });
+        res.json(user);
+    } catch (e: any) {
+        if (e.code === 'P2002') {
+             res.status(400).json({ error: "User already exists" });
+             return;
+        }
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.delete("/api/users", async (req, res) => {
+    const userId = await getUserFromRequest(req);
+    if (!userId) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+    }
+
+    try {
+        const { id } = req.query;
+        if (!id || typeof id !== 'string') {
+            res.status(400).json({ error: "User ID required" });
+            return;
+        }
+
+        if (id === userId) {
+            res.status(400).json({ error: "Cannot delete yourself" });
+            return;
+        }
+
+        await prisma.user.delete({ where: { id } });
+        res.json({ success: true });
+    } catch (e: any) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+
+// Contact Management API
+app.get("/api/contacts", async (req, res) => {
+    const userId = await getUserFromRequest(req);
+    if (!userId) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+    }
+
+    try {
+        const contacts = await prisma.contact.findMany({
+            where: { userId },
+            orderBy: { name: 'asc' }
+        });
+        res.json(contacts);
+    } catch (e: any) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/contacts", async (req, res) => {
+    const userId = await getUserFromRequest(req);
+    if (!userId) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+    }
+
+    const { contacts } = req.body; // Expects an array of { number, name? }
+
+    if (!Array.isArray(contacts)) {
+        res.status(400).json({ error: "Invalid format" });
+        return;
+    }
+
+    try {
+        let count = 0;
+        for (const contact of contacts) {
+             await prisma.contact.upsert({
+                 where: { number_userId: { number: contact.number, userId } },
+                 update: { name: contact.name || contact.number },
+                 create: { number: contact.number, userId, name: contact.name || contact.number }
+             });
+             count++;
+        }
+        res.json({ success: true, count });
+    } catch (e: any) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.delete("/api/contacts", async (req, res) => {
+    const userId = await getUserFromRequest(req);
+    if (!userId) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+    }
+
+    const { id } = req.query;
+    if (!id || typeof id !== 'string') {
+        res.status(400).json({ error: "Contact ID required" });
+        return;
+    }
+
+    try {
+        // Ensure ownership
+        const contact = await prisma.contact.findUnique({ where: { id } });
+        if (!contact || contact.userId !== userId) {
+             res.status(403).json({ error: "Forbidden" });
+             return;
+        }
+
+        await prisma.contact.delete({ where: { id } });
+        res.json({ success: true });
+    } catch (e: any) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/logout", async (req, res) => {
+    const userId = await getUserFromRequest(req);
+    if (!userId) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+    }
+
+    const session = sessions.get(userId);
+
+    if (!session || !session.client) {
+        // Even if no active session in memory, we should return success to allow frontend to clear state
+        res.json({ success: true, message: "No active session to logout" });
+        return;
+    }
+
+    try {
+        // Attempt graceful logout
+        try {
+            await session.client.logout();
+        } catch (e: any) {
+            console.warn(`Logout failed for user ${userId} (might be already logged out):`, e.message);
+        }
+
+        // Destroy the client
+        try {
+            await session.client.destroy();
+        } catch (e: any) {
+             console.error(`Destroy failed for user ${userId}:`, e.message);
+        }
+
+        // Always remove from sessions map
+        sessions.delete(userId);
+        
+        // Notify client
+        io.to(userId).emit("disconnected", "User initiated logout");
+        
+        res.json({ success: true, message: "Logged out successfully" });
+    } catch (e: any) {
+        console.error("Critical error during logout:", e);
+        // Ensure cleanup happens even on critical error
+        sessions.delete(userId);
+        res.status(500).json({ error: "Logout failed: " + e.message });
+    }
+});
+
+// Prepare Next.js and then start server
+nextApp.prepare().then(() => {
+    // Handle all other requests with Next.js
+    // Handle all other requests with Next.js
+    app.use(async (req, res) => {
+        await handle(req, res);
+    });
+
+    httpServer.listen(port, () => {
+        console.log(`> Ready on http://localhost:${port}`);
+    });
 });

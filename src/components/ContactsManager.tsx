@@ -3,43 +3,66 @@
 import { useState, useEffect, useRef } from "react";
 import Papa from "papaparse";
 import { formatPhoneNumber } from "@/lib/numberFormatter";
-import { UserPlus, Users, Trash2, Download, Upload } from "lucide-react";
+import { UserPlus, Users, Trash2, Download, Upload, Loader2 } from "lucide-react";
 
 export function ContactsManager() {
-    const [contacts, setContacts] = useState<{ name: string; number: string }[]>([]);
+    const [contacts, setContacts] = useState<{ id?: string; name: string; number: string }[]>([]);
     const [newName, setNewName] = useState("");
     const [newNumber, setNewNumber] = useState("");
+    const [loading, setLoading] = useState(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
 
-    // Load contacts from localStorage on mount
+    // Load contacts from API on mount
     useEffect(() => {
-        const savedContacts = localStorage.getItem("whatsapp_contacts");
-        if (savedContacts) {
-            try {
-                setContacts(JSON.parse(savedContacts));
-            } catch (e) {
-                console.error("Failed to parse contacts", e);
-            }
-        }
+        fetchContacts();
     }, []);
 
-    // Save contacts to localStorage whenever they change
-    useEffect(() => {
-        localStorage.setItem("whatsapp_contacts", JSON.stringify(contacts));
-    }, [contacts]);
-
-    const addContact = () => {
-        if (newName && newNumber) {
-            setContacts([...contacts, { name: newName, number: formatPhoneNumber(newNumber) }]);
-            setNewName("");
-            setNewNumber("");
+    const fetchContacts = async () => {
+        setLoading(true);
+        try {
+            const res = await fetch("/api/contacts");
+            if (res.ok) {
+                const data = await res.json();
+                setContacts(data);
+            }
+        } catch (error) {
+            console.error("Failed to fetch contacts", error);
+        } finally {
+            setLoading(false);
         }
     };
 
-    const removeContact = (index: number) => {
-        const newContacts = [...contacts];
-        newContacts.splice(index, 1);
-        setContacts(newContacts);
+    const addContact = async () => {
+        if (newName && newNumber) {
+            const formatted = formatPhoneNumber(newNumber);
+            try {
+                const res = await fetch("/api/contacts", {
+                     method: "POST",
+                     headers: { "Content-Type": "application/json" },
+                     body: JSON.stringify({ name: newName, number: formatted })
+                });
+                
+                if (res.ok) {
+                    setNewName("");
+                    setNewNumber("");
+                    fetchContacts(); // Refresh list
+                } else {
+                    alert("Failed to save contact");
+                }
+            } catch (e) {
+                alert("Error saving contact");
+            }
+        }
+    };
+
+    const removeContact = async (id?: string) => {
+        if (!id) return;
+        try {
+            await fetch(`/api/contacts?id=${id}`, { method: "DELETE" });
+            fetchContacts();
+        } catch (e) {
+            console.error("Failed to delete", e);
+        }
     };
 
     const downloadCSV = () => {
@@ -58,10 +81,11 @@ export function ContactsManager() {
         const file = e.target.files?.[0];
         if (!file) return;
 
+        setLoading(true);
         Papa.parse(file, {
             header: true,
             skipEmptyLines: true,
-            complete: (results) => {
+            complete: async (results) => {
                 const data = results.data as Record<string, string>[];
                 if (data.length > 0) {
                     const newContacts = data.map(row => {
@@ -75,8 +99,19 @@ export function ContactsManager() {
                         };
                     }).filter(c => c.number.length > 5);
 
-                    setContacts(prev => [...prev, ...newContacts]);
+                    // Bulk create via API
+                    try {
+                         await fetch("/api/contacts", {
+                             method: "POST",
+                             headers: { "Content-Type": "application/json" },
+                             body: JSON.stringify(newContacts)
+                         });
+                         fetchContacts();
+                    } catch (e) {
+                        alert("Failed to import contacts");
+                    }
                 }
+                setLoading(false);
             }
         });
 
@@ -90,7 +125,7 @@ export function ContactsManager() {
                 <span className="flex items-center gap-2"><Users className="w-5 h-5 text-purple-600" /> Manage Contacts</span>
                 <div className="flex gap-2">
                     <input type="file" ref={fileInputRef} className="hidden" accept=".csv" onChange={handleImportCSV} />
-                    <button onClick={() => fileInputRef.current?.click()} className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1">
+                    <button onClick={() => fileInputRef.current?.click()} className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1" disabled={loading}>
                         <Upload className="w-4 h-4" /> Import
                     </button>
                     {contacts.length > 0 && (
@@ -118,24 +153,25 @@ export function ContactsManager() {
                 />
                 <button
                     onClick={addContact}
-                    className="bg-purple-600 text-white p-2 rounded-lg hover:bg-purple-700 transition-colors"
+                    disabled={loading}
+                    className="bg-purple-600 text-white p-2 rounded-lg hover:bg-purple-700 transition-colors disabled:opacity-50"
                 >
-                    <UserPlus className="w-5 h-5" />
+                    {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <UserPlus className="w-5 h-5" />}
                 </button>
             </div>
 
             <div className="space-y-2 max-h-60 overflow-y-auto">
                 {contacts.length === 0 ? (
-                    <p className="text-gray-400 text-center py-4">No contacts added yet.</p>
+                    <p className="text-gray-400 text-center py-4">{loading ? "Loading..." : "No contacts added yet."}</p>
                 ) : (
                     contacts.map((contact, index) => (
-                        <div key={index} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg border border-gray-100">
+                        <div key={contact.id || index} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg border border-gray-100">
                             <div>
                                 <p className="font-medium text-gray-800">{contact.name}</p>
                                 <p className="text-sm text-gray-500">{contact.number}</p>
                             </div>
                             <button
-                                onClick={() => removeContact(index)}
+                                onClick={() => removeContact(contact.id)}
                                 className="text-red-500 hover:text-red-700 p-1"
                             >
                                 <Trash2 className="w-4 h-4" />
