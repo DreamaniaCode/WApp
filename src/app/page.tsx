@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useSocket } from "@/lib/socket";
@@ -77,16 +77,123 @@ function ActionCard({ label, sub, icon: Icon, color, progress, badge }: { label:
 }
 
 function SingleMessagePanel() {
-  const [to, setTo] = useState(""); const [msg, setMsg] = useState(""); const [status, setStatus] = useState<string | null>(null); const [loading, setLoading] = useState(false);
-  const send = async () => { if (!to.trim() || !msg.trim()) return; setLoading(true); setStatus(null); try { const r = await fetch("/api/send-single", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ to: to.trim(), message: msg.trim() }) }); const d = await r.json(); setStatus(d.success ? "Message sent!" : `Error: ${d.error}`); } catch { setStatus("Network error"); } setLoading(false); };
+  const [to, setTo] = useState("");
+  const [msg, setMsg] = useState("");
+  const [file, setFile] = useState<{ name: string; data: string; mimetype: string } | null>(null);
+  const [status, setStatus] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const b64 = (reader.result as string).split(',')[1];
+      setFile({ name: f.name, data: b64, mimetype: f.type || 'application/octet-stream' });
+    };
+    reader.readAsDataURL(f);
+  };
+
+  const send = async () => {
+    if (!to.trim()) {
+      setStatus({ type: 'error', text: "Please enter a recipient phone number." });
+      return;
+    }
+    if (!msg.trim() && !file) {
+      setStatus({ type: 'error', text: "Please enter a message or select an attachment." });
+      return;
+    }
+    setLoading(true);
+    setStatus(null);
+    try {
+      const payload: any = {
+        recipient: to.trim(),
+        to: to.trim(),
+        phone: to.trim(),
+        number: to.trim(),
+        message: msg.trim(),
+      };
+      if (file) {
+        payload.attachment = {
+          filename: file.name,
+          data: file.data,
+          mimetype: file.mimetype,
+        };
+      }
+      const r = await fetch("/api/send-single", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const d = await r.json();
+      if (d.success) {
+        setStatus({ type: 'success', text: `Message sent successfully to ${d.to || to}!` });
+        setMsg("");
+        setFile(null);
+      } else {
+        setStatus({ type: 'error', text: d.error || "Failed to send message." });
+      }
+    } catch {
+      setStatus({ type: 'error', text: "Network connection error with backend." });
+    }
+    setLoading(false);
+  };
+
   return (
     <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 max-w-xl">
-      <h2 className="text-lg font-bold text-gray-900 mb-4">Send Single Message</h2>
+      <h2 className="text-lg font-bold text-gray-900 mb-1">Send Single Message</h2>
+      <p className="text-xs text-gray-500 mb-4">Direct 1-on-1 test messaging with intelligent country code auto-detection</p>
       <div className="space-y-4">
-        <div><label className="block text-sm font-medium text-gray-700 mb-1">Recipient phone number</label><input className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="212612345678 (no +)" value={to} onChange={e => setTo(e.target.value)} /></div>
-        <div><label className="block text-sm font-medium text-gray-700 mb-1">Message</label><textarea className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" rows={5} placeholder="Type your message..." value={msg} onChange={e => setMsg(e.target.value)} /></div>
-        {status && <div className={`text-sm rounded-lg px-4 py-2 ${status.startsWith("Message") ? "bg-green-50 text-green-700" : "bg-red-50 text-red-600"}`}>{status}</div>}
-        <button onClick={send} disabled={loading} className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-semibold py-2.5 rounded-xl hover:opacity-90 disabled:opacity-50 transition">{loading ? "Sending..." : "Send Message"}</button>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Recipient phone number</label>
+          <input
+            className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+            placeholder="0638273545 or +212638273545"
+            value={to}
+            onChange={e => setTo(e.target.value)}
+          />
+          <div className="text-[11px] text-gray-400 mt-1">
+            Local numbers (e.g. 06...) are automatically formatted with your WhatsApp country code.
+          </div>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Message</label>
+          <textarea
+            className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+            rows={5}
+            placeholder="Type your message..."
+            value={msg}
+            onChange={e => setMsg(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">Attachment (Optional)</label>
+          <div className="flex items-center gap-2">
+            <input type="file" id="single-file-input" className="hidden" onChange={handleFile} />
+            <label htmlFor="single-file-input" className="cursor-pointer px-3 py-1.5 rounded-lg border border-gray-200 text-xs font-medium text-gray-600 hover:bg-gray-50 transition">
+              Choose Image / File
+            </label>
+            {file && (
+              <div className="flex items-center gap-1.5 text-xs text-blue-600 bg-blue-50 px-2 py-1 rounded-lg">
+                <span className="truncate max-w-[200px]">{file.name}</span>
+                <button onClick={() => setFile(null)} className="text-gray-400 hover:text-red-500 font-bold ml-1">×</button>
+              </div>
+            )}
+          </div>
+        </div>
+        {status && (
+          <div className={`text-sm rounded-xl p-3 flex items-start gap-2 ${status.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+            <span>{status.type === 'success' ? '✅' : '❌'}</span>
+            <span className="flex-1">{status.text}</span>
+          </div>
+        )}
+        <button
+          onClick={send}
+          disabled={loading}
+          className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-semibold py-2.5 rounded-xl hover:opacity-90 disabled:opacity-50 transition shadow-sm"
+        >
+          {loading ? "Sending..." : "Send Message"}
+        </button>
       </div>
     </div>
   );

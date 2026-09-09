@@ -30,7 +30,11 @@
       "cscLink": "dreamaniacode.pfx",
       "cscKeyPassword": "Dreamania2026!",
       "forceCodeSigning": false,
-      "verifyUpdateCodeSignature": false
+      "verifyUpdateCodeSignature": false,
+      "signtoolOptions": {
+        "publisherName": "DreamaniaCode",
+        "rfc3161TimeStampServer": "http://timestamp.sectigo.com"
+      }
     },
     "nsis": {
       "oneClick": false,

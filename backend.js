@@ -181,6 +181,95 @@ let isBulkRunning = false;
 let currentBulkResults = [];
 const HISTORY_PATH = path_1.default.join(DATA_DIR, "history.json");
 
+// ─── Auto Responses State ───────────────────────────────────────────────────
+const AUTO_RESPONSES_PATH = path_1.default.join(DATA_DIR, "auto_responses.json");
+let autoResponses = [];
+function loadAutoResponses() {
+    if (fs_1.default.existsSync(AUTO_RESPONSES_PATH)) {
+        try {
+            const data = JSON.parse(fs_1.default.readFileSync(AUTO_RESPONSES_PATH, "utf8"));
+            if (Array.isArray(data)) autoResponses = data;
+        } catch (e) {
+            autoResponses = [];
+        }
+    }
+}
+loadAutoResponses();
+
+/**
+ * Intelligent WhatsApp Phone Number Resolver:
+ * Cleans formatting and resolves local format numbers (e.g. 0638273545) by determining
+ * the user's active country code (+212 / +33 / etc.) and verifying via getNumberId.
+ */
+async function resolveWhatsAppNumber(rawNumber, client) {
+    if (!rawNumber) return null;
+    let clean = String(rawNumber).trim().replace(/[^\d+]/g, '');
+    if (clean.startsWith('00')) clean = clean.substring(2);
+    if (clean.startsWith('+')) clean = clean.substring(1);
+
+    // Extract country code from active client's own phone number if available
+    let myCountryCode = "";
+    try {
+        const myWid = client?.info?.wid?.user || "";
+        if (myWid.startsWith("212")) myCountryCode = "212";
+        else if (myWid.startsWith("33")) myCountryCode = "33";
+        else if (myWid.startsWith("1")) myCountryCode = "1";
+        else if (myWid.startsWith("34")) myCountryCode = "34";
+        else if (myWid.startsWith("44")) myCountryCode = "44";
+        else if (myWid.startsWith("971")) myCountryCode = "971";
+        else if (myWid.startsWith("966")) myCountryCode = "966";
+        else if (myWid.length >= 10) {
+            myCountryCode = myWid.substring(0, myWid.length - 9);
+        }
+    } catch (_) {}
+
+    const candidates = [];
+
+    // Case 1: Local number starting with 0 (e.g. 0638273545)
+    if (clean.startsWith('0') && clean.length >= 9) {
+        const withoutZero = clean.substring(1);
+        if (myCountryCode) candidates.push(`${myCountryCode}${withoutZero}`);
+        if (!candidates.includes(`212${withoutZero}`)) candidates.push(`212${withoutZero}`);
+        if (!candidates.includes(`33${withoutZero}`)) candidates.push(`33${withoutZero}`);
+    }
+
+    // Case 2: Number already includes country code (or raw)
+    if (!candidates.includes(clean)) {
+        candidates.push(clean);
+    }
+
+    // Case 3: 9 digits without 0 (e.g. 638273545)
+    if (clean.length === 9 && (clean.startsWith('6') || clean.startsWith('7'))) {
+        if (myCountryCode && !candidates.includes(`${myCountryCode}${clean}`)) candidates.push(`${myCountryCode}${clean}`);
+        if (!candidates.includes(`212${clean}`)) candidates.push(`212${clean}`);
+        if (!candidates.includes(`33${clean}`)) candidates.push(`33${clean}`);
+    }
+
+    // Test candidates on WhatsApp
+    for (const num of candidates) {
+        try {
+            if (client && typeof client.getNumberId === 'function') {
+                const contactId = await client.getNumberId(num);
+                if (contactId && contactId._serialized) {
+                    console.log(`[resolveWhatsAppNumber] Resolved ${rawNumber} -> ${contactId._serialized}`);
+                    return {
+                        jid: contactId._serialized,
+                        number: contactId.user || num
+                    };
+                }
+            }
+        } catch (_) {}
+    }
+
+    // If getNumberId didn't return a verified contact, use best candidate
+    const bestNum = candidates[0] || clean;
+    console.log(`[resolveWhatsAppNumber] Fallback ${rawNumber} -> ${bestNum}@c.us`);
+    return {
+        jid: `${bestNum}@c.us`,
+        number: bestNum
+    };
+}
+
 // ─── Call Responder State ───────────────────────────────────────────────────
 const CALL_RESPONDER_PATH = path_1.default.join(DATA_DIR, "call_responder.json");
 let callResponderConfig = {
@@ -818,21 +907,13 @@ app.post("/api/send-bulk", async (req, res) => {
             }
             try {
                 const number = recipient.number || "";
-                let parsedNumber = number;
-                // Remove all spaces, dashes and non-digit characters except the + sign
-                parsedNumber = parsedNumber.replace(/[^\d+]/g, '');
-                // WhatsApp API expects exactly digits without a leading +
-                if (parsedNumber.startsWith('+')) {
-                    parsedNumber = parsedNumber.substring(1);
-                }
-                const name = recipient.name || "Subscriber";
-                console.log(`Checking number on WhatsApp: ${parsedNumber}`);
-                const contactId = await client.getNumberId(parsedNumber);
-                if (!contactId) {
-                    console.warn(`Number ${number} not registered on WhatsApp`);
+                console.log(`Resolving contact number on WhatsApp: ${number}`);
+                const resolved = await resolveWhatsAppNumber(number, client);
+                if (!resolved || !resolved.jid) {
+                    console.warn(`Number ${number} could not be resolved on WhatsApp`);
                     throw new Error("Number not registered on WhatsApp");
                 }
-                const formattedNumber = contactId._serialized;
+                const formattedNumber = resolved.jid;
                 console.log(`Formatted number: ${formattedNumber}`);
                 const personalizedMessage = message ? message.replace(/{{name}}/g, name) : "";
                 if (!isReady)
@@ -1382,24 +1463,38 @@ app.post("/api/scrape-leads", async (req, res) => {
 
 // ─── Single Message API ───────────────────────────────────────────────────────
 app.post("/api/send-single", async (req, res) => {
-    const { recipient, message, attachment } = req.body;
+    // Auto-recover isReady if WhatsApp Web UI is already loaded in Chromium
+    if (!isReady && activeClient && activeClient.pupPage) {
+        try {
+            const hasChats = await activeClient.pupPage.evaluate(() => {
+                return !!(document.querySelector('#pane-side') || (window.Store && window.Store.Chat));
+            });
+            if (hasChats) {
+                isReady = true;
+                isAuthenticated = true;
+            }
+        } catch (_) {}
+    }
+
+    const recipient = req.body.recipient || req.body.to || req.body.phone || req.body.number;
+    const message = req.body.message || req.body.text || req.body.msg;
+    const attachment = req.body.attachment || req.body.media;
+
     if (!recipient) {
         return res.status(400).json({ error: "Recipient phone number is required." });
     }
     if (!isReady || !activeClient) {
-        return res.status(503).json({ error: "WhatsApp client is not connected." });
+        return res.status(503).json({ error: "WhatsApp client is not connected. Please connect your session in Devices." });
     }
     try {
-        let cleanNumber = String(recipient).replace(/[^\d+]/g, '');
-        if (cleanNumber.startsWith('+')) cleanNumber = cleanNumber.substring(1);
-        if (cleanNumber.length < 7) {
+        const resolved = await resolveWhatsAppNumber(recipient, activeClient);
+        if (!resolved || !resolved.jid) {
             return res.status(400).json({ error: "Invalid phone number." });
         }
 
-        const contactId = await activeClient.getNumberId(cleanNumber);
-        const formattedNumber = contactId ? contactId._serialized : `${cleanNumber}@c.us`;
-
+        const formattedNumber = resolved.jid;
         let sentResult;
+
         if (attachment && attachment.data && attachment.mimetype) {
             const media = new whatsapp_web_js_1.MessageMedia(attachment.mimetype, attachment.data, attachment.filename || 'file');
             const options = message && message.trim() ? { caption: message.trim() } : {};
@@ -1410,7 +1505,13 @@ app.post("/api/send-single", async (req, res) => {
             return res.status(400).json({ error: "Message text or media attachment is required." });
         }
 
-        res.json({ success: true, messageId: sentResult?.id?._serialized || Date.now().toString(), to: formattedNumber });
+        console.log(`[/api/send-single] Message successfully sent to ${formattedNumber}`);
+        res.json({
+            success: true,
+            messageId: sentResult?.id?._serialized || Date.now().toString(),
+            to: formattedNumber,
+            resolvedNumber: resolved.number
+        });
     } catch (err) {
         console.error("[/api/send-single] Error:", err);
         res.status(500).json({ error: err.message || "Failed to send message" });
