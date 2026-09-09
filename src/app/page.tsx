@@ -8,6 +8,7 @@ import { ContactsManager } from "@/components/ContactsManager";
 import { GroupExtractor } from "@/components/GroupExtractor";
 import { Settings } from "@/components/Settings";
 import { SettingsBot } from "@/components/SettingsBot";
+import { LicenseScreen } from "@/components/LicenseScreen";
 import { useLanguage } from "@/contexts/LanguageContext";
 import {
   LayoutDashboard, Smartphone, Send, FileText, Users, MessageSquare,
@@ -332,6 +333,37 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const { language, setLanguage } = useLanguage();
+  const [isActivated, setIsActivated] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let timer: NodeJS.Timeout;
+    const checkLicense = async () => {
+      try {
+        const res = await fetch("/api/license-status");
+        const data = await res.json();
+        setIsActivated(!!data.isActivated);
+      } catch {
+        timer = setTimeout(checkLicense, 1500);
+      }
+    };
+    checkLicense();
+    return () => clearTimeout(timer);
+  }, []);
+
+  if (isActivated === null) {
+    return (
+      <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-center text-white">
+        <img src="/logo.png" alt="WApp Manager Pro" className="w-20 h-20 rounded-3xl object-contain animate-pulse mb-4 p-1 bg-white/5 border border-white/10 shadow-2xl" />
+        <h2 className="text-lg font-bold tracking-wide">WApp Manager Pro</h2>
+        <p className="text-xs text-gray-400 mt-1">Verifying activation license...</p>
+      </div>
+    );
+  }
+
+  if (isActivated === false) {
+    return <LicenseScreen onActivated={() => setIsActivated(true)} />;
+  }
+
   const currentNav = NAV.find(n => n.id === activeTab);
 
   return (

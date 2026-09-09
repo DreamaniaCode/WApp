@@ -814,7 +814,49 @@ io.on("connection", (socket) => {
 app.get("/api/wa-status", (_req, res) => {
     res.json({ isReady, authenticated: isAuthenticated, qr: qrCodeData || null });
 });
+
+// ─── Logout API ───────────────────────────────────────────────────────────────
+app.post("/api/logout", async (_req, res) => {
+    console.log("[API] User requested logout...");
+    io.emit("disconnected", "logout");
+    await destroyActiveClient(true);
+    const authPath = process.env.WWEBJS_DATA_PATH || path_1.default.join(process.cwd(), ".wwebjs_auth");
+    safeClearFolder(authPath);
+    cleanChromiumLocks();
+    setTimeout(() => {
+        console.log("[API] Restarting in fresh QR mode after logout...");
+        createAndStartQRClient();
+    }, 600);
+    res.json({ success: true, message: "Logged out. Restarting in QR mode." });
+});
+
 // ─── Activation & Licensing ──────────────────────────────────────────────────
+function getStoredLicense() {
+    const candidates = [
+        LICENSE_PATH,
+        path_1.default.join(process.cwd(), "license.json"),
+        path_1.default.join(__dirname, "license.json"),
+        process.env.WAPP_DATA_PATH && path_1.default.join(process.env.WAPP_DATA_PATH, "license.json")
+    ].filter(Boolean);
+
+    for (const p of candidates) {
+        try {
+            if (fs_1.default.existsSync(p)) {
+                const data = JSON.parse(fs_1.default.readFileSync(p, "utf8"));
+                if (data && data.code) {
+                    if (p !== LICENSE_PATH && !fs_1.default.existsSync(LICENSE_PATH)) {
+                        try {
+                            fs_1.default.writeFileSync(LICENSE_PATH, JSON.stringify(data, null, 2));
+                        } catch (_) {}
+                    }
+                    return data;
+                }
+            }
+        } catch (_) {}
+    }
+    return null;
+}
+
 app.get("/api/license-status", (_req, res) => {
     const license = getStoredLicense();
     res.json({
