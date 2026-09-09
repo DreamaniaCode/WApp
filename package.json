@@ -23,7 +23,6 @@
     "win": {
       "target": "nsis",
       "icon": "public/icon.ico",
-      "signAndEditExecutable": false,
       "forceCodeSigning": false,
       "verifyUpdateCodeSignature": false
     },
@@ -33,7 +32,10 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "WA Manager Pro",
-      "artifactName": "WA Manager Pro Setup ${version}.${ext}"
+      "artifactName": "WA Manager Pro Setup ${version}.${ext}",
+      "installerIcon": "public/icon.ico",
+      "uninstallerIcon": "public/icon.ico",
+      "installerHeaderIcon": "public/icon.ico"
     },
     "extraFiles": [
       {

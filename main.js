@@ -1,4 +1,4 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, nativeImage } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
@@ -8,9 +8,17 @@ let mainWindow;
 let backendProcess;
 
 function createWindow() {
-    const iconPath = process.platform === 'win32' && fs.existsSync(path.join(__dirname, 'public/icon.ico'))
-        ? path.join(__dirname, 'public/icon.ico')
-        : path.join(__dirname, 'public/logo.png');
+    let appIcon = null;
+    const icoPath = path.join(__dirname, 'public/icon.ico');
+    const pngPath = path.join(__dirname, 'public/logo.png');
+
+    try {
+        if (fs.existsSync(icoPath)) {
+            appIcon = nativeImage.createFromPath(icoPath);
+        } else if (fs.existsSync(pngPath)) {
+            appIcon = nativeImage.createFromPath(pngPath);
+        }
+    } catch (_) {}
 
     mainWindow = new BrowserWindow({
         width: 1280,
@@ -21,17 +29,28 @@ function createWindow() {
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
+            webSecurity: false,
             preload: path.join(__dirname, 'preload.js')
         },
-        icon: iconPath,
+        icon: appIcon || (fs.existsSync(icoPath) ? icoPath : pngPath),
         titleBarStyle: 'default',
         title: 'WA Manager Pro v2026.4.0'
     });
 
-    mainWindow.loadURL('http://localhost:3001').catch(() => {
-        const indexPath = path.join(__dirname, 'out', 'index.html');
-        mainWindow.loadFile(indexPath);
-    });
+    // Attempt loading from backend on port 3001 with active retry
+    let retries = 0;
+    const tryLoad = () => {
+        mainWindow.loadURL('http://localhost:3001').catch(() => {
+            retries++;
+            if (retries < 10 && mainWindow && !mainWindow.isDestroyed()) {
+                setTimeout(tryLoad, 800);
+            } else if (mainWindow && !mainWindow.isDestroyed()) {
+                const indexPath = path.join(__dirname, 'out', 'index.html');
+                mainWindow.loadFile(indexPath);
+            }
+        });
+    };
+    tryLoad();
 
     mainWindow.on('closed', function () {
         mainWindow = null;

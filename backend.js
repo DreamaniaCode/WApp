@@ -29,17 +29,9 @@ const port = 3001;
 const app = (0, express_1.default)();
 const httpServer = (0, http_1.createServer)(app);
 // Enable CORS and increase JSON limit for Base64 media
-const allowedOrigins = ["http://localhost:3000", "http://localhost:3001", null];
 app.use((0, cors_1.default)({
-    origin: (origin, callback) => {
-        if (!origin || allowedOrigins.includes(origin) || origin.startsWith("file://")) {
-            callback(null, true);
-        }
-        else {
-            callback(null, true); // Allow all in dev — tighten if needed
-        }
-    },
-    methods: ["GET", "POST"],
+    origin: true,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     credentials: true
 }));
 app.use(express_1.default.json({ limit: '50mb' }));
@@ -222,7 +214,23 @@ function buildClientOptions(pairWithPhoneNumber) {
         },
         // Raise auth timeout so slow machines don't give up early
         authTimeoutMs: 60000,
-        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+        evalOnNewDoc: () => {
+            try {
+                // Strip webdriver automation flag
+                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                // Provide realistic mock of window.chrome
+                window.chrome = {
+                    runtime: {},
+                    loadTimes: function () {},
+                    csi: function () {},
+                    app: {}
+                };
+                // Realistic languages and plugins
+                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'fr'] });
+                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            } catch (_) {}
+        },
         puppeteer: {
             headless: true,
             dumpio: false,
