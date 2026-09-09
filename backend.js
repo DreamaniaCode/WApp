@@ -338,7 +338,7 @@ function createAndStartQRClient() {
     activeClient = client;
     registerClientEvents(client);
     client.initialize().catch(err => {
-        console.warn("[Watchdog] WhatsApp initialize notice:", err.message);
+        console.warn("[Watchdog] WhatsApp initialize notice:", err?.stack || err);
     });
     return client;
 }
