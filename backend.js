@@ -97,31 +97,25 @@ function killStaleBrowserProcesses() {
 function cleanChromiumLocks() {
     killStaleBrowserProcesses();
     const authPath = process.env.WWEBJS_DATA_PATH || path_1.default.join(process.cwd(), ".wwebjs_auth");
-    const pathsToCheck = [
-        path_1.default.join(authPath, "session"),
-        path_1.default.join(authPath, "session", "Default"),
-        authPath
-    ];
-    const lockFiles = [
-        "SingletonLock",
-        "SingletonCookie",
-        "SingletonSocket",
-        "LOCK",
-        "LOG",
-        "LOG.old"
-    ];
-    for (const dir of pathsToCheck) {
-        if (!fs_1.default.existsSync(dir)) continue;
-        for (const file of lockFiles) {
-            const fullPath = path_1.default.join(dir, file);
-            try {
-                if (fs_1.default.existsSync(fullPath)) {
-                    fs_1.default.unlinkSync(fullPath);
-                    console.log(`[Watchdog] Removed stale Chromium lock: ${fullPath}`);
+    if (!fs_1.default.existsSync(authPath)) return;
+
+    function removeLocksRecursively(currentDir) {
+        try {
+            const entries = fs_1.default.readdirSync(currentDir, { withFileTypes: true });
+            for (const entry of entries) {
+                const fullPath = path_1.default.join(currentDir, entry.name);
+                if (entry.isDirectory()) {
+                    removeLocksRecursively(fullPath);
+                } else if (["SingletonLock", "SingletonCookie", "SingletonSocket", "LOCK", "LOG.old"].includes(entry.name)) {
+                    try {
+                        fs_1.default.unlinkSync(fullPath);
+                        console.log(`[Watchdog] Removed stale Chromium lock: ${fullPath}`);
+                    } catch (e) {}
                 }
-            } catch (e) { }
-        }
+            }
+        } catch (e) {}
     }
+    removeLocksRecursively(authPath);
 }
 
 function safeClearFolder(dirPath, maxRetries = 5, delayMs = 500) {
@@ -353,7 +347,7 @@ function registerClientEvents(client) {
         isAuthenticated = false; // Must be false when QR arrives!
         isReady = false;
         if (authStallTimer) {
-            clearTimeout(authStallTimer);
+            clearInterval(authStallTimer);
             authStallTimer = null;
         }
         io.emit("qr", qr);
@@ -361,7 +355,7 @@ function registerClientEvents(client) {
     client.on("ready", () => {
         console.log("Client is ready!");
         if (authStallTimer) {
-            clearTimeout(authStallTimer);
+            clearInterval(authStallTimer);
             authStallTimer = null;
         }
         isReady = true;
@@ -376,30 +370,52 @@ function registerClientEvents(client) {
         qrCodeData = "";
         io.emit("authenticated", true);
 
-        // Session Restoration Watchdog:
-        // If session restoration hangs for more than 35s without ready, automatically recover
-        if (authStallTimer) clearTimeout(authStallTimer);
-        authStallTimer = setTimeout(async () => {
-            if (!isReady && activeClient === client) {
-                console.warn("[Watchdog] Session restoration stalled (>35s). Automatically resetting session for fresh QR...");
-                io.emit("restoration_stalled", { message: "Session sync stalled. Resetting for fresh login..." });
-                try {
-                    await destroyActiveClient(true);
-                    const authPath = process.env.WWEBJS_DATA_PATH || path_1.default.join(process.cwd(), ".wwebjs_auth");
-                    safeClearFolder(authPath);
-                    cleanChromiumLocks();
-                    await new Promise(r => setTimeout(r, 1000));
-                    createAndStartQRClient();
-                } catch (err) {
-                    console.error("[Watchdog] Auto-recovery error:", err);
-                }
+        // Active DOM Watchdog: Monitor WhatsApp Web UI directly in Chromium
+        // NEVER destructively wipe the session while authenticated!
+        if (authStallTimer) clearInterval(authStallTimer);
+        let checks = 0;
+        authStallTimer = setInterval(async () => {
+            checks++;
+            if (isReady || activeClient !== client) {
+                clearInterval(authStallTimer);
+                authStallTimer = null;
+                return;
             }
-        }, 35000);
+            try {
+                if (client.pupPage && !client.pupPage.isClosed()) {
+                    const uiReady = await client.pupPage.evaluate(() => {
+                        const hasPane = !!document.querySelector('#pane-side, [data-testid="chat-list"], [data-testid="chat-list-search"], header');
+                        const hasStore = typeof window.Store !== 'undefined' && !!(window.Store.Conn || window.Store.User);
+                        return hasPane || hasStore;
+                    }).catch(() => false);
+
+                    if (uiReady && !isReady) {
+                        console.log("[Watchdog] WhatsApp Web UI confirmed ready in Chromium! Transitioning to READY.");
+                        clearInterval(authStallTimer);
+                        authStallTimer = null;
+                        isReady = true;
+                        isAuthenticated = true;
+                        qrCodeData = "";
+                        io.emit("ready", true);
+                        startWatchdogHeartbeat();
+                        return;
+                    }
+                }
+            } catch (err) {
+                // Ignore transient frame navigation context errors
+            }
+
+            // Large account progress notification (keep session intact!)
+            if (checks === 60) {
+                console.log("[Watchdog] Chat sync is ongoing for large account, keeping session intact...");
+                io.emit("loading_screen", { percent: 99, message: "Synchronizing chat history... Keep WhatsApp open on phone." });
+            }
+        }, 1500);
     });
     client.on("disconnected", (reason) => {
         console.log("Client was logged out or disconnected:", reason);
         if (authStallTimer) {
-            clearTimeout(authStallTimer);
+            clearInterval(authStallTimer);
             authStallTimer = null;
         }
         if (client === activeClient) {
@@ -407,8 +423,13 @@ function registerClientEvents(client) {
             isAuthenticated = false;
             qrCodeData = "";
             io.emit("disconnected", reason);
-            // Automatic reconnection watchdog if not a manual reset
-            if (reason !== "manual_reset" && reason !== "LOGOUT") {
+            if (reason === "LOGOUT") {
+                console.log("[Watchdog] Logged out by WhatsApp server. Cleaning session folder for fresh QR...");
+                const authPath = process.env.WWEBJS_DATA_PATH || path_1.default.join(process.cwd(), ".wwebjs_auth");
+                safeClearFolder(authPath);
+                cleanChromiumLocks();
+                scheduleAutoReconnect(1000);
+            } else if (reason !== "manual_reset") {
                 console.log(`[Watchdog] Unexpected disconnect (${reason}). Triggering auto-reconnect...`);
                 scheduleAutoReconnect(3000);
             }
@@ -417,7 +438,7 @@ function registerClientEvents(client) {
     client.on("auth_failure", (msg) => {
         console.error("AUTHENTICATION FAILURE", msg);
         if (authStallTimer) {
-            clearTimeout(authStallTimer);
+            clearInterval(authStallTimer);
             authStallTimer = null;
         }
         isReady = false;
