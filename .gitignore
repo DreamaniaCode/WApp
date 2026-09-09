@@ -11,7 +11,10 @@
 # /out/ is tracked as the Electron prebuilt frontend
 
 # production
-/build
+/build/*
+!/build/installer.nsh
+!/build/icon.ico
+
 
 # misc
 .DS_Store

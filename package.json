@@ -2,6 +2,8 @@
   "name": "wapp-manager-pro",
   "version": "2026.4.0",
   "productName": "WA Manager Pro",
+  "author": "DreamaniaCode",
+  "description": "WA Manager Pro by DreamaniaCode",
   "private": true,
   "main": "main.js",
   "scripts": {
@@ -18,29 +20,39 @@
       "**/node_modules/@prisma/**",
       "**/node_modules/.prisma/**"
     ],
-    "appId": "com.wapp.manager",
+    "appId": "com.dreamaniacode.wappmanager",
     "productName": "WA Manager Pro",
+    "copyright": "Copyright © 2026 DreamaniaCode",
     "win": {
       "target": "nsis",
       "icon": "public/icon.ico",
+      "legalTrademarks": "DreamaniaCode",
+      "cscLink": "dreamaniacode.pfx",
+      "cscKeyPassword": "Dreamania2026!",
       "forceCodeSigning": false,
       "verifyUpdateCodeSignature": false
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
+      "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
       "shortcutName": "WA Manager Pro",
       "artifactName": "WA Manager Pro Setup ${version}.${ext}",
       "installerIcon": "public/icon.ico",
       "uninstallerIcon": "public/icon.ico",
-      "installerHeaderIcon": "public/icon.ico"
+      "installerHeaderIcon": "public/icon.ico",
+      "warningsAsErrors": false,
+      "include": "build/installer.nsh"
     },
     "extraFiles": [
       {
         "from": "node_modules/.prisma",
         "to": "resources/app.asar.unpacked/node_modules/.prisma"
+      },
+      {
+        "from": "public/icon.ico",
+        "to": "app.ico"
       }
     ],
     "files": [
