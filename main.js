@@ -90,8 +90,10 @@ function startBackend() {
     logStream.write(`Command: ${backendCmd} ${backendArgs.join(' ')}\n`);
     logStream.write(`Chrome Path: ${chromePath || 'Not Found'}\n`);
 
+    const runCwd = process.env.NODE_ENV === 'development' ? __dirname : path.dirname(process.execPath);
+
     backendProcess = spawn(backendCmd, backendArgs, {
-        cwd: __dirname,
+        cwd: runCwd,
         env: backendEnv,
         windowsHide: true,
         shell: process.env.NODE_ENV === 'development' // Only use shell in dev
@@ -106,8 +108,36 @@ function startBackend() {
 
     backendProcess.on('exit', (code) => {
         logStream.write(`[BACKEND] exited with code ${code}\n`);
-        // If it exited with error, maybe try to kill port 3001 if it's EADDRINUSE?
     });
+}
+
+function waitForBackendAndCreateWindow(maxWaitMs = 12000) {
+    const startTime = Date.now();
+    const interval = setInterval(() => {
+        const req = http.get('http://localhost:3001/api/health', (res) => {
+            if (res.statusCode === 200) {
+                clearInterval(interval);
+                if (!mainWindow) {
+                    createWindow();
+                    if (process.env.DEBUG_WAPP === 'true') {
+                        mainWindow.webContents.openDevTools({ mode: 'detach' });
+                    }
+                }
+            }
+        });
+        req.on('error', () => {
+            if (Date.now() - startTime > maxWaitMs) {
+                clearInterval(interval);
+                if (!mainWindow) {
+                    createWindow();
+                    if (process.env.DEBUG_WAPP === 'true') {
+                        mainWindow.webContents.openDevTools({ mode: 'detach' });
+                    }
+                }
+            }
+        });
+        req.setTimeout(500, () => req.destroy());
+    }, 400);
 }
 
 app.on('ready', () => {
@@ -116,7 +146,7 @@ app.on('ready', () => {
         app.setAppUserModelId("com.wapp.manager");
     }
 
-    const checkReq = http.get('http://localhost:3001/api/chatbot/stats', (res) => {
+    const checkReq = http.get('http://localhost:3001/api/health', (res) => {
         console.log("Backend already running on port 3001, opening window directly.");
         createWindow();
         if (process.env.DEBUG_WAPP === 'true') {
@@ -131,16 +161,10 @@ app.on('ready', () => {
         } catch (err) {
             console.error("Critical: Failed to start backend:", err);
         }
-
-        setTimeout(() => {
-            createWindow();
-            if (process.env.DEBUG_WAPP === 'true') {
-                mainWindow.webContents.openDevTools({ mode: 'detach' });
-            }
-        }, 3000);
+        waitForBackendAndCreateWindow();
     });
 
-    checkReq.setTimeout(1000, () => {
+    checkReq.setTimeout(800, () => {
         checkReq.destroy();
     });
 });

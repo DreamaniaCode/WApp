@@ -1,6 +1,10 @@
-"use strict";
 process.on('unhandledRejection', (reason) => {
-    console.warn('[Process] Handled async rejection:', reason?.message || reason);
+    const msg = reason?.message || String(reason);
+    if (msg.includes('Execution context was destroyed')) {
+        console.log('[Puppeteer] Navigation context handled smoothly.');
+        return;
+    }
+    console.warn('[Process] Handled async rejection:', msg);
 });
 process.on('uncaughtException', (err) => {
     console.error('[Process] Handled uncaught exception:', err.message);
@@ -81,7 +85,17 @@ const DATA_DIR = process.env.WAPP_DATA_PATH || process.cwd();
 const LICENSE_PATH = path_1.default.join(DATA_DIR, "license.json");
 const botEngine = new ChatbotRagEngine(DATA_DIR);
 
+function killStaleBrowserProcesses() {
+    if (process.platform === 'win32') {
+        try {
+            const { execSync } = require('child_process');
+            execSync('wmic process where "name=\'chrome.exe\' and commandline like \'%.wwebjs_auth%\'" call terminate', { stdio: 'ignore' });
+        } catch (e) {}
+    }
+}
+
 function cleanChromiumLocks() {
+    killStaleBrowserProcesses();
     const authPath = process.env.WWEBJS_DATA_PATH || path_1.default.join(process.cwd(), ".wwebjs_auth");
     const pathsToCheck = [
         path_1.default.join(authPath, "session"),
@@ -147,6 +161,7 @@ const PUPPETEER_ARGS = [
     "--no-zygote",
     "--disable-gpu",
     "--disable-extensions",
+    "--disable-blink-features=AutomationControlled",
     "--safebrowsing-disable-auto-update",
     // Performance & Keep-alive: keep renderer alive even when backgrounded/minimized
     "--disable-backgrounding-occluded-windows",
@@ -213,11 +228,14 @@ function buildClientOptions(pairWithPhoneNumber) {
         },
         // Raise auth timeout so slow machines don't give up early
         authTimeoutMs: 60000,
+        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         puppeteer: {
             headless: true,
             dumpio: false,
             executablePath: chromePath,
             args: PUPPETEER_ARGS,
+            ignoreDefaultArgs: ['--enable-automation'],
+            bypassCSP: true,
         },
     };
     if (pairWithPhoneNumber) {
@@ -1143,8 +1161,9 @@ httpServer.listen(port, () => {
     // Also start a listener on port 3000 so both http://localhost:3000 and 3001 work
     try {
         const port3000Server = (0, http_1.createServer)(app);
+        io.attach(port3000Server);
         port3000Server.listen(3000, () => {
-            console.log(`> Web UI also available on http://localhost:3000`);
+            console.log(`> Web UI also available on http://localhost:3000 (with Socket.IO)`);
         }).on('error', () => {});
     } catch {}
 
