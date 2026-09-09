@@ -1,22 +1,7 @@
-const { app, BrowserWindow, protocol, net } = require('electron');
+const { app, BrowserWindow } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
-const { pathToFileURL } = require('url');
-
-// Register the custom protocol as a standard web protocol
-protocol.registerSchemesAsPrivileged([
-    {
-        scheme: 'app',
-        privileges: {
-            standard: true,
-            secure: true,
-            supportFetchAPI: true,
-            corsEnabled: true,
-            bypassCSP: false
-        }
-    }
-]);
 
 let mainWindow;
 let backendProcess;
@@ -38,18 +23,15 @@ function createWindow() {
         title: 'WA Manager'
     });
 
-    // In production: load from the custom app protocol
+    // In production: load the static export (out/index.html)
     // In development: load from Next.js dev server
     if (process.env.NODE_ENV === 'development') {
         mainWindow.loadURL('http://localhost:3000');
         mainWindow.webContents.openDevTools();
     } else {
-        mainWindow.loadURL('app://wapp/');
+        const indexPath = path.join(__dirname, 'out', 'index.html');
+        mainWindow.loadFile(indexPath);
     }
-
-    mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
-        console.log(`[RENDERER] ${message} (${sourceId}:${line})`);
-    });
 
     mainWindow.on('closed', function () {
         mainWindow = null;
@@ -129,17 +111,6 @@ function startBackend() {
 }
 
 app.on('ready', () => {
-    // Handle the custom protocol
-    protocol.handle('app', (request) => {
-        const url = new URL(request.url);
-        let pathname = url.pathname;
-        if (pathname === '/' || pathname === '') {
-            pathname = '/index.html';
-        }
-        const filePath = path.join(__dirname, 'out', pathname);
-        return net.fetch(pathToFileURL(filePath).toString());
-    });
-
     // Ensures that the taskbar uses the correct application icon on Windows
     if (process.platform === 'win32') {
         app.setAppUserModelId("com.wapp.manager");

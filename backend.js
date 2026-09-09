@@ -21,7 +21,7 @@ const httpServer = (0, http_1.createServer)(app);
 const allowedOrigins = ["http://localhost:3000", "http://localhost:3001", null];
 app.use((0, cors_1.default)({
     origin: (origin, callback) => {
-        if (!origin || allowedOrigins.includes(origin) || origin.startsWith("file://") || origin.startsWith("app://")) {
+        if (!origin || allowedOrigins.includes(origin) || origin.startsWith("file://")) {
             callback(null, true);
         }
         else {
@@ -116,13 +116,9 @@ let isReady = false;
 let isAuthenticated = false;
 // Track current active client so we can destroy it when switching modes
 let activeClient = null;
-const clients = new Map();
-let activeClientId = null;
 // Campaign state
 let isBulkRunning = false;
 let currentBulkResults = [];
-// Track which client is running the bulk campaign
-let bulkCampaignClientId = null;
 // ─── Auto-Reply State ─────────────────────────────────────────────────────────
 const AUTO_RESPONSES_PATH = path_1.default.join(DATA_DIR, "auto_responses.json");
 let autoResponses = [];
@@ -137,63 +133,6 @@ function loadAutoResponses() {
     }
 }
 loadAutoResponses();
-// ─── Chatbot Configuration ─────────────────────────────────────────────────────
-const CHATBOT_TEMPLATES_PATH = path_1.default.join(DATA_DIR, "chatbot_templates.json");
-const CHATBOT_LOG_PATH = path_1.default.join(DATA_DIR, "chatbot.log");
-let chatbotConfig = {
-    templates: [],
-    defaultResponse: "I'm not sure how to respond to that yet. Try asking something else."
-};
-function loadChatbotTemplates() {
-    if (fs_1.default.existsSync(CHATBOT_TEMPLATES_PATH)) {
-        try {
-            const data = JSON.parse(fs_1.default.readFileSync(CHATBOT_TEMPLATES_PATH, "utf8"));
-            chatbotConfig = data;
-            console.log("Chatbot templates loaded successfully");
-        }
-        catch (e) {
-            console.error("Failed to load chatbot templates", e);
-            // Use default config if file is corrupt
-            chatbotConfig = {
-                templates: [],
-                defaultResponse: "I'm not sure how to respond to that yet. Try asking something else."
-            };
-        }
-    }
-    else {
-        // Create default templates file if it doesn't exist
-        const defaultConfig = {
-            templates: [
-                { keyword: "hello", response: "Hi there! How can I help you?", exactMatch: false },
-                { keyword: "hi", response: "Hello! What would you like to know?", exactMatch: false },
-                { keyword: "help", response: "I can help you with various queries. Ask me about...", exactMatch: false },
-                { keyword: "bye", response: "Goodbye! Have a great day!", exactMatch: false },
-                { keyword: "thanks", response: "You're welcome! Let me know if you need anything else.", exactMatch: false }
-            ],
-            defaultResponse: "I'm not sure how to respond to that yet. Try asking something else."
-        };
-        fs_1.default.writeFileSync(CHATBOT_TEMPLATES_PATH, JSON.stringify(defaultConfig, null, 2));
-        chatbotConfig = defaultConfig;
-    }
-}
-loadChatbotTemplates();
-// Function to log chatbot interactions
-function logChatbotInteraction(clientId, message, reply, language) {
-    try {
-        const logEntry = {
-            timestamp: new Date().toISOString(),
-            clientId,
-            message,
-            reply,
-            language
-        };
-        const logLine = JSON.stringify(logEntry) + '\n';
-        fs_1.default.appendFileSync(CHATBOT_LOG_PATH, logLine, 'utf8');
-    }
-    catch (error) {
-        console.error('Failed to log chatbot interaction:', error);
-    }
-}
 // ─── Client factory ───────────────────────────────────────────────────────────
 /**
  * Build shared Client options (auth + puppeteer).
@@ -251,93 +190,13 @@ async function destroyActiveClient(skipLogout = false) {
     catch { /* ignore */ }
 }
 /**
- * Generate a unique client ID
- */
-function generateClientId(phoneNumber) {
-    return phoneNumber ? `client_${phoneNumber}` : `client_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-}
-/**
- * Get the currently active client instance
- */
-function getActiveClientInstance() {
-    if (!activeClientId)
-        return null;
-    const clientInfo = clients.get(activeClientId);
-    return clientInfo?.client || null;
-}
-/**
- * Add a new client to the managed pool
- */
-function addClient(client, phoneNumber, name) {
-    const id = generateClientId(phoneNumber);
-    const clientInfo = {
-        id,
-        client,
-        phoneNumber,
-        status: 'connecting',
-        name
-    };
-    clients.set(id, clientInfo);
-    return id;
-}
-/**
- * Remove a client from the pool
- */
-async function removeClient(clientId, skipLogout = true) {
-    const clientInfo = clients.get(clientId);
-    if (!clientInfo)
-        return;
-    try {
-        if (!skipLogout) {
-            await clientInfo.client.logout();
-        }
-        await clientInfo.client.destroy();
-    }
-    catch { /* ignore */ }
-    clients.delete(clientId);
-    if (activeClientId === clientId) {
-        activeClientId = null;
-        activeClient = null;
-    }
-}
-/**
- * Switch to a specific client
- */
-async function switchToClient(clientId) {
-    const clientInfo = clients.get(clientId);
-    if (!clientInfo)
-        return;
-    // Destroy current active client if exists
-    if (activeClient) {
-        await destroyActiveClient(true);
-    }
-    activeClientId = clientId;
-    activeClient = clientInfo.client;
-    isReady = clientInfo.status === 'ready';
-    isAuthenticated = clientInfo.status === 'authenticated';
-    qrCodeData = clientInfo.qrCode || "";
-}
-/**
- * Update client status
- */
-function updateClientStatus(clientId, status, qrCode) {
-    const clientInfo = clients.get(clientId);
-    if (clientInfo) {
-        clientInfo.status = status;
-        if (qrCode)
-            clientInfo.qrCode = qrCode;
-    }
-}
-/**
  * Create, register event listeners, and initialize a QR-mode client.
  * This is the normal startup path.
  */
-function createAndStartQRClient(phoneNumber, name) {
+function createAndStartQRClient() {
     const client = new whatsapp_web_js_1.Client(buildClientOptions());
-    const clientId = addClient(client, phoneNumber, name);
     activeClient = client;
-    activeClientId = clientId;
-    registerClientEvents(client, clientId);
+    registerClientEvents(client);
     client.initialize();
     return client;
 }
@@ -345,57 +204,52 @@ function createAndStartQRClient(phoneNumber, name) {
  * Register all WhatsApp event listeners onto a client.
  * All socket.io broadcasts happen here.
  */
-function registerClientEvents(client, clientId) {
+function registerClientEvents(client) {
     client.on("qr", (qr) => {
-        console.log("QR RECEIVED", clientId);
+        console.log("QR RECEIVED");
         qrCodeData = qr;
-        updateClientStatus(clientId, 'qr_pending', qr);
-        io.emit("qr", { clientId, qr });
+        io.emit("qr", qr);
     });
     client.on("ready", () => {
-        console.log("Client is ready!", clientId);
+        console.log("Client is ready!");
         isReady = true;
         qrCodeData = ""; // clear QR once ready
-        updateClientStatus(clientId, 'ready');
-        io.emit("ready", { clientId, ready: true });
+        io.emit("ready", true);
     });
     client.on("authenticated", () => {
-        console.log("Authenticated", clientId);
+        console.log("Authenticated");
         isAuthenticated = true;
         qrCodeData = "";
-        updateClientStatus(clientId, 'authenticated');
-        io.emit("authenticated", { clientId, authenticated: true });
+        io.emit("authenticated", true);
     });
     client.on("disconnected", (reason) => {
-        console.log("Client was logged out or disconnected:", reason, clientId);
+        console.log("Client was logged out or disconnected:", reason);
         if (client === activeClient) {
             isReady = false;
             isAuthenticated = false;
             qrCodeData = "";
-            updateClientStatus(clientId, 'disconnected');
-            io.emit("disconnected", { clientId, reason });
+            io.emit("disconnected", reason);
         }
     });
     client.on("auth_failure", (msg) => {
-        console.error("AUTHENTICATION FAILURE", msg, clientId);
-        io.emit("auth_failure", { clientId, error: msg });
+        console.error("AUTHENTICATION FAILURE", msg);
+        io.emit("auth_failure", msg);
     });
     client.on("loading_screen", (percent, message) => {
-        console.log("LOADING SCREEN", percent, message, clientId);
-        io.emit("loading_screen", { clientId, percent, message });
+        console.log("LOADING SCREEN", percent, message);
+        io.emit("loading_screen", { percent, message });
     });
     // Phone-pairing mode: emit the code received event
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     client.on("code", (code) => {
-        console.log("Pairing code received:", code, clientId);
-        io.emit("pairing_code", { clientId, code });
+        console.log("Pairing code received:", code);
+        io.emit("pairing_code", { code });
     });
     client.on("message", async (msg) => {
         // Broadcast incoming message for the Chat UI
         try {
             const contact = await msg.getContact();
             io.emit("incoming_message", {
-                clientId,
                 id: msg.id._serialized,
                 from: msg.from,
                 number: contact.number,
@@ -432,7 +286,6 @@ function registerClientEvents(client, clientId) {
         if (msg.fromMe) {
             try {
                 io.emit("outgoing_message", {
-                    clientId,
                     id: msg.id._serialized,
                     to: msg.to,
                     body: msg.body,
@@ -474,14 +327,13 @@ io.on("connection", (socket) => {
         console.log("Client disconnected");
     });
     socket.on("sendMessage", async (data) => {
-        const { number, message, clientId: targetClientId } = data;
-        const client = targetClientId ? clients.get(targetClientId)?.client : activeClient;
-        if (!client)
+        const { number, message } = data;
+        if (!activeClient)
             return socket.emit("messageError", { number, error: "No active client" });
         try {
             const formattedNumber = number.includes("@c.us") ? number : `${number}@c.us`;
-            await client.sendMessage(formattedNumber, message);
-            socket.emit("messageSent", { clientId: targetClientId, number, status: "success" });
+            await activeClient.sendMessage(formattedNumber, message);
+            socket.emit("messageSent", { number, status: "success" });
         }
         catch (error) {
             console.error("Error sending message:", error);
@@ -491,17 +343,7 @@ io.on("connection", (socket) => {
 });
 // ─── REST API ─────────────────────────────────────────────────────────────────
 app.get("/api/wa-status", (_req, res) => {
-    // Return status for all clients
-    const clientStatuses = Array.from(clients.entries()).map(([id, client]) => ({
-        clientId: id,
-        isReady: client.status === 'ready',
-        authenticated: client.status === 'authenticated',
-        qr: client.qrCode || null
-    }));
-    res.json({
-        overall: { isReady, authenticated: isAuthenticated, qr: qrCodeData || null },
-        clients: clientStatuses
-    });
+    res.json({ isReady, authenticated: isAuthenticated, qr: qrCodeData || null });
 });
 // ─── Activation & Licensing ──────────────────────────────────────────────────
 app.get("/api/license-status", (_req, res) => {
@@ -511,67 +353,6 @@ app.get("/api/license-status", (_req, res) => {
         license: license || null,
         isActivated: !!(license && (!license.expiresAt || new Date(license.expiresAt) > new Date()))
     });
-});
-// ─── Multi-Client Management API ───────────────────────────────────────────────
-app.get("/api/clients", (_req, res) => {
-    const clientList = Array.from(clients.entries()).map(([id, client]) => ({
-        id,
-        phoneNumber: client.phoneNumber,
-        name: client.name,
-        status: client.status,
-        isCurrentActive: id === activeClientId
-    }));
-    res.json({ clients: clientList });
-});
-app.post("/api/clients/add", async (req, res) => {
-    const { phoneNumber, name, mode = 'qr' } = req.body;
-    if (!phoneNumber) {
-        // @ts-ignore
-        return res.status(400).json({ error: "Phone number is required" });
-    }
-    const cleanNumber = String(phoneNumber).replace(/[^0-9]/g, "");
-    if (cleanNumber.length < 7) {
-        // @ts-ignore
-        return res.status(400).json({ error: "Invalid phone number" });
-    }
-    try {
-        const client = new whatsapp_web_js_1.Client(buildClientOptions());
-        const clientId = addClient(client, cleanNumber, name);
-        registerClientEvents(client, clientId);
-        if (mode === 'pairing') {
-            client.initialize();
-            io.emit("client_added", { clientId, mode: 'pairing', phone: cleanNumber });
-        }
-        else {
-            client.initialize();
-            io.emit("client_added", { clientId, mode: 'qr', phone: cleanNumber });
-        }
-        res.json({ success: true, clientId, phone: cleanNumber });
-    }
-    catch (error) {
-        console.error("Error adding client:", error);
-        // @ts-ignore
-        res.status(500).json({ error: "Failed to add client" });
-    }
-});
-app.post("/api/clients/:clientId/switch", async (req, res) => {
-    const { clientId } = req.params;
-    if (!clients.has(clientId)) {
-        // @ts-ignore
-        return res.status(404).json({ error: "Client not found" });
-    }
-    await switchToClient(clientId);
-    res.json({ success: true, message: `Switched to client ${clientId}` });
-});
-app.post("/api/clients/:clientId/remove", async (req, res) => {
-    const { clientId } = req.params;
-    if (!clients.has(clientId)) {
-        // @ts-ignore
-        return res.status(404).json({ error: "Client not found" });
-    }
-    await removeClient(clientId);
-    io.emit("client_removed", { clientId });
-    res.json({ success: true, message: `Removed client ${clientId}` });
 });
 app.post("/api/activate", async (req, res) => {
     const { code } = req.body;
@@ -994,9 +775,8 @@ app.post("/api/request-pairing-code", async (req, res) => {
         phoneNumber: cleanNumber,
         showNotification: true,
     }));
-    // activeClient = phoneClient; // Don't set active client yet - let the client initialize first
-    const clientId = addClient(phoneClient, cleanNumber);
-    registerClientEvents(phoneClient, clientId);
+    activeClient = phoneClient;
+    registerClientEvents(phoneClient);
     // Wrap in a promise that resolves when the "code" event fires
     const codePromise = new Promise((resolve, reject) => {
         // whatsapp-web.js emits "code" with the pairing code
@@ -1058,137 +838,6 @@ app.post("/api/reset-session", async (_req, res) => {
     res.json({ success: true, message: "Session reset. Restarting in QR mode." });
 });
 // ─── Start server ─────────────────────────────────────────────────────────────
-// Simple language detection based on common keywords and character sets
-function detectLanguage(text) {
-    const lower = text.toLowerCase();
-    // Spanish indicators
-    const spanishKeywords = ["hola", "ayuda", "gracias", "adios", "buenos", "día", "siempre"];
-    if (/[áéíóúñ¿¡]/.test(lower) || spanishKeywords.some(k => lower.includes(k)))
-        return "es";
-    // French indicators
-    const frenchKeywords = ["bonjour", "aide", "merci", "au revoir", "salut", "bien", "s'il vous plaît"];
-    if (/[çâêîôûëïüœ]/.test(lower) || frenchKeywords.some(k => lower.includes(k)))
-        return "fr";
-    // German indicators
-    const germanKeywords = ["hallo", "hilfe", "danke", "tschüss", "guten", "morgen"];
-    if (germanKeywords.some(k => lower.includes(k)))
-        return "de";
-    // Arabic indicators
-    const arabicKeywords = ["مرحبا", "شكرا", "كيف"].map(k => k.toLowerCase());
-    if (arabicKeywords.some(k => lower.includes(k)) || /[ء-ي]/.test(lower))
-        return "ar";
-    // Default to English
-    return "en";
-}
-app.post("/api/chatbot/message", async (req, res) => {
-    const { clientId, message, language: langParam } = req.body;
-    if (!clientId || !message) {
-        // @ts-ignore
-        return res.status(400).json({ error: "clientId and message are required" });
-    }
-    const clientInfo = clients.get(clientId);
-    if (!clientInfo) {
-        // @ts-ignore
-        return res.status(404).json({ error: "Client not found" });
-    }
-    // Determine language (use supplied param or auto‑detect)
-    const language = typeof langParam === 'string' && langParam ? langParam : detectLanguage(message);
-    // Emit typing indicator
-    io.emit("chatbot_typing", { clientId, typing: true });
-    // Small delay to simulate typing
-    await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 1000));
-    // Find matching template for the detected language
-    const lowerMessage = message.toLowerCase().trim();
-    const langTemplates = chatbotConfig.templates.filter(t => t.language === language);
-    let reply = chatbotConfig.defaultResponse;
-    for (const template of langTemplates) {
-        if (template.exactMatch) {
-            if (lowerMessage === template.keyword.toLowerCase().trim()) {
-                reply = template.response;
-                break;
-            }
-        }
-        else {
-            if (lowerMessage.includes(template.keyword.toLowerCase().trim())) {
-                reply = template.response;
-                break;
-            }
-        }
-    }
-    // If nothing matched in detected language, fall back to any language templates (maintains previous behavior)
-    if (reply === chatbotConfig.defaultResponse) {
-        for (const template of chatbotConfig.templates) {
-            if (template.exactMatch) {
-                if (lowerMessage === template.keyword.toLowerCase().trim()) {
-                    reply = template.response;
-                    break;
-                }
-            }
-            else {
-                if (lowerMessage.includes(template.keyword.toLowerCase().trim())) {
-                    reply = template.response;
-                    break;
-                }
-            }
-        }
-    }
-    // Emit typing stopped
-    io.emit("chatbot_typing", { clientId, typing: false });
-    // Emit the reply
-    io.emit("chatbot_reply", { clientId, originalMessage: message, reply });
-    // Log the interaction (including detected language)
-    logChatbotInteraction(clientId, message, reply, language);
-    res.json({ success: true, reply, language });
-});
-// Endpoint to get chatbot templates
-app.get("/api/chatbot/templates", (_req, res) => {
-    res.json(chatbotConfig);
-});
-// Endpoint to update chatbot templates
-app.post("/api/chatbot/templates", (req, res) => {
-    const { templates, defaultResponse } = req.body;
-    if (!Array.isArray(templates)) {
-        // @ts-ignore
-        return res.status(400).json({ error: "templates must be an array" });
-    }
-    // Validate each template
-    for (const template of templates) {
-        if (!template.keyword || !template.response || typeof template.exactMatch !== 'boolean') {
-            // @ts-ignore
-            return res.status(400).json({ error: "Each template must have keyword, response, and exactMatch (boolean)" });
-        }
-    }
-    chatbotConfig.templates = templates;
-    if (defaultResponse) {
-        chatbotConfig.defaultResponse = defaultResponse;
-    }
-    // Save to file
-    try {
-        fs_1.default.writeFileSync(CHATBOT_TEMPLATES_PATH, JSON.stringify(chatbotConfig, null, 2));
-        res.json({ success: true, config: chatbotConfig });
-    }
-    catch (error) {
-        console.error("Failed to save chatbot templates:", error);
-        // @ts-ignore
-        res.status(500).json({ error: "Failed to save templates" });
-    }
-});
-// Endpoint to get chatbot logs
-app.get("/api/chatbot/logs", (_req, res) => {
-    try {
-        if (!fs_1.default.existsSync(CHATBOT_LOG_PATH)) {
-            return res.json([]);
-        }
-        const logContent = fs_1.default.readFileSync(CHATBOT_LOG_PATH, 'utf8');
-        const logs = logContent.trim().split('\n').filter(line => line.trim()).map(line => JSON.parse(line));
-        res.json(logs.slice(-100)); // Return last 100 entries
-    }
-    catch (error) {
-        console.error("Failed to read chatbot logs:", error);
-        // @ts-ignore
-        res.status(500).json({ error: "Failed to read logs" });
-    }
-});
 httpServer.listen(port, () => {
     console.log(`> Backend Ready on http://localhost:${port}`);
     // Start WA Client AFTER express is listening so the UI can at least connect
