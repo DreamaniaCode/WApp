@@ -83,19 +83,49 @@ const botEngine = new ChatbotRagEngine(DATA_DIR);
 
 function cleanChromiumLocks() {
     const authPath = process.env.WWEBJS_DATA_PATH || path_1.default.join(process.cwd(), ".wwebjs_auth");
-    const sessionPath = path_1.default.join(authPath, "session");
-    if (!fs_1.default.existsSync(sessionPath)) return;
-    const lockFiles = ["SingletonLock", "SingletonCookie", "SingletonSocket"];
-    for (const file of lockFiles) {
-        const fullPath = path_1.default.join(sessionPath, file);
-        try {
-            if (fs_1.default.existsSync(fullPath)) {
-                fs_1.default.unlinkSync(fullPath);
-                console.log(`[Watchdog] Removed stale Chromium lock: ${file}`);
-            }
-        } catch (e) { }
+    const pathsToCheck = [
+        path_1.default.join(authPath, "session"),
+        path_1.default.join(authPath, "session", "Default"),
+        authPath
+    ];
+    const lockFiles = [
+        "SingletonLock",
+        "SingletonCookie",
+        "SingletonSocket",
+        "LOCK",
+        "LOG",
+        "LOG.old"
+    ];
+    for (const dir of pathsToCheck) {
+        if (!fs_1.default.existsSync(dir)) continue;
+        for (const file of lockFiles) {
+            const fullPath = path_1.default.join(dir, file);
+            try {
+                if (fs_1.default.existsSync(fullPath)) {
+                    fs_1.default.unlinkSync(fullPath);
+                    console.log(`[Watchdog] Removed stale Chromium lock: ${fullPath}`);
+                }
+            } catch (e) { }
+        }
     }
 }
+
+function safeClearFolder(dirPath, maxRetries = 5, delayMs = 500) {
+    if (!fs_1.default.existsSync(dirPath)) return true;
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            fs_1.default.rmSync(dirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+            console.log(`[Watchdog] Cleared directory: ${dirPath}`);
+            return true;
+        } catch (err) {
+            console.warn(`[Watchdog] Attempt ${i + 1} to remove ${dirPath} failed (${err.message}), retrying...`);
+            const end = Date.now() + delayMs;
+            while (Date.now() < end) {}
+        }
+    }
+    return false;
+}
+
 function getStoredLicense() {
     if (fs_1.default.existsSync(LICENSE_PATH)) {
         try {
@@ -117,7 +147,6 @@ const PUPPETEER_ARGS = [
     "--no-zygote",
     "--disable-gpu",
     "--disable-extensions",
-    "--disable-background-networking",
     "--safebrowsing-disable-auto-update",
     // Performance & Keep-alive: keep renderer alive even when backgrounded/minimized
     "--disable-backgrounding-occluded-windows",
@@ -131,7 +160,6 @@ const PUPPETEER_ARGS = [
     "--memory-pressure-off",
     "--disable-hang-monitor",
     "--disable-prompt-on-repost",
-    "--disable-sync",
     "--disable-translate",
     "--metrics-recording-only",
     "--mute-audio",
@@ -146,6 +174,7 @@ let activeClient = null;
 let reconnectTimer = null;
 let isReconnecting = false;
 let heartbeatInterval = null;
+let authStallTimer = null;
 // Campaign state
 let isBulkRunning = false;
 let currentBulkResults = [];
@@ -209,6 +238,10 @@ async function destroyActiveClient(skipLogout = false) {
         clearInterval(heartbeatInterval);
         heartbeatInterval = null;
     }
+    if (authStallTimer) {
+        clearTimeout(authStallTimer);
+        authStallTimer = null;
+    }
     const c = activeClient;
     activeClient = null;
     isReady = false;
@@ -218,17 +251,23 @@ async function destroyActiveClient(skipLogout = false) {
         return;
     if (!skipLogout) {
         try {
-            await c.logout();
+            await Promise.race([
+                c.logout(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error("Logout timeout")), 2000))
+            ]);
         }
         catch { /* ignore */ }
     }
     try {
-        await c.destroy();
+        await Promise.race([
+            c.destroy(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Destroy timeout")), 2500))
+        ]);
     }
     catch (e) {
         console.warn("[Watchdog] Notice on client destroy:", e.message);
     }
-    await new Promise(r => setTimeout(r, 1500));
+    await new Promise(r => setTimeout(r, 800));
 }
 
 function scheduleAutoReconnect(delayMs = 5000) {
@@ -242,7 +281,7 @@ function scheduleAutoReconnect(delayMs = 5000) {
             console.log(`[Watchdog] Attempting automatic reconnection...`);
             await destroyActiveClient(true);
             cleanChromiumLocks();
-            await new Promise(r => setTimeout(r, 1500));
+            await new Promise(r => setTimeout(r, 1000));
             createAndStartQRClient();
         } catch (err) {
             console.error("[Watchdog] Auto-reconnect failed:", err);
@@ -293,23 +332,58 @@ function registerClientEvents(client) {
     client.on("qr", (qr) => {
         console.log("QR RECEIVED");
         qrCodeData = qr;
+        isAuthenticated = false; // Must be false when QR arrives!
+        isReady = false;
+        if (authStallTimer) {
+            clearTimeout(authStallTimer);
+            authStallTimer = null;
+        }
         io.emit("qr", qr);
     });
     client.on("ready", () => {
         console.log("Client is ready!");
+        if (authStallTimer) {
+            clearTimeout(authStallTimer);
+            authStallTimer = null;
+        }
         isReady = true;
+        isAuthenticated = true;
         qrCodeData = ""; // clear QR once ready
         io.emit("ready", true);
         startWatchdogHeartbeat();
     });
     client.on("authenticated", () => {
-        console.log("Authenticated");
+        console.log("Authenticated - Synchronizing session chats...");
         isAuthenticated = true;
         qrCodeData = "";
         io.emit("authenticated", true);
+
+        // Session Restoration Watchdog:
+        // If session restoration hangs for more than 35s without ready, automatically recover
+        if (authStallTimer) clearTimeout(authStallTimer);
+        authStallTimer = setTimeout(async () => {
+            if (!isReady && activeClient === client) {
+                console.warn("[Watchdog] Session restoration stalled (>35s). Automatically resetting session for fresh QR...");
+                io.emit("restoration_stalled", { message: "Session sync stalled. Resetting for fresh login..." });
+                try {
+                    await destroyActiveClient(true);
+                    const authPath = process.env.WWEBJS_DATA_PATH || path_1.default.join(process.cwd(), ".wwebjs_auth");
+                    safeClearFolder(authPath);
+                    cleanChromiumLocks();
+                    await new Promise(r => setTimeout(r, 1000));
+                    createAndStartQRClient();
+                } catch (err) {
+                    console.error("[Watchdog] Auto-recovery error:", err);
+                }
+            }
+        }, 35000);
     });
     client.on("disconnected", (reason) => {
         console.log("Client was logged out or disconnected:", reason);
+        if (authStallTimer) {
+            clearTimeout(authStallTimer);
+            authStallTimer = null;
+        }
         if (client === activeClient) {
             isReady = false;
             isAuthenticated = false;
@@ -318,14 +392,21 @@ function registerClientEvents(client) {
             // Automatic reconnection watchdog if not a manual reset
             if (reason !== "manual_reset" && reason !== "LOGOUT") {
                 console.log(`[Watchdog] Unexpected disconnect (${reason}). Triggering auto-reconnect...`);
-                scheduleAutoReconnect(5000);
+                scheduleAutoReconnect(3000);
             }
         }
     });
     client.on("auth_failure", (msg) => {
         console.error("AUTHENTICATION FAILURE", msg);
+        if (authStallTimer) {
+            clearTimeout(authStallTimer);
+            authStallTimer = null;
+        }
+        isReady = false;
+        isAuthenticated = false;
+        qrCodeData = "";
         io.emit("auth_failure", msg);
-        scheduleAutoReconnect(8000);
+        scheduleAutoReconnect(3000);
     });
     client.on("loading_screen", (percent, message) => {
         console.log("LOADING SCREEN", percent, message);
@@ -1031,26 +1112,19 @@ app.post("/api/request-pairing-code", async (req, res) => {
 });
 // ─── Reset Session ────────────────────────────────────────────────────────────
 app.post("/api/reset-session", async (_req, res) => {
-    console.log("Resetting WhatsApp session...");
+    console.log("[API] Resetting WhatsApp session on request...");
     // Notify frontend
     io.emit("disconnected", "manual_reset");
-    await destroyActiveClient();
+    await destroyActiveClient(true);
     // Clear auth folder for a clean restart
     const authPath = process.env.WWEBJS_DATA_PATH || path_1.default.join(process.cwd(), ".wwebjs_auth");
-    if (fs_1.default.existsSync(authPath)) {
-        try {
-            fs_1.default.rmSync(authPath, { recursive: true, force: true });
-            console.log("Cleared auth folder:", authPath);
-        }
-        catch (e) {
-            console.warn("Could not clear auth folder:", e);
-        }
-    }
+    safeClearFolder(authPath);
+    cleanChromiumLocks();
     // Short delay, then restart in QR mode
     setTimeout(() => {
-        console.log("Restarting in QR mode...");
+        console.log("[API] Restarting fresh in QR mode...");
         createAndStartQRClient();
-    }, 800);
+    }, 600);
     res.json({ success: true, message: "Session reset. Restarting in QR mode." });
 });
 // ─── Static files & Web UI ──────────────────────────────────────────────────

@@ -10,7 +10,7 @@
     "electron:dev": "electron .",
     "electron:start": "electron .",
     "build": "next build",
-    "dist": "npm run build && electron-builder"
+    "dist": "electron-builder"
   },
   "build": {
     "asar": true,
@@ -18,17 +18,22 @@
       "**/node_modules/@prisma/**",
       "**/node_modules/.prisma/**"
     ],
-    "appId": "com.wapp.desktop",
+    "appId": "com.wapp.manager",
     "productName": "WA Manager Pro",
     "win": {
       "target": "nsis",
+      "icon": "public/icon.ico",
       "signAndEditExecutable": false,
       "forceCodeSigning": false,
       "verifyUpdateCodeSignature": false
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "WA Manager Pro",
+      "artifactName": "WA Manager Pro Setup ${version}.${ext}"
     },
     "extraFiles": [
       {
@@ -37,16 +42,17 @@
       }
     ],
     "files": [
-      "main_electron.js",
-      "dist/**/*",
-      "shell/**/*",
+      "main.js",
+      "preload.js",
+      "backend.js",
+      "chatbot_rag.js",
+      "learned_knowledge.json",
+      "rag_sources.json",
+      "rag_chunks.json",
       "package.json",
-      "node_modules/**/*",
-      ".next/**/*",
+      "out/**/*",
       "public/**/*",
-      "prisma/**/*",
-      "src/utils/**/*",
-      "src/lib/**/*"
+      "node_modules/**/*"
     ],
     "directories": {
       "output": "release"
