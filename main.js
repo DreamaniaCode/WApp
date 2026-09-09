@@ -2,11 +2,16 @@ const { app, BrowserWindow } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const fs = require('fs');
+const http = require('http');
 
 let mainWindow;
 let backendProcess;
 
 function createWindow() {
+    const iconPath = process.platform === 'win32' && fs.existsSync(path.join(__dirname, 'public/icon.ico'))
+        ? path.join(__dirname, 'public/icon.ico')
+        : path.join(__dirname, 'public/logo.png');
+
     mainWindow = new BrowserWindow({
         width: 1280,
         height: 820,
@@ -18,9 +23,9 @@ function createWindow() {
             contextIsolation: true,
             preload: path.join(__dirname, 'preload.js')
         },
-        icon: path.join(__dirname, 'public/logo.png'),
+        icon: iconPath,
         titleBarStyle: 'default',
-        title: 'WA Manager'
+        title: 'WA Manager Pro v2026.4.0'
     });
 
     mainWindow.loadURL('http://localhost:3001').catch(() => {
@@ -111,19 +116,33 @@ app.on('ready', () => {
         app.setAppUserModelId("com.wapp.manager");
     }
 
-    try {
-        startBackend();
-    } catch (err) {
-        console.error("Critical: Failed to start backend:", err);
-    }
-
-    setTimeout(() => {
+    const checkReq = http.get('http://localhost:3001/api/chatbot/stats', (res) => {
+        console.log("Backend already running on port 3001, opening window directly.");
         createWindow();
-        // If we're debugging a "stuck" app, the dev tools are our best friend
         if (process.env.DEBUG_WAPP === 'true') {
             mainWindow.webContents.openDevTools({ mode: 'detach' });
         }
-    }, 4000); // Increased to 4s for slower machines
+    });
+
+    checkReq.on('error', () => {
+        console.log("Backend not detected on 3001, launching backend process...");
+        try {
+            startBackend();
+        } catch (err) {
+            console.error("Critical: Failed to start backend:", err);
+        }
+
+        setTimeout(() => {
+            createWindow();
+            if (process.env.DEBUG_WAPP === 'true') {
+                mainWindow.webContents.openDevTools({ mode: 'detach' });
+            }
+        }, 3000);
+    });
+
+    checkReq.setTimeout(1000, () => {
+        checkReq.destroy();
+    });
 });
 
 process.on('uncaughtException', (error) => {

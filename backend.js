@@ -765,6 +765,18 @@ app.post("/api/reconnect", async (_req, res) => {
     res.json({ success: true, message: "Reconnection scheduled" });
 });
 // ─── Chatbot & RAG API ────────────────────────────────────────────────────────
+app.get("/api/health", (_req, res) => {
+    res.json({ status: "ok", version: "2026.4.0", timestamp: Date.now() });
+});
+app.get("/api/chatbot/stats", (_req, res) => {
+    res.json({
+        success: true,
+        knowledgeCount: botEngine.learnedPairs ? botEngine.learnedPairs.length : 0,
+        sourcesCount: botEngine.sources ? botEngine.sources.length : 0,
+        chunksCount: botEngine.chunks ? botEngine.chunks.length : 0,
+        settings: botEngine.settings
+    });
+});
 app.get("/api/chatbot/sources", (_req, res) => {
     res.json({ success: true, sources: botEngine.sources });
 });

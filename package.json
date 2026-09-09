@@ -1,6 +1,7 @@
 {
-  "name": "temp_app",
-  "version": "0.1.0",
+  "name": "wapp-manager-pro",
+  "version": "2026.4.0",
+  "productName": "WA Manager Pro",
   "private": true,
   "main": "main.js",
   "scripts": {
@@ -18,7 +19,7 @@
       "**/node_modules/.prisma/**"
     ],
     "appId": "com.wapp.desktop",
-    "productName": "WApp",
+    "productName": "WA Manager Pro",
     "win": {
       "target": "nsis",
       "signAndEditExecutable": false,
