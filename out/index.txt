@@ -1,0 +1,17 @@
+1:"$Sreact.fragment"
+2:I[2482,["177","static/chunks/app/layout-3ee7212d229577a1.js"],"LanguageProvider"]
+3:I[5244,[],""]
+4:I[3866,[],""]
+5:I[7033,[],"ClientPageRoot"]
+6:I[8148,["469","static/chunks/469-b1e5091be8e787c8.js","974","static/chunks/app/page-70630f360f72c268.js"],"default"]
+9:I[6213,[],"OutletBoundary"]
+b:I[6213,[],"MetadataBoundary"]
+d:I[6213,[],"ViewportBoundary"]
+f:I[4835,[],""]
+:HL["/_next/static/css/2be3363645c61ef9.css","style"]
+0:{"P":null,"b":"yLDECxAvwXK-tXFg67OZK","p":"","c":["",""],"i":false,"f":[[["",{"children":["__PAGE__",{}]},"$undefined","$undefined",true],["",["$","$1","c",{"children":[[["$","link","0",{"rel":"stylesheet","href":"/_next/static/css/2be3363645c61ef9.css","precedence":"next","crossOrigin":"$undefined","nonce":"$undefined"}]],["$","html",null,{"lang":"en","children":["$","body",null,{"className":"antialiased gradient-bg min-h-screen","children":["$","$L2",null,{"children":["$","$L3",null,{"parallelRouterKey":"children","segmentPath":["children"],"error":"$undefined","errorStyles":"$undefined","errorScripts":"$undefined","template":["$","$L4",null,{}],"templateStyles":"$undefined","templateScripts":"$undefined","notFound":[[],null],"forbidden":"$undefined","unauthorized":"$undefined"}]}]}]}]]}],{"children":["__PAGE__",["$","$1","c",{"children":[["$","$L5",null,{"Component":"$6","searchParams":{},"params":{},"promises":["$@7","$@8"]}],null,["$","$L9",null,{"children":"$La"}]]}],{},null,false]},null,false],["$","$1","h",{"children":[null,["$","$1","RLx8QDgDTVtK-qPv7RVMF",{"children":[["$","$Lb",null,{"children":"$Lc"}],["$","$Ld",null,{"children":"$Le"}],null]}]]}],false]],"m":"$undefined","G":["$f","$undefined"],"s":false,"S":true}
+7:{}
+8:{}
+e:[["$","meta","0",{"name":"viewport","content":"width=device-width, initial-scale=1"}]]
+c:[["$","meta","0",{"charSet":"utf-8"}],["$","title","1",{"children":"WA Manager — Bulk Sender Pro"}],["$","meta","2",{"name":"description","content":"Professional WhatsApp bulk messaging platform"}],["$","link","3",{"rel":"icon","href":"/favicon.ico","type":"image/x-icon","sizes":"16x16"}],["$","link","4",{"rel":"icon","href":"/icon.png?64a242bc4e20e143","type":"image/png","sizes":"640x640"}]]
+a:null

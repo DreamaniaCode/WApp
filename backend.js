@@ -1,4 +1,10 @@
 "use strict";
+process.on('unhandledRejection', (reason) => {
+    console.warn('[Process] Handled async rejection:', reason?.message || reason);
+});
+process.on('uncaughtException', (err) => {
+    console.error('[Process] Handled uncaught exception:', err.message);
+});
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -14,6 +20,7 @@ const path_1 = __importDefault(require("path"));
 const os_1 = __importDefault(require("os"));
 const crypto_1 = __importDefault(require("crypto"));
 const https_1 = __importDefault(require("https"));
+const ChatbotRagEngine = require("./chatbot_rag");
 const port = 3001;
 const app = (0, express_1.default)();
 const httpServer = (0, http_1.createServer)(app);
@@ -72,6 +79,23 @@ function getMachineId() {
 const MACHINE_ID = getMachineId();
 const DATA_DIR = process.env.WAPP_DATA_PATH || process.cwd();
 const LICENSE_PATH = path_1.default.join(DATA_DIR, "license.json");
+const botEngine = new ChatbotRagEngine(DATA_DIR);
+
+function cleanChromiumLocks() {
+    const authPath = process.env.WWEBJS_DATA_PATH || path_1.default.join(process.cwd(), ".wwebjs_auth");
+    const sessionPath = path_1.default.join(authPath, "session");
+    if (!fs_1.default.existsSync(sessionPath)) return;
+    const lockFiles = ["SingletonLock", "SingletonCookie", "SingletonSocket"];
+    for (const file of lockFiles) {
+        const fullPath = path_1.default.join(sessionPath, file);
+        try {
+            if (fs_1.default.existsSync(fullPath)) {
+                fs_1.default.unlinkSync(fullPath);
+                console.log(`[Watchdog] Removed stale Chromium lock: ${file}`);
+            }
+        } catch (e) { }
+    }
+}
 function getStoredLicense() {
     if (fs_1.default.existsSync(LICENSE_PATH)) {
         try {
@@ -83,7 +107,7 @@ function getStoredLicense() {
     }
     return null;
 }
-// ─── Shared puppeteer args (tuned for fast startup) ─────────────────────────
+// ─── Shared puppeteer args (tuned for fast startup and stability) ────────────
 const PUPPETEER_ARGS = [
     "--no-sandbox",
     "--disable-setuid-sandbox",
@@ -95,10 +119,13 @@ const PUPPETEER_ARGS = [
     "--disable-extensions",
     "--disable-background-networking",
     "--safebrowsing-disable-auto-update",
-    // Performance: keep renderer alive even when backgrounded
+    // Performance & Keep-alive: keep renderer alive even when backgrounded/minimized
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
     "--disable-background-timer-throttling",
+    "--disable-features=CalculateNativeWinOcclusion",
+    "--disable-breakpad",
+    "--disable-client-side-phishing-detection",
     // Reduce memory overhead
     "--disable-ipc-flooding-protection",
     "--memory-pressure-off",
@@ -116,6 +143,9 @@ let isReady = false;
 let isAuthenticated = false;
 // Track current active client so we can destroy it when switching modes
 let activeClient = null;
+let reconnectTimer = null;
+let isReconnecting = false;
+let heartbeatInterval = null;
 // Campaign state
 let isBulkRunning = false;
 let currentBulkResults = [];
@@ -170,7 +200,15 @@ function buildClientOptions(pairWithPhoneNumber) {
  * Destroy the active client cleanly, reset shared state.
  * @param skipLogout - Set true when switching modes (logout is slow, ~3s). Only use full logout on reset.
  */
+/**
+ * Destroy the active client cleanly, reset shared state.
+ * @param skipLogout - Set true when switching modes (logout is slow, ~3s). Only use full logout on reset.
+ */
 async function destroyActiveClient(skipLogout = false) {
+    if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+    }
     const c = activeClient;
     activeClient = null;
     isReady = false;
@@ -187,17 +225,64 @@ async function destroyActiveClient(skipLogout = false) {
     try {
         await c.destroy();
     }
-    catch { /* ignore */ }
+    catch (e) {
+        console.warn("[Watchdog] Notice on client destroy:", e.message);
+    }
+    await new Promise(r => setTimeout(r, 1500));
 }
+
+function scheduleAutoReconnect(delayMs = 5000) {
+    if (isReconnecting) return;
+    isReconnecting = true;
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    console.log(`[Watchdog] Scheduling auto-reconnect in ${delayMs / 1000}s...`);
+    io.emit("reconnecting", { delayMs });
+    reconnectTimer = setTimeout(async () => {
+        try {
+            console.log(`[Watchdog] Attempting automatic reconnection...`);
+            await destroyActiveClient(true);
+            cleanChromiumLocks();
+            await new Promise(r => setTimeout(r, 1500));
+            createAndStartQRClient();
+        } catch (err) {
+            console.error("[Watchdog] Auto-reconnect failed:", err);
+        } finally {
+            isReconnecting = false;
+        }
+    }, delayMs);
+}
+
+function startWatchdogHeartbeat() {
+    if (heartbeatInterval) clearInterval(heartbeatInterval);
+    heartbeatInterval = setInterval(async () => {
+        if (!activeClient || !isReady) return;
+        try {
+            const state = await Promise.race([
+                activeClient.getState(),
+                new Promise((_, reject) => setTimeout(() => reject(new Error("Heartbeat timeout")), 10000))
+            ]);
+            if (!state || state === "CONFLICT" || state === "UNPAIRED") {
+                console.warn(`[Watchdog] Abnormal WhatsApp state: ${state}. Auto-reconnecting...`);
+                scheduleAutoReconnect(3000);
+            }
+        } catch (err) {
+            console.warn(`[Watchdog] Heartbeat check issue:`, err.message);
+        }
+    }, 30000);
+}
+
 /**
  * Create, register event listeners, and initialize a QR-mode client.
  * This is the normal startup path.
  */
 function createAndStartQRClient() {
+    cleanChromiumLocks();
     const client = new whatsapp_web_js_1.Client(buildClientOptions());
     activeClient = client;
     registerClientEvents(client);
-    client.initialize();
+    client.initialize().catch(err => {
+        console.warn("[Watchdog] WhatsApp initialize notice:", err.message);
+    });
     return client;
 }
 /**
@@ -215,6 +300,7 @@ function registerClientEvents(client) {
         isReady = true;
         qrCodeData = ""; // clear QR once ready
         io.emit("ready", true);
+        startWatchdogHeartbeat();
     });
     client.on("authenticated", () => {
         console.log("Authenticated");
@@ -229,11 +315,17 @@ function registerClientEvents(client) {
             isAuthenticated = false;
             qrCodeData = "";
             io.emit("disconnected", reason);
+            // Automatic reconnection watchdog if not a manual reset
+            if (reason !== "manual_reset" && reason !== "LOGOUT") {
+                console.log(`[Watchdog] Unexpected disconnect (${reason}). Triggering auto-reconnect...`);
+                scheduleAutoReconnect(5000);
+            }
         }
     });
     client.on("auth_failure", (msg) => {
         console.error("AUTHENTICATION FAILURE", msg);
         io.emit("auth_failure", msg);
+        scheduleAutoReconnect(8000);
     });
     client.on("loading_screen", (percent, message) => {
         console.log("LOADING SCREEN", percent, message);
@@ -262,28 +354,56 @@ function registerClientEvents(client) {
         catch (e) {
             console.error("Error emitting incoming message", e);
         }
-        // Auto-reply logic (skip groups by default to avoid spam)
+
+        // Auto-reply and self-learning logic (skip groups to avoid spam)
         if (msg.from.includes("@g.us"))
             return;
+
+        // 1. Record incoming message for self-learning
+        botEngine.recordIncoming(msg.from, msg.body);
+
         const lowerBody = msg.body.toLowerCase().trim();
+        let replied = false;
+
+        // 2. Check exact / contains keyword rules first
         for (const rule of autoResponses) {
             if (rule.exactMatch) {
                 if (lowerBody === rule.keyword.toLowerCase().trim()) {
                     await msg.reply(rule.response);
+                    replied = true;
                     break;
                 }
             }
             else {
                 if (lowerBody.includes(rule.keyword.toLowerCase().trim())) {
                     await msg.reply(rule.response);
+                    replied = true;
                     break;
                 }
+            }
+        }
+
+        // 3. If no rule matched and autoReply is enabled, check Self-Learning / RAG Engine
+        if (!replied && botEngine.settings.autoReply) {
+            try {
+                const match = botEngine.findBestAnswer(msg.body);
+                if (match && match.answer) {
+                    console.log(`[ChatbotRag] Auto-replying via ${match.sourceType} (${match.score}% match): "${match.answer.substring(0, 40)}..."`);
+                    await msg.reply(match.answer);
+                    replied = true;
+                }
+            } catch (err) {
+                console.error("[ChatbotRag] Error during auto-reply:", err);
             }
         }
     });
     client.on("message_create", async (msg) => {
         // Fired on all messages including our own
         if (msg.fromMe) {
+            // Self-learn from user's replies to contacts!
+            if (!msg.to.includes("@g.us")) {
+                botEngine.recordOutgoing(msg.to, msg.body);
+            }
             try {
                 io.emit("outgoing_message", {
                     id: msg.id._serialized,
@@ -638,6 +758,88 @@ app.post("/api/auto-responses", (req, res) => {
         res.status(400).json({ error: "Invalid rules format" });
     }
 });
+// ─── Watchdog / Connection Recovery ──────────────────────────────────────────
+app.post("/api/reconnect", async (_req, res) => {
+    console.log("[Watchdog] Manual reconnect requested via API");
+    scheduleAutoReconnect(500);
+    res.json({ success: true, message: "Reconnection scheduled" });
+});
+// ─── Chatbot & RAG API ────────────────────────────────────────────────────────
+app.get("/api/chatbot/sources", (_req, res) => {
+    res.json({ success: true, sources: botEngine.sources });
+});
+app.post("/api/chatbot/ingest-url", async (req, res) => {
+    const { url } = req.body;
+    if (!url) {
+        return res.status(400).json({ error: "Website URL is required" });
+    }
+    try {
+        console.log(`[API] Ingesting website: ${url}`);
+        const result = await botEngine.ingestUrl(url, chromePath);
+        res.json(result);
+    } catch (err) {
+        console.error("Ingest URL error:", err);
+        res.status(500).json({ error: err.message || "Failed to crawl and learn from website" });
+    }
+});
+app.post("/api/chatbot/ingest-text", (req, res) => {
+    const { title, content, url } = req.body;
+    if (!title || !content) {
+        return res.status(400).json({ error: "Title and content are required" });
+    }
+    try {
+        const result = botEngine.ingestText(title, content, url || "");
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: err.message || "Failed to ingest text" });
+    }
+});
+app.delete("/api/chatbot/sources/:id", (req, res) => {
+    const result = botEngine.deleteSource(req.params.id);
+    res.json(result);
+});
+app.get("/api/chatbot/knowledge", (_req, res) => {
+    res.json({
+        success: true,
+        pairs: botEngine.learnedPairs,
+        settings: botEngine.settings,
+        sourcesCount: botEngine.sources.length,
+        chunksCount: botEngine.chunks.length
+    });
+});
+app.post("/api/chatbot/knowledge", (req, res) => {
+    const { question, answer } = req.body;
+    if (!question || !answer) {
+        return res.status(400).json({ error: "Question and answer are required" });
+    }
+    const result = botEngine.addLearnedPair(question, answer);
+    res.json(result);
+});
+app.delete("/api/chatbot/knowledge/:id", (req, res) => {
+    const result = botEngine.deleteLearnedPair(req.params.id);
+    res.json(result);
+});
+app.post("/api/chatbot/settings", (req, res) => {
+    const { autoLearn, autoReply, useRag, similarityThreshold, maxResponseLength } = req.body;
+    botEngine.settings = {
+        ...botEngine.settings,
+        ...(autoLearn !== undefined && { autoLearn: !!autoLearn }),
+        ...(autoReply !== undefined && { autoReply: !!autoReply }),
+        ...(useRag !== undefined && { useRag: !!useRag }),
+        ...(similarityThreshold !== undefined && { similarityThreshold: Number(similarityThreshold) }),
+        ...(maxResponseLength !== undefined && { maxResponseLength: Number(maxResponseLength) })
+    };
+    botEngine.saveSettings();
+    res.json({ success: true, settings: botEngine.settings });
+});
+app.post("/api/chatbot/test-query", (req, res) => {
+    const { query } = req.body;
+    if (!query) {
+        return res.status(400).json({ error: "Query is required" });
+    }
+    const match = botEngine.findBestAnswer(query);
+    res.json({ success: true, query, match: match || null });
+});
 // ─── Scraper API ──────────────────────────────────────────────────────────────
 app.post("/api/scrape-leads", async (req, res) => {
     const { keyword, location } = req.body;
@@ -789,7 +991,9 @@ app.post("/api/request-pairing-code", async (req, res) => {
         });
     });
     // Start initialization — this triggers the phone pairing flow
-    phoneClient.initialize();
+    phoneClient.initialize().catch(err => {
+        console.warn("[Watchdog] Phone client initialize notice:", err.message);
+    });
     try {
         // Wait up to 90 seconds for the code
         const code = await Promise.race([

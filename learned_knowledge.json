@@ -1,0 +1,114 @@
+[
+  {
+    "id": "learned_1788978064820_iuog",
+    "question": "What are your delivery hours?",
+    "answer": "We deliver Monday through Saturday from 9:00 AM to 7:00 PM.",
+    "source": "manual",
+    "uses": 1,
+    "createdAt": "2026-09-09T18:21:04.820Z"
+  },
+  {
+    "id": "learned_1788978010279_s1bo",
+    "question": "What are your delivery hours?",
+    "answer": "We deliver Monday through Saturday from 9:00 AM to 7:00 PM.",
+    "source": "manual",
+    "uses": 1,
+    "createdAt": "2026-09-09T18:20:10.279Z"
+  },
+  {
+    "id": "learned_1788977959131_ujc0",
+    "question": "What are your delivery hours?",
+    "answer": "We deliver Monday through Saturday from 9:00 AM to 7:00 PM.",
+    "source": "manual",
+    "uses": 1,
+    "createdAt": "2026-09-09T18:19:19.131Z"
+  },
+  {
+    "id": "tmpl_0",
+    "question": "hello",
+    "answer": "Hi there! How can I help you?",
+    "source": "template",
+    "uses": 0,
+    "createdAt": "2026-09-09T18:19:04.159Z"
+  },
+  {
+    "id": "tmpl_1",
+    "question": "hi",
+    "answer": "Hello! What would you like to know?",
+    "source": "template",
+    "uses": 0,
+    "createdAt": "2026-09-09T18:19:04.161Z"
+  },
+  {
+    "id": "tmpl_2",
+    "question": "help",
+    "answer": "I can help you with various queries. Ask me about...",
+    "source": "template",
+    "uses": 0,
+    "createdAt": "2026-09-09T18:19:04.161Z"
+  },
+  {
+    "id": "tmpl_3",
+    "question": "bye",
+    "answer": "Goodbye! Have a great day!",
+    "source": "template",
+    "uses": 0,
+    "createdAt": "2026-09-09T18:19:04.161Z"
+  },
+  {
+    "id": "tmpl_4",
+    "question": "thanks",
+    "answer": "You're welcome! Let me know if you need anything else.",
+    "source": "template",
+    "uses": 0,
+    "createdAt": "2026-09-09T18:19:04.161Z"
+  },
+  {
+    "id": "tmpl_5",
+    "question": "مرحبا",
+    "answer": "مرحبا! كيف يمكنني مساعدتك؟",
+    "source": "template",
+    "uses": 0,
+    "createdAt": "2026-09-09T18:19:04.161Z"
+  },
+  {
+    "id": "tmpl_6",
+    "question": "كيف",
+    "answer": "أستطيع مساعدتك بأسئلة مختلفة. اسألني عن...",
+    "source": "template",
+    "uses": 0,
+    "createdAt": "2026-09-09T18:19:04.161Z"
+  },
+  {
+    "id": "tmpl_7",
+    "question": "شكرا",
+    "answer": "عذراً! دعني أعرف إذا كنت بحاجة إلى شيء آخر.",
+    "source": "template",
+    "uses": 0,
+    "createdAt": "2026-09-09T18:19:04.161Z"
+  },
+  {
+    "id": "tmpl_8",
+    "question": "bonjour",
+    "answer": "Bonjour! Que puis-je pour vous?",
+    "source": "template",
+    "uses": 0,
+    "createdAt": "2026-09-09T18:19:04.161Z"
+  },
+  {
+    "id": "tmpl_9",
+    "question": "aide",
+    "answer": "Je peux vous aider avec diverses questions. Demandez-moi à propos de...",
+    "source": "template",
+    "uses": 0,
+    "createdAt": "2026-09-09T18:19:04.161Z"
+  },
+  {
+    "id": "tmpl_10",
+    "question": "merci",
+    "answer": "De rien! Dites-moi si vous avez besoin de quoi que ce soit d'autre.",
+    "source": "template",
+    "uses": 0,
+    "createdAt": "2026-09-09T18:19:04.161Z"
+  }
+]

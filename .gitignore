@@ -8,7 +8,7 @@
 
 # next.js
 /.next/
-/out/
+# /out/ is tracked as the Electron prebuilt frontend
 
 # production
 /build
