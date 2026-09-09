@@ -6,26 +6,40 @@
   "scripts": {
     "dev": "next dev",
     "dev:custom": "concurrently \"npm run dev\" \"npm run backend\"",
-    "build:backend": "tsc --project tsconfig.server.json",
+    "build:backend": "prisma generate && tsc --project tsconfig.server.json",
     "backend": "tsx watch backend.ts",
     "build": "next build && npm run build:backend",
     "start": "next start",
     "start:custom": "concurrently \"npm run start\" \"npm run start:backend\"",
     "start:backend": "tsx backend.ts",
     "lint": "eslint",
-    "electron:dev": "concurrently \"cross-env PORT=3000 tsx backend.ts\" \"wait-on tcp:3000 && electron .\"",
+    "electron:dev": "concurrently \"cross-env DEV_MODE=true PORT=3000 tsx backend.ts\" \"wait-on tcp:3000 && cross-env DEV_MODE=true electron .\"",
     "dist": "npm run build && electron-builder"
   },
   "build": {
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/@prisma/**",
+      "**/node_modules/.prisma/**"
+    ],
     "appId": "com.wapp.desktop",
     "productName": "WApp",
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "signAndEditExecutable": false,
+      "forceCodeSigning": false,
+      "verifyUpdateCodeSignature": false
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     },
+    "extraFiles": [
+      {
+        "from": "node_modules/.prisma",
+        "to": "resources/app.asar.unpacked/node_modules/.prisma"
+      }
+    ],
     "files": [
       "main_electron.js",
       "dist/**/*",
@@ -45,7 +59,7 @@
   "dependencies": {
     "@next-auth/prisma-adapter": "^1.0.7",
     "@prisma/adapter-pg": "^7.4.0",
-    "@prisma/client": "^7.4.0",
+    "@prisma/client": "^5.22.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/cookie": "^0.6.0",
     "@types/fs-extra": "^11.0.4",
@@ -63,7 +77,7 @@
     "next-auth": "^4.24.13",
     "papaparse": "^5.5.3",
     "pg": "^8.18.0",
-    "prisma": "^7.4.0",
+    "prisma": "^5.22.0",
     "qrcode.react": "^4.2.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",

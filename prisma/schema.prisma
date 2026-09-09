@@ -3,7 +3,8 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
+  url      = "file:./dev.db"
 }
 
 model Account {
@@ -12,12 +13,12 @@ model Account {
   type               String
   provider           String
   providerAccountId  String
-  refresh_token      String?  @db.Text
-  access_token       String?  @db.Text
+  refresh_token      String? 
+  access_token       String? 
   expires_at         Int?
   token_type         String?
   scope              String?
-  id_token           String?  @db.Text
+  id_token           String? 
   session_state      String?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -45,6 +46,21 @@ model User {
   sessions      Session[]
   messages      MessageHistory[]
   contacts      Contact[]
+  devices       WhatsAppDevice[]
+}
+
+model WhatsAppDevice {
+  id                String   @id @default(cuid())
+  userId            String?
+  name              String
+  type              String   // "webjs" or "official"
+  sessionId         String?  // for webjs
+  accessToken       String?  // for official API
+  phoneNumberId     String?  // for official API
+  businessAccountId String?  // for official API
+  createdAt         DateTime @default(now())
+
+  user              User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
 }
 
 model VerificationToken {
@@ -57,16 +73,16 @@ model VerificationToken {
 
 model WhatsAppSession {
   id      String @id
-  data    String @db.Text
+  data    String
 }
 
 model MessageHistory {
   id        String   @id @default(cuid())
   userId    String?
   number    String
-  message   String   @db.Text
+  message   String  
   status    String   // success, failed
-  error     String?  @db.Text
+  error     String? 
   createdAt DateTime @default(now())
 
   user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)

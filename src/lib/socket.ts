@@ -2,28 +2,14 @@
 
 import { useEffect, useState } from "react";
 import io from "socket.io-client";
-import { useSession } from "next-auth/react";
 import { API_URL } from "./config";
 
 let socket: any;
 
 export const useSocket = () => {
     const [isConnected, setIsConnected] = useState(false);
-    const { data: session, status } = useSession();
 
     useEffect(() => {
-        if (status === "loading") return;
-
-        if (!session) {
-            if (socket) {
-                console.log("Disconnecting socket (no session)...");
-                socket.disconnect();
-                socket = undefined;
-                setIsConnected(false);
-            }
-            return;
-        }
-
         if (!socket) {
             console.log("Initializing Socket.io...", API_URL);
             socket = io(API_URL, {
@@ -65,7 +51,7 @@ export const useSocket = () => {
                 socket.off("disconnect", onDisconnect);
             }
         };
-    }, [session, status]);
+    }, []);
 
     return { socket, isConnected };
 };

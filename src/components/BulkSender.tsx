@@ -35,6 +35,7 @@ export function BulkSender({ socket }: BulkSenderProps) {
     const [progress, setProgress] = useState<{ total: number; current: number; success: number; failed: number; status: string; countdown?: number } | null>(null);
     const [reportData, setReportData] = useState<any[]>([]);
 
+    const [readyDevicesCount, setReadyDevicesCount] = useState(0);
     const [history, setHistory] = useState<any[]>([]);
 
     const fetchHistory = async () => {
@@ -59,6 +60,19 @@ export function BulkSender({ socket }: BulkSenderProps) {
     useEffect(() => {
         if (!socket) return;
 
+        // Listen for device state to count ready devices
+        socket.on("devices_state", (state: any[]) => {
+            setReadyDevicesCount(state.filter(d => d.isReady).length);
+        });
+
+        socket.on("device_ready", () => {
+            setReadyDevicesCount(prev => prev + 1); // rough approximation, better to request full state, but good enough for UI
+        });
+
+        socket.on("device_disconnected", () => {
+            setReadyDevicesCount(prev => Math.max(0, prev - 1));
+        });
+
         socket.on("bulk_progress", (data: any) => {
             console.log("Progress:", data);
             setProgress(data);
@@ -79,6 +93,9 @@ export function BulkSender({ socket }: BulkSenderProps) {
 
         return () => {
             socket.off("bulk_progress");
+            socket.off("devices_state");
+            socket.off("device_ready");
+            socket.off("device_disconnected");
         };
     }, [socket]);
 
@@ -269,9 +286,19 @@ export function BulkSender({ socket }: BulkSenderProps) {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
             {/* Left Column: Inputs */}
             <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
-                    <Send className="w-5 h-5 text-blue-600" /> {t("campaignDetails")}
-                </h2>
+                <div className="flex justify-between items-center mb-6">
+                    <h2 className="text-xl font-bold flex items-center gap-2">
+                        <Send className="w-5 h-5 text-indigo-600" /> {t("campaignDetails")}
+                    </h2>
+                    
+                    {/* Load Balancer Indicator */}
+                    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-indigo-50 border border-indigo-100">
+                        <span className={`w-2 h-2 rounded-full ${readyDevicesCount > 0 ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`}></span>
+                        <span className="text-xs font-semibold text-indigo-800">
+                            Pool: {readyDevicesCount} Devices Ready
+                        </span>
+                    </div>
+                </div>
 
                 {status && (
                     <div className={`p-3 mb-4 rounded-lg text-sm flex items-center gap-2 ${status.type === "success" ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>
@@ -290,18 +317,18 @@ export function BulkSender({ socket }: BulkSenderProps) {
                 )}
 
                 {isLoading && progress && (
-                    <div className="mb-4 bg-blue-50 p-3 rounded-lg border border-blue-100">
-                        <div className="flex justify-between text-xs font-semibold text-blue-800 mb-1">
+                    <div className="mb-4 bg-indigo-50 p-3 rounded-xl border border-indigo-100">
+                        <div className="flex justify-between text-xs font-semibold text-indigo-800 mb-1">
                             <span>{progress.status}</span>
                             <span>{Math.round((progress.current / progress.total) * 100)}%</span>
                         </div>
-                        <div className="w-full bg-blue-200 rounded-full h-2 overflow-hidden">
+                        <div className="w-full bg-indigo-200 rounded-full h-2 overflow-hidden">
                             <div
-                                className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                                className="bg-indigo-600 h-2 rounded-full transition-all duration-300"
                                 style={{ width: `${(progress.current / progress.total) * 100}%` }}
                             ></div>
                         </div>
-                        <div className="flex justify-between text-[10px] text-blue-600 mt-1">
+                        <div className="flex justify-between text-[10px] text-indigo-600 mt-1">
                             <span>{progress.current}/{progress.total}</span>
                             <span>Success: {progress.success} | Failed: {progress.failed}</span>
                         </div>
@@ -313,10 +340,10 @@ export function BulkSender({ socket }: BulkSenderProps) {
                     </div>
                 )}
 
-                <div className="mb-4">
-                    <div className="flex justify-between items-center mb-1">
-                        <label className="block text-sm font-medium text-gray-700">
-                            {t("recipients")} ({recipients.length})
+                <div className="mb-5">
+                    <div className="flex justify-between items-center mb-2">
+                        <label className="block text-sm font-semibold text-gray-700">
+                            {t("recipients")} <span className="bg-gray-100 px-2 py-0.5 rounded text-xs text-gray-600">{recipients.length}</span>
                         </label>
                         <div className="flex gap-2">
                             <input type="file" ref={csvInputRef} className="hidden" accept=".csv" onChange={handleCSVUpload} />
@@ -330,21 +357,21 @@ export function BulkSender({ socket }: BulkSenderProps) {
 
                             <button
                                 onClick={() => csvInputRef.current?.click()}
-                                className="text-xs flex items-center gap-1 text-green-600 hover:text-green-700 font-medium"
+                                className="text-xs flex items-center gap-1.5 bg-emerald-50 text-emerald-600 px-2.5 py-1 rounded-md hover:bg-emerald-100 font-semibold transition-colors"
                             >
-                                <FileSpreadsheet className="w-3 h-3" /> {t("importCsv")}
+                                <FileSpreadsheet className="w-3.5 h-3.5" /> Import CSV
                             </button>
                         </div>
                     </div>
                     {availableVars.length > 0 ? (
-                        <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-600 mb-2">
-                            <p className="font-semibold mb-1">{t("csvMode")}</p>
-                            <p>{t("variablesFound")}: {availableVars.join(", ")}</p>
-                            <button onClick={() => { setAvailableVars([]); setRecipients([]); setTextInput(""); }} className="text-red-500 text-xs mt-1 underline">{t("clearCsv")}</button>
+                        <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl text-sm text-gray-600 mb-2">
+                            <p className="font-semibold mb-1 text-gray-800">{t("csvMode")}</p>
+                            <p className="text-xs mb-2">{t("variablesFound")}: {availableVars.map(v => <span key={v} className="bg-white border border-gray-200 px-1.5 py-0.5 rounded mx-0.5 inline-block">{v}</span>)}</p>
+                            <button onClick={() => { setAvailableVars([]); setRecipients([]); setTextInput(""); }} className="text-red-500 text-xs mt-1 hover:underline font-medium">{t("clearCsv")}</button>
                         </div>
                     ) : (
                         <textarea
-                            className="w-full text-black h-32 p-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 font-mono text-sm"
+                            className="w-full text-gray-800 h-32 p-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 font-mono text-sm resize-none transition-all shadow-sm"
                             placeholder={t("numberPlaceholder")}
                             value={textInput}
                             onChange={(e) => handleTextChange(e.target.value)}
@@ -353,17 +380,17 @@ export function BulkSender({ socket }: BulkSenderProps) {
                 </div>
 
                 <div className="mb-6">
-                    <div className="flex justify-between items-center mb-1">
-                        <label className="block text-sm font-medium text-gray-700">
+                    <div className="flex justify-between items-center mb-2">
+                        <label className="block text-sm font-semibold text-gray-700">
                             {t("messageContent")}
                         </label>
                         {availableVars.length > 0 && (
-                            <div className="flex gap-1">
+                            <div className="flex gap-1.5 flex-wrap justify-end">
                                 {availableVars.map(v => (
                                     <button
                                         key={v}
                                         onClick={() => insertVariable(v)}
-                                        className="text-xs bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded border border-gray-300 flex items-center gap-1"
+                                        className="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-2 py-1 rounded-md font-medium transition-colors flex items-center gap-1"
                                     >
                                         <Plus className="w-3 h-3" /> {v}
                                     </button>
@@ -372,7 +399,7 @@ export function BulkSender({ socket }: BulkSenderProps) {
                         )}
                     </div>
                     <textarea
-                        className="w-full text-black h-40 p-3 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 transition-all mb-2"
+                        className="w-full text-gray-800 h-40 p-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-indigo-500 transition-all mb-3 resize-none shadow-sm"
                         placeholder={t("typeMessage")}
                         value={message}
                         onChange={(e) => setMessage(e.target.value)}
@@ -381,10 +408,10 @@ export function BulkSender({ socket }: BulkSenderProps) {
                     {/* Attachments Section */}
                     <div className="flex flex-wrap gap-2 mb-3">
                         {attachments.map((att, i) => (
-                            <div key={i} className="bg-gray-100 px-3 py-1 rounded-full flex items-center gap-2 text-sm text-gray-700 border border-gray-200">
-                                <FileText className="w-3 h-3" />
-                                <span className="max-w-[150px] truncate">{att.filename}</span>
-                                <button onClick={() => removeAttachment(i)} className="text-gray-400 hover:text-red-500">
+                            <div key={i} className="bg-gray-50 px-3 py-1.5 rounded-lg flex items-center gap-2 text-sm text-gray-700 border border-gray-200 shadow-sm">
+                                <FileText className="w-4 h-4 text-indigo-400" />
+                                <span className="max-w-[150px] truncate font-medium">{att.filename}</span>
+                                <button onClick={() => removeAttachment(i)} className="text-gray-400 hover:text-red-500 transition-colors bg-white rounded-full p-0.5">
                                     <X className="w-3 h-3" />
                                 </button>
                             </div>
@@ -400,24 +427,24 @@ export function BulkSender({ socket }: BulkSenderProps) {
                         />
                         <button
                             onClick={() => fileInputRef.current?.click()}
-                            className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1 border border-blue-200 px-3 py-1.5 rounded-lg hover:bg-blue-50 transition-colors"
+                            className="text-sm font-semibold text-indigo-600 hover:text-indigo-800 flex items-center gap-1.5 bg-indigo-50 px-4 py-2 rounded-xl hover:bg-indigo-100 transition-colors"
                         >
                             <Upload className="w-4 h-4" /> {t("attachFile")}
                         </button>
                     </div>
                 </div>
 
-                <div className="pt-4 border-t border-gray-100">
+                <div className="pt-5 border-t border-gray-100">
                     <button
                         onClick={handleSend}
                         disabled={isLoading || recipients.length === 0 || (!message && attachments.length === 0)}
-                        className={`w-full py-3 rounded-xl text-white font-bold flex items-center justify-center gap-2 transition-all ${isLoading || recipients.length === 0 || !message ? "bg-gray-300 cursor-not-allowed" : "bg-gradient-to-r from-blue-600 to-purple-600 hover:shadow-lg scale-100 hover:scale-[1.02]"}`}
+                        className={`w-full py-3.5 rounded-xl text-white font-bold flex items-center justify-center gap-2 transition-all ${isLoading || recipients.length === 0 || !message ? "bg-gray-300 cursor-not-allowed" : "bg-gradient-to-r from-indigo-600 to-purple-600 hover:shadow-lg hover:shadow-indigo-500/30 scale-100 hover:scale-[1.02]"}`}
                     >
                         {isLoading ? t("sending") : `${t("sendCampaign")} (${recipients.length})`}
                         {!isLoading && <Send className="w-5 h-5" />}
                     </button>
-                    <p className="text-center text-xs text-gray-400 mt-2 flex items-center justify-center gap-1">
-                        <Clock className="w-3 h-3" /> {t("customDelay")}
+                    <p className="text-center text-xs text-gray-400 mt-3 flex items-center justify-center gap-1 font-medium">
+                        <Clock className="w-3.5 h-3.5" /> {t("customDelay")}
                     </p>
                 </div>
             </div>

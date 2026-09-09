@@ -1,0 +1,71 @@
+{
+  "templates": [
+    {
+      "keyword": "hello",
+      "response": "Hi there! How can I help you?",
+      "exactMatch": false,
+      "language": "en"
+    },
+    {
+      "keyword": "hi",
+      "response": "Hello! What would you like to know?",
+      "exactMatch": false,
+      "language": "en"
+    },
+    {
+      "keyword": "help",
+      "response": "I can help you with various queries. Ask me about...",
+      "exactMatch": false,
+      "language": "en"
+    },
+    {
+      "keyword": "bye",
+      "response": "Goodbye! Have a great day!",
+      "exactMatch": false,
+      "language": "en"
+    },
+    {
+      "keyword": "thanks",
+      "response": "You're welcome! Let me know if you need anything else.",
+      "exactMatch": false,
+      "language": "en"
+    },
+    {
+      "keyword": "مرحبا",
+      "response": "مرحبا! كيف يمكنني مساعدتك؟",
+      "exactMatch": false,
+      "language": "ar"
+    },
+    {
+      "keyword": "كيف",
+      "response": "أستطيع مساعدتك بأسئلة مختلفة. اسألني عن...",
+      "exactMatch": false,
+      "language": "ar"
+    },
+    {
+      "keyword": "شكرا",
+      "response": "عذراً! دعني أعرف إذا كنت بحاجة إلى شيء آخر.",
+      "exactMatch": false,
+      "language": "ar"
+    },
+    {
+      "keyword": "bonjour",
+      "response": "Bonjour! Que puis-je pour vous?",
+      "exactMatch": false,
+      "language": "fr"
+    },
+    {
+      "keyword": "aide",
+      "response": "Je peux vous aider avec diverses questions. Demandez-moi à propos de...",
+      "exactMatch": false,
+      "language": "fr"
+    },
+    {
+      "keyword": "merci",
+      "response": "De rien! Dites-moi si vous avez besoin de quoi que ce soit d'autre.",
+      "exactMatch": false,
+      "language": "fr"
+    }
+  ],
+  "defaultResponse": "I'm not sure how to respond to that yet. Try asking something else."
+}
