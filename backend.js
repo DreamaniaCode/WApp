@@ -809,59 +809,229 @@ app.get("/api/history", (_req, res) => {
 });
 // ─── Group Extraction ─────────────────────────────────────────────────────────
 app.get("/api/groups", async (_req, res) => {
+    // Auto-recover isReady if browser is open and has chat elements
+    if (!isReady && activeClient && activeClient.pupPage && !activeClient.pupPage.isClosed()) {
+        try {
+            const hasChatList = await activeClient.pupPage.evaluate(() => {
+                return !!(document.querySelector('#pane-side') || document.querySelector('[data-testid="chat-list"]') || (window.Store && window.Store.Chat));
+            });
+            if (hasChatList) {
+                isReady = true;
+            }
+        } catch (_) {}
+    }
+
     if (!isReady || !activeClient) {
         // @ts-ignore
-        return res.status(503).json({ error: "WhatsApp client not ready" });
+        return res.status(503).json({ error: "WhatsApp client not ready. Please connect your phone first." });
     }
     try {
-        const chats = await activeClient.getChats();
-        const groups = chats.filter(c => c.isGroup).map(g => ({
-            id: g.id._serialized,
-            name: g.name,
-            // @ts-ignore
-            participantsCount: g.participants?.length || 0
-        }));
-        res.json({ success: true, groups });
+        let groups = [];
+
+        // 1. Direct in-memory extraction from window.Store for speed and 100% reliability
+        if (activeClient.pupPage && !activeClient.pupPage.isClosed()) {
+            try {
+                groups = await activeClient.pupPage.evaluate(async () => {
+                    const list = [];
+                    if (!window.Store || !window.Store.Chat) return list;
+
+                    let chatModels = [];
+                    if (typeof window.Store.Chat.getModelsArray === 'function') {
+                        chatModels = window.Store.Chat.getModelsArray();
+                    } else if (Array.isArray(window.Store.Chat._models)) {
+                        chatModels = window.Store.Chat._models;
+                    } else if (window.Store.Chat.models) {
+                        chatModels = window.Store.Chat.models;
+                    }
+
+                    for (const c of chatModels) {
+                        try {
+                            const rawId = c.id?._serialized || (typeof c.id === 'string' ? c.id : '');
+                            const isGroup = c.isGroup === true || 
+                                            c.id?.server === 'g.us' || 
+                                            rawId.endsWith('@g.us');
+
+                            if (!isGroup) continue;
+
+                            let pCount = 0;
+                            if (c.groupMetadata && c.groupMetadata.participants) {
+                                const parts = c.groupMetadata.participants._models || c.groupMetadata.participants;
+                                pCount = Array.isArray(parts) ? parts.length : (parts?.length || 0);
+                            }
+                            if (pCount === 0 && window.Store.GroupMetadata) {
+                                const meta = typeof window.Store.GroupMetadata.get === 'function' ? window.Store.GroupMetadata.get(c.id) : null;
+                                if (meta && meta.participants) {
+                                    const parts = meta.participants._models || meta.participants;
+                                    pCount = Array.isArray(parts) ? parts.length : (parts?.length || 0);
+                                }
+                            }
+
+                            list.push({
+                                id: rawId,
+                                name: c.name || c.formattedTitle || "Groupe WhatsApp",
+                                participantsCount: pCount
+                            });
+                        } catch (_) {}
+                    }
+                    return list;
+                });
+            } catch (evalErr) {
+                console.warn("[/api/groups] In-memory evaluation error:", evalErr.message);
+            }
+        }
+
+        // 2. Fallback to activeClient.getChats() if in-memory returned empty
+        if (!groups || groups.length === 0) {
+            try {
+                const chats = await activeClient.getChats();
+                groups = chats
+                    .filter(c => c.isGroup || (c.id?._serialized && c.id._serialized.endsWith('@g.us')) || c.id?.server === 'g.us')
+                    .map(g => ({
+                        id: g.id?._serialized || g.id,
+                        name: g.name || "Groupe WhatsApp",
+                        participantsCount: g.participants?.length || 0
+                    }));
+            } catch (chatsErr) {
+                console.warn("[/api/groups] getChats fallback error:", chatsErr.message);
+            }
+        }
+
+        res.json({ success: true, groups: groups || [] });
     }
     catch (e) {
         console.error("Error fetching groups:", e);
         // @ts-ignore
-        res.status(500).json({ error: "Failed to fetch groups" });
+        res.status(500).json({ error: "Failed to fetch groups", details: e?.message });
     }
 });
 app.get("/api/groups/:id/participants", async (req, res) => {
+    // Auto-recover isReady if browser is open and has chat elements
+    if (!isReady && activeClient && activeClient.pupPage && !activeClient.pupPage.isClosed()) {
+        try {
+            const hasChatList = await activeClient.pupPage.evaluate(() => {
+                return !!(document.querySelector('#pane-side') || document.querySelector('[data-testid="chat-list"]') || (window.Store && window.Store.Chat));
+            });
+            if (hasChatList) {
+                isReady = true;
+            }
+        } catch (_) {}
+    }
+
     if (!isReady || !activeClient) {
         // @ts-ignore
         return res.status(503).json({ error: "WhatsApp client not ready" });
     }
     try {
-        const chatId = req.params.id;
-        const chat = await activeClient.getChatById(chatId);
-        if (!chat.isGroup) {
-            // @ts-ignore
-            return res.status(400).json({ error: "Chat is not a group" });
-        }
-        // @ts-ignore
-        const participants = chat.participants || [];
-        const results = [];
-        for (const p of participants) {
+        const groupId = req.params.id;
+        let results = [];
+
+        // 1. In-browser evaluation with LID -> Phone Number resolution
+        if (activeClient.pupPage && !activeClient.pupPage.isClosed()) {
             try {
-                // p.id._serialized is the contact ID
-                const contactId = p.id ? p.id._serialized : null;
-                if (!contactId)
-                    continue;
-                // Extract number directly from ID to avoid rate-limiting/timeouts
-                // e.g. 33612345678@c.us -> "33612345678"
-                const numberStr = p.id.user || contactId.split('@')[0];
-                results.push({
-                    number: `+${numberStr}`,
-                    name: "Participant"
-                });
-            }
-            catch (err) {
-                console.error(`Error fetching individual participant ${p?.id?._serialized}:`, err);
+                results = await activeClient.pupPage.evaluate(async (gId) => {
+                    const list = [];
+                    if (!window.Store) return list;
+
+                    const chatWid = window.Store.WidFactory ? window.Store.WidFactory.createWid(gId) : gId;
+                    let groupMeta = null;
+
+                    // Try GroupMetadata store
+                    const gmStore = window.Store.GroupMetadata || window.Store.WAWebGroupMetadataCollection;
+                    if (gmStore) {
+                        if (typeof gmStore.get === 'function') {
+                            groupMeta = gmStore.get(chatWid) || gmStore.get(gId);
+                        }
+                        if (!groupMeta && typeof gmStore.find === 'function') {
+                            try { groupMeta = await gmStore.find(chatWid); } catch (_) {}
+                        }
+                        if (!groupMeta && typeof gmStore.update === 'function') {
+                            try { await gmStore.update(chatWid); } catch (_) {}
+                            groupMeta = typeof gmStore.get === 'function' ? (gmStore.get(chatWid) || gmStore.get(gId)) : null;
+                        }
+                    }
+
+                    // Fallback to chat.groupMetadata
+                    if (!groupMeta && window.Store.Chat) {
+                        const chat = typeof window.Store.Chat.get === 'function' ? (window.Store.Chat.get(chatWid) || window.Store.Chat.get(gId)) : null;
+                        if (chat && chat.groupMetadata) {
+                            groupMeta = chat.groupMetadata;
+                        }
+                    }
+
+                    if (!groupMeta || !groupMeta.participants) return list;
+
+                    const rawList = groupMeta.participants._models || (Array.isArray(groupMeta.participants) ? groupMeta.participants : []);
+
+                    for (const p of rawList) {
+                        try {
+                            let number = "";
+                            let name = "Participant";
+
+                            // Check contact directly
+                            if (p.contact && p.contact.phoneNumber) {
+                                number = p.contact.phoneNumber;
+                            }
+
+                            // User ID if standard @c.us
+                            const pIdStr = p.id?._serialized || (typeof p.id === 'string' ? p.id : '');
+                            if (!number && pIdStr.endsWith('@c.us')) {
+                                number = p.id.user || pIdStr.split('@')[0];
+                            }
+
+                            // Query Contact store
+                            if (!number && window.Store.Contact) {
+                                const contact = typeof window.Store.Contact.get === 'function' ? window.Store.Contact.get(p.id) : null;
+                                if (contact) {
+                                    if (contact.phoneNumber) number = contact.phoneNumber;
+                                    else if (contact.id?.user && !contact.id._serialized.endsWith('@lid')) {
+                                        number = contact.id.user;
+                                    }
+                                    name = contact.name || contact.pushname || contact.formattedName || name;
+                                }
+                            }
+
+                            if (!number && !pIdStr.endsWith('@lid')) {
+                                number = p.id?.user || pIdStr.split('@')[0];
+                            }
+
+                            if (number) {
+                                const clean = number.replace(/[^\d+]/g, '');
+                                const formatted = clean.startsWith('+') ? clean : `+${clean}`;
+                                list.push({
+                                    number: formatted,
+                                    name: name
+                                });
+                            }
+                        } catch (_) {}
+                    }
+                    return list;
+                }, groupId);
+            } catch (evalErr) {
+                console.warn("[/api/groups/participants] In-page evaluation error:", evalErr.message);
             }
         }
+
+        // 2. Fallback via getChatById if direct evaluation was empty
+        if (!results || results.length === 0) {
+            try {
+                const chat = await activeClient.getChatById(groupId);
+                const participants = chat.participants || [];
+                for (const p of participants) {
+                    const contactId = p.id ? p.id._serialized : null;
+                    if (!contactId) continue;
+                    const numberStr = p.id.user || contactId.split('@')[0];
+                    if (numberStr && !contactId.endsWith('@lid')) {
+                        results.push({
+                            number: numberStr.startsWith('+') ? numberStr : `+${numberStr}`,
+                            name: "Participant"
+                        });
+                    }
+                }
+            } catch (chatErr) {
+                console.warn("[/api/groups/participants] getChatById fallback error:", chatErr.message);
+            }
+        }
+
         res.json({ success: true, count: results.length, participants: results });
     }
     catch (e) {
