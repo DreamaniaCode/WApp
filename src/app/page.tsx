@@ -287,7 +287,17 @@ function DashboardPanel({ isConnected }: { isConnected: boolean }) {
       <div className="relative rounded-2xl overflow-hidden" style={{ background: "linear-gradient(135deg, #667eea 0%, #764ba2 40%, #f093fb 100%)" }}>
         <div className="relative p-8 text-white">
           <div className="flex items-start justify-between">
-            <div><div className="flex items-center gap-2 mb-1"><div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" /><span className="text-sm font-medium text-white/80">DreamaniaCode Enterprise</span></div><h1 className="text-3xl font-bold mb-1">Lead Wave</h1><p className="text-white/70 text-sm">WhatsApp Automation v3.0.1 — Ultimate Enterprise Edition</p></div>
+            <div className="flex items-center gap-4">
+              <img src="/logo.png" alt="WApp Manager Pro" className="w-16 h-16 rounded-2xl shadow-xl border border-white/20 object-contain bg-white/10 backdrop-blur-md p-1.5 shrink-0" />
+              <div>
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
+                  <span className="text-sm font-medium text-white/80">DreamaniaCode Enterprise</span>
+                </div>
+                <h1 className="text-3xl font-extrabold tracking-tight text-white mb-0.5">WApp Manager Pro</h1>
+                <p className="text-white/80 text-sm font-medium">WhatsApp Automation v2026.5.0 — Ultimate Enterprise Edition</p>
+              </div>
+            </div>
             <div className="flex flex-col gap-2 items-end">
               <span className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full border ${isConnected ? "bg-green-400/20 text-green-200 border-green-400/30" : "bg-red-400/20 text-red-200 border-red-400/30"}`}>{isConnected ? <Wifi className="w-3 h-3" /> : <WifiOff className="w-3 h-3" />}{isConnected ? "WhatsApp Connected" : "Disconnected"}</span>
               <span className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-full bg-white/10 text-white/80 border border-white/20"><Activity className="w-3 h-3" />{m?.activeDevices ?? 0} Devices Online</span>
@@ -328,8 +338,8 @@ export default function Home() {
     <div className={`flex h-screen overflow-hidden ${darkMode ? "bg-gray-950 text-white" : "bg-gray-50 text-gray-900"}`}>
       <aside className={`${sidebarOpen ? "w-64" : "w-16"} flex-shrink-0 flex flex-col transition-all duration-300 ${darkMode ? "bg-gray-900 border-gray-800" : "bg-white border-gray-200"} border-r`}>
         <div className={`p-4 border-b ${darkMode ? "border-gray-800" : "border-gray-100"} flex items-center gap-3`}>
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 to-purple-600 flex items-center justify-center shrink-0"><span className="text-white font-black text-sm">LW</span></div>
-          {sidebarOpen && (<div className="min-w-0"><div className="font-black text-sm truncate bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-purple-600">Lead Wave</div><div className={`text-[10px] truncate ${darkMode ? "text-gray-500" : "text-gray-400"}`}>WhatsApp Automation</div></div>)}
+          <img src="/logo.png" alt="WApp Manager Pro" className="w-9 h-9 rounded-xl object-contain shadow-md shrink-0 bg-white/10 p-0.5" />
+          {sidebarOpen && (<div className="min-w-0"><div className="font-black text-sm truncate bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-purple-600">WApp Manager Pro</div><div className={`text-[10px] truncate ${darkMode ? "text-gray-500" : "text-gray-400"}`}>WhatsApp Automation</div></div>)}
         </div>
         <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-0.5">
           {NAV.map(item => {
@@ -350,7 +360,7 @@ export default function Home() {
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <header className={`h-14 flex items-center gap-3 px-4 border-b shrink-0 ${darkMode ? "bg-gray-900 border-gray-800" : "bg-white border-gray-200"}`}>
           <button onClick={() => setSidebarOpen(!sidebarOpen)} className={`p-1.5 rounded-lg transition ${darkMode ? "text-gray-400 hover:bg-gray-800" : "text-gray-500 hover:bg-gray-100"}`}><div className="space-y-1"><div className={`w-4 h-0.5 rounded ${darkMode ? "bg-gray-400" : "bg-gray-600"}`} /><div className={`w-4 h-0.5 rounded ${darkMode ? "bg-gray-400" : "bg-gray-600"}`} /><div className={`w-4 h-0.5 rounded ${darkMode ? "bg-gray-400" : "bg-gray-600"}`} /></div></button>
-          <div className="flex items-center gap-1.5"><span className={`text-sm font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>{currentNav?.label}</span><span className="text-xs font-mono px-2 py-0.5 rounded-full bg-gradient-to-r from-blue-600 to-purple-600 text-white">v3.0.1</span></div>
+          <div className="flex items-center gap-1.5"><span className={`text-sm font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>{currentNav?.label}</span><span className="text-xs font-mono px-2 py-0.5 rounded-full bg-gradient-to-r from-blue-600 to-purple-600 text-white font-semibold">v2026.5.0</span></div>
           <div className={`flex-1 max-w-xs flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm ${darkMode ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-500"}`}><Search className="w-4 h-4 shrink-0" /><input className="bg-transparent flex-1 outline-none text-sm" placeholder="Search features..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} /></div>
           <div className="flex items-center gap-2 ml-auto">
             <button onClick={() => setDarkMode(!darkMode)} className={`p-2 rounded-xl transition ${darkMode ? "bg-gray-800 text-yellow-400" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>{darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}</button>

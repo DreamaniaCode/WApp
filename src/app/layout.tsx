@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Lead Wave WhatsApp Automation v3.0.1 – DreamaniaCode Enterprise",
+  title: "WApp Manager Pro v2026.5.0 – DreamaniaCode Enterprise",
   description: "Ultimate Enterprise WhatsApp Automation by DreamaniaCode",
 };
 

@@ -1,9 +1,9 @@
 {
   "name": "wapp-manager-pro",
-  "version": "2026.4.0",
-  "productName": "WA Manager Pro",
+  "version": "2026.5.0",
+  "productName": "WApp Manager Pro",
   "author": "DreamaniaCode",
-  "description": "WA Manager Pro by DreamaniaCode",
+  "description": "WApp Manager Pro by DreamaniaCode",
   "private": true,
   "main": "main.js",
   "scripts": {
@@ -21,7 +21,7 @@
       "**/node_modules/.prisma/**"
     ],
     "appId": "com.dreamaniacode.wappmanager",
-    "productName": "WA Manager Pro",
+    "productName": "WApp Manager Pro",
     "copyright": "Copyright © 2026 DreamaniaCode",
     "win": {
       "target": "nsis",
@@ -41,8 +41,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
-      "shortcutName": "WA Manager Pro",
-      "artifactName": "WA Manager Pro Setup ${version}.${ext}",
+      "shortcutName": "WApp Manager Pro",
+      "artifactName": "WApp Manager Pro Setup ${version}.${ext}",
       "installerIcon": "public/icon.ico",
       "uninstallerIcon": "public/icon.ico",
       "installerHeaderIcon": "public/icon.ico",

@@ -34,7 +34,7 @@ function createWindow() {
         },
         icon: appIcon || (fs.existsSync(icoPath) ? icoPath : pngPath),
         titleBarStyle: 'default',
-        title: 'Lead Wave WhatsApp Automation v3.0.1 – Ultimate Enterprise Edition Full Activated (ViP) - [ DreamaniaCode ]'
+        title: 'WApp Manager Pro v2026.5.0 – Ultimate Enterprise Edition Full Activated (ViP) - [ DreamaniaCode ]'
     });
 
     // Attempt loading from backend on port 3001 with active retry
