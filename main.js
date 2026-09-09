@@ -23,15 +23,10 @@ function createWindow() {
         title: 'WA Manager'
     });
 
-    // In production: load the static export (out/index.html)
-    // In development: load from Next.js dev server
-    if (process.env.NODE_ENV === 'development') {
-        mainWindow.loadURL('http://localhost:3000');
-        mainWindow.webContents.openDevTools();
-    } else {
+    mainWindow.loadURL('http://localhost:3001').catch(() => {
         const indexPath = path.join(__dirname, 'out', 'index.html');
         mainWindow.loadFile(indexPath);
-    }
+    });
 
     mainWindow.on('closed', function () {
         mainWindow = null;

@@ -837,9 +837,27 @@ app.post("/api/reset-session", async (_req, res) => {
     }, 800);
     res.json({ success: true, message: "Session reset. Restarting in QR mode." });
 });
+// ─── Static files & Web UI ──────────────────────────────────────────────────
+const outPath = path_1.default.join(__dirname, "out");
+if (fs_1.default.existsSync(outPath)) {
+    app.use(express_1.default.static(outPath));
+    app.get("*", (req, res, next) => {
+        if (req.path.startsWith("/api/")) return next();
+        res.sendFile(path_1.default.join(outPath, "index.html"));
+    });
+}
+
 // ─── Start server ─────────────────────────────────────────────────────────────
 httpServer.listen(port, () => {
     console.log(`> Backend Ready on http://localhost:${port}`);
+    // Also start a listener on port 3000 so both http://localhost:3000 and 3001 work
+    try {
+        const port3000Server = (0, http_1.createServer)(app);
+        port3000Server.listen(3000, () => {
+            console.log(`> Web UI also available on http://localhost:3000`);
+        }).on('error', () => {});
+    } catch {}
+
     // Start WA Client AFTER express is listening so the UI can at least connect
     setTimeout(() => {
         console.log("Initializing WhatsApp Client...");
@@ -849,8 +867,6 @@ httpServer.listen(port, () => {
 httpServer.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
         console.error(`Port ${port} is already in use. Attempting to recover...`);
-        // In a real app we might try another port, but here we just exit 
-        // because the Electron app depends on 3001.
         process.exit(1);
     }
 });
