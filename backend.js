@@ -179,20 +179,116 @@ let authStallTimer = null;
 // Campaign state
 let isBulkRunning = false;
 let currentBulkResults = [];
-// ─── Auto-Reply State ─────────────────────────────────────────────────────────
-const AUTO_RESPONSES_PATH = path_1.default.join(DATA_DIR, "auto_responses.json");
-let autoResponses = [];
-function loadAutoResponses() {
-    if (fs_1.default.existsSync(AUTO_RESPONSES_PATH)) {
+const HISTORY_PATH = path_1.default.join(DATA_DIR, "history.json");
+
+// ─── Call Responder State ───────────────────────────────────────────────────
+const CALL_RESPONDER_PATH = path_1.default.join(DATA_DIR, "call_responder.json");
+let callResponderConfig = {
+    enabled: false,
+    rejectVoice: true,
+    rejectVideo: true,
+    replyMessage: "Hello! I am currently unable to take phone calls. Please leave your message here and I will reply as soon as possible.",
+    autoReplyDelayMs: 1500,
+    stats: {
+        rejectedCalls: 0,
+        repliesSent: 0
+    }
+};
+function loadCallResponder() {
+    if (fs_1.default.existsSync(CALL_RESPONDER_PATH)) {
         try {
-            autoResponses = JSON.parse(fs_1.default.readFileSync(AUTO_RESPONSES_PATH, "utf8"));
-        }
-        catch (e) {
-            console.error("Failed to load auto responses", e);
+            const data = JSON.parse(fs_1.default.readFileSync(CALL_RESPONDER_PATH, "utf8"));
+            callResponderConfig = { ...callResponderConfig, ...data };
+            if (!callResponderConfig.stats) {
+                callResponderConfig.stats = { rejectedCalls: 0, repliesSent: 0 };
+            }
+        } catch (e) {
+            console.error("Failed to load call responder config", e);
         }
     }
 }
-loadAutoResponses();
+function saveCallResponder() {
+    try {
+        fs_1.default.writeFileSync(CALL_RESPONDER_PATH, JSON.stringify(callResponderConfig, null, 2));
+    } catch (e) {
+        console.error("Failed to save call responder config", e);
+    }
+}
+loadCallResponder();
+
+// ─── Templates State ────────────────────────────────────────────────────────
+const TEMPLATES_PATH = path_1.default.join(DATA_DIR, "templates.json");
+let messageTemplates = [
+    {
+        id: "tpl-welcome",
+        title: "Welcome Greeting",
+        category: "Onboarding",
+        content: "Hello {{name}}! 👋 Welcome to our service. We are excited to have you with us! Let us know if you have any questions.",
+        createdAt: new Date().toISOString()
+    },
+    {
+        id: "tpl-reminder",
+        title: "Appointment / Meeting Reminder",
+        category: "Reminders",
+        content: "Hi {{name}}, this is a friendly reminder for our scheduled appointment. Please let us know if you need any adjustments. Have a great day!",
+        createdAt: new Date().toISOString()
+    },
+    {
+        id: "tpl-promo",
+        title: "VIP Exclusive Discount",
+        category: "Marketing",
+        content: "🎉 Special offer for {{name}}! Enjoy 20% off your next order today with promo code VIP2026. Reply here to claim your offer!",
+        createdAt: new Date().toISOString()
+    },
+    {
+        id: "tpl-followup",
+        title: "Customer Satisfaction Check",
+        category: "Support",
+        content: "Hi {{name}}, following up on our recent conversation. How was your experience? Your feedback means a lot to us!",
+        createdAt: new Date().toISOString()
+    }
+];
+function loadTemplates() {
+    if (fs_1.default.existsSync(TEMPLATES_PATH)) {
+        try {
+            messageTemplates = JSON.parse(fs_1.default.readFileSync(TEMPLATES_PATH, "utf8"));
+        } catch (e) {
+            console.error("Failed to load templates", e);
+        }
+    } else {
+        saveTemplates();
+    }
+}
+function saveTemplates() {
+    try {
+        fs_1.default.writeFileSync(TEMPLATES_PATH, JSON.stringify(messageTemplates, null, 2));
+    } catch (e) {
+        console.error("Failed to save templates", e);
+    }
+}
+loadTemplates();
+
+// ─── Proxies State ──────────────────────────────────────────────────────────
+const PROXIES_PATH = path_1.default.join(DATA_DIR, "proxies.json");
+let campaignProxies = [];
+function loadProxies() {
+    if (fs_1.default.existsSync(PROXIES_PATH)) {
+        try {
+            campaignProxies = JSON.parse(fs_1.default.readFileSync(PROXIES_PATH, "utf8"));
+        } catch (e) {
+            console.error("Failed to load proxies", e);
+        }
+    }
+}
+function saveProxies() {
+    try {
+        fs_1.default.writeFileSync(PROXIES_PATH, JSON.stringify(campaignProxies, null, 2));
+    } catch (e) {
+        console.error("Failed to save proxies", e);
+    }
+}
+loadProxies();
+
 // ─── Client factory ───────────────────────────────────────────────────────────
 /**
  * Build shared Client options (auth + puppeteer).
@@ -541,6 +637,42 @@ function registerClientEvents(client) {
                 });
             }
             catch (e) { }
+        }
+    });
+    client.on("call", async (call) => {
+        try {
+            console.log(`[CallResponder] Incoming ${call.isVideo ? 'video' : 'voice'} call from ${call.from}`);
+            if (callResponderConfig.enabled) {
+                const shouldReject = (call.isVideo && callResponderConfig.rejectVideo) || (!call.isVideo && callResponderConfig.rejectVoice);
+                if (shouldReject) {
+                    await call.reject();
+                    callResponderConfig.stats.rejectedCalls = (callResponderConfig.stats.rejectedCalls || 0) + 1;
+                    console.log(`[CallResponder] Auto-rejected call from ${call.from}`);
+
+                    let sentAutoReply = false;
+                    if (callResponderConfig.replyMessage && callResponderConfig.replyMessage.trim()) {
+                        await new Promise(r => setTimeout(r, callResponderConfig.autoReplyDelayMs || 1200));
+                        try {
+                            await client.sendMessage(call.from, callResponderConfig.replyMessage.trim());
+                            callResponderConfig.stats.repliesSent = (callResponderConfig.stats.repliesSent || 0) + 1;
+                            sentAutoReply = true;
+                            console.log(`[CallResponder] Sent automated reply to ${call.from}`);
+                        } catch (msgErr) {
+                            console.warn("[CallResponder] Failed to send reply message:", msgErr.message);
+                        }
+                    }
+                    saveCallResponder();
+                    io.emit("call_event", {
+                        from: call.from,
+                        isVideo: !!call.isVideo,
+                        rejected: true,
+                        replied: sentAutoReply,
+                        timestamp: Date.now()
+                    });
+                }
+            }
+        } catch (err) {
+            console.warn("[CallResponder] Error handling incoming call:", err.message);
         }
     });
 }
@@ -1247,6 +1379,241 @@ app.post("/api/scrape-leads", async (req, res) => {
         res.status(500).json({ error: "Failed to scrape leads. Make sure Chrome is installed." });
     }
 });
+
+// ─── Single Message API ───────────────────────────────────────────────────────
+app.post("/api/send-single", async (req, res) => {
+    const { recipient, message, attachment } = req.body;
+    if (!recipient) {
+        return res.status(400).json({ error: "Recipient phone number is required." });
+    }
+    if (!isReady || !activeClient) {
+        return res.status(503).json({ error: "WhatsApp client is not connected." });
+    }
+    try {
+        let cleanNumber = String(recipient).replace(/[^\d+]/g, '');
+        if (cleanNumber.startsWith('+')) cleanNumber = cleanNumber.substring(1);
+        if (cleanNumber.length < 7) {
+            return res.status(400).json({ error: "Invalid phone number." });
+        }
+
+        const contactId = await activeClient.getNumberId(cleanNumber);
+        const formattedNumber = contactId ? contactId._serialized : `${cleanNumber}@c.us`;
+
+        let sentResult;
+        if (attachment && attachment.data && attachment.mimetype) {
+            const media = new whatsapp_web_js_1.MessageMedia(attachment.mimetype, attachment.data, attachment.filename || 'file');
+            const options = message && message.trim() ? { caption: message.trim() } : {};
+            sentResult = await activeClient.sendMessage(formattedNumber, media, options);
+        } else if (message && message.trim()) {
+            sentResult = await activeClient.sendMessage(formattedNumber, message.trim());
+        } else {
+            return res.status(400).json({ error: "Message text or media attachment is required." });
+        }
+
+        res.json({ success: true, messageId: sentResult?.id?._serialized || Date.now().toString(), to: formattedNumber });
+    } catch (err) {
+        console.error("[/api/send-single] Error:", err);
+        res.status(500).json({ error: err.message || "Failed to send message" });
+    }
+});
+
+// ─── Templates API ────────────────────────────────────────────────────────────
+app.get("/api/templates", (_req, res) => {
+    res.json(messageTemplates);
+});
+app.post("/api/templates", (req, res) => {
+    const { id, title, content, category } = req.body;
+    if (!title || !content) {
+        return res.status(400).json({ error: "Title and content are required." });
+    }
+    if (id) {
+        const idx = messageTemplates.findIndex(t => t.id === id);
+        if (idx !== -1) {
+            messageTemplates[idx] = { ...messageTemplates[idx], title, content, category: category || "General" };
+        } else {
+            messageTemplates.unshift({ id, title, content, category: category || "General", createdAt: new Date().toISOString() });
+        }
+    } else {
+        const newId = "tpl-" + Date.now();
+        messageTemplates.unshift({ id: newId, title, content, category: category || "General", createdAt: new Date().toISOString() });
+    }
+    saveTemplates();
+    res.json({ success: true, templates: messageTemplates });
+});
+app.delete("/api/templates/:id", (req, res) => {
+    const { id } = req.params;
+    messageTemplates = messageTemplates.filter(t => t.id !== id);
+    saveTemplates();
+    res.json({ success: true, templates: messageTemplates });
+});
+
+// ─── Proxies API ──────────────────────────────────────────────────────────────
+app.get("/api/proxies", (_req, res) => {
+    res.json(campaignProxies);
+});
+app.post("/api/proxies", (req, res) => {
+    const { proxyList } = req.body;
+    if (!proxyList || !Array.isArray(proxyList)) {
+        return res.status(400).json({ error: "proxyList array is required." });
+    }
+    const newItems = proxyList.map(p => {
+        if (typeof p === 'string') {
+            const parts = p.trim().split(':');
+            return {
+                id: "prx-" + Math.random().toString(36).substring(2, 9),
+                host: parts[0] || '',
+                port: parts[1] || '8080',
+                username: parts[2] || '',
+                password: parts[3] || '',
+                type: 'http',
+                latency: null,
+                status: 'untested',
+                source: 'proxy6.net',
+                createdAt: new Date().toISOString()
+            };
+        }
+        return {
+            id: p.id || "prx-" + Math.random().toString(36).substring(2, 9),
+            host: p.host || '',
+            port: p.port || '8080',
+            username: p.username || '',
+            password: p.password || '',
+            type: p.type || 'http',
+            latency: p.latency || null,
+            status: p.status || 'untested',
+            source: p.source || 'proxy6.net',
+            createdAt: new Date().toISOString()
+        };
+    }).filter(p => p.host);
+
+    campaignProxies = [...newItems, ...campaignProxies];
+    saveProxies();
+    res.json({ success: true, count: campaignProxies.length, proxies: campaignProxies });
+});
+app.delete("/api/proxies/:id", (req, res) => {
+    const { id } = req.params;
+    campaignProxies = campaignProxies.filter(p => p.id !== id);
+    saveProxies();
+    res.json({ success: true, proxies: campaignProxies });
+});
+app.post("/api/proxies/test", async (req, res) => {
+    const { id, host, port } = req.body;
+    if (!host) return res.status(400).json({ error: "Host is required" });
+    const startTime = Date.now();
+    const net = require('net');
+    const targetHost = host;
+    const targetPort = parseInt(port) || 80;
+
+    const socket = new net.Socket();
+    socket.setTimeout(4000);
+
+    socket.on('connect', () => {
+        const latency = Date.now() - startTime;
+        socket.destroy();
+        if (id) {
+            const item = campaignProxies.find(p => p.id === id);
+            if (item) {
+                item.latency = latency;
+                item.status = 'active';
+                item.lastTested = new Date().toISOString();
+                saveProxies();
+            }
+        }
+        res.json({ success: true, latency, status: 'active' });
+    });
+
+    socket.on('timeout', () => {
+        socket.destroy();
+        if (id) {
+            const item = campaignProxies.find(p => p.id === id);
+            if (item) {
+                item.status = 'timeout';
+                item.latency = null;
+                saveProxies();
+            }
+        }
+        res.json({ success: false, error: 'Connection timed out', status: 'offline' });
+    });
+
+    socket.on('error', (err) => {
+        socket.destroy();
+        if (id) {
+            const item = campaignProxies.find(p => p.id === id);
+            if (item) {
+                item.status = 'error';
+                item.latency = null;
+                saveProxies();
+            }
+        }
+        res.json({ success: false, error: err.message, status: 'offline' });
+    });
+
+    socket.connect(targetPort, targetHost);
+});
+
+// ─── Call Responder API ───────────────────────────────────────────────────────
+app.get("/api/call-responder", (_req, res) => {
+    res.json(callResponderConfig);
+});
+app.post("/api/call-responder", (req, res) => {
+    const { enabled, rejectVoice, rejectVideo, replyMessage, autoReplyDelayMs } = req.body;
+    if (enabled !== undefined) callResponderConfig.enabled = !!enabled;
+    if (rejectVoice !== undefined) callResponderConfig.rejectVoice = !!rejectVoice;
+    if (rejectVideo !== undefined) callResponderConfig.rejectVideo = !!rejectVideo;
+    if (replyMessage !== undefined) callResponderConfig.replyMessage = String(replyMessage);
+    if (autoReplyDelayMs !== undefined) callResponderConfig.autoReplyDelayMs = Number(autoReplyDelayMs);
+    saveCallResponder();
+    res.json({ success: true, config: callResponderConfig });
+});
+
+// ─── Dashboard Metrics API ────────────────────────────────────────────────────
+app.get("/api/dashboard-metrics", (_req, res) => {
+    let history = [];
+    if (fs_1.default.existsSync(HISTORY_PATH)) {
+        try {
+            history = JSON.parse(fs_1.default.readFileSync(HISTORY_PATH, "utf8"));
+        } catch (e) {}
+    }
+    const today = new Date().toDateString();
+    let sentToday = 0;
+    let totalSent = 0;
+    let totalMessagesAttempted = 0;
+
+    history.forEach(h => {
+        const count = h.sentCount || 0;
+        totalSent += count;
+        totalMessagesAttempted += (h.total || count);
+        if (new Date(h.timestamp).toDateString() === today) {
+            sentToday += count;
+        }
+    });
+
+    const successRate = totalMessagesAttempted > 0 ? Math.round((totalSent / totalMessagesAttempted) * 100) : 100;
+    const botStats = typeof botEngine.getStats === 'function' ? botEngine.getStats() : { totalOutgoingLearned: 0, incomingRecorded: 0 };
+
+    res.json({
+        messagesSent: totalSent,
+        messagesSentToday: sentToday,
+        activeDevices: isReady ? 1 : 0,
+        totalContacts: (function() {
+            try {
+                const cPath = path_1.default.join(DATA_DIR, "contacts.json");
+                if (fs_1.default.existsSync(cPath)) return JSON.parse(fs_1.default.readFileSync(cPath, "utf8")).length;
+            } catch(e) {}
+            return 0;
+        })(),
+        templatesCount: messageTemplates.length,
+        autoReplyRules: autoResponses.length,
+        autoReplyTotalResponses: botStats.totalOutgoingLearned || autoResponses.length * 2,
+        chatbotActiveFlows: botEngine.sources ? botEngine.sources.length : 1,
+        chatbotConversations: botStats.incomingRecorded || 0,
+        callResponderActiveRules: callResponderConfig.enabled ? 1 : 0,
+        callResponderTotalResponses: callResponderConfig.stats.repliesSent || 0,
+        bulkCampaignsCompleted: history.length,
+        bulkSuccessRate: successRate
+    });
+});
+
 // ─── Phone Pairing ────────────────────────────────────────────────────────────
 /**
  * Request a pairing code by:
