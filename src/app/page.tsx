@@ -1,130 +1,22 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { useSocket } from "@/lib/socket";
 import { QRCodeDisplay } from "@/components/QRCodeDisplay";
 import { BulkSender } from "@/components/BulkSender";
 import { ContactsManager } from "@/components/ContactsManager";
 import { Settings } from "@/components/Settings";
-import DeviceManager from "@/components/DeviceManager";
+import { DeviceManager } from "@/components/DeviceManager";
 import { MessageSquare, Users, Settings as SettingsIcon, LayoutDashboard, Globe, Smartphone } from "lucide-react";
 import { useLanguage } from "@/contexts/LanguageContext";
-import { API_URL } from "@/lib/config";
 
 export default function Home() {
   const { socket, isConnected } = useSocket();
   const [activeTab, setActiveTab] = useState<"dashboard" | "devices" | "contacts" | "settings">("dashboard");
   const { t, language, setLanguage } = useLanguage();
 
-  // Pairing Code State
-  const [showPairingCodeInput, setShowPairingCodeInput] = useState(false);
-  const [phoneNumber, setPhoneNumber] = useState("");
-  const [pairingCode, setPairingCode] = useState("");
-
-
-  const [stats, setStats] = useState({ success: 0, contacts: 0 });
-
-  /* 
-   * Updated to use API_URL from config and include credentials for CORS.
-   * This fixes the 404 error by hitting the correct backend port (3001).
-   */
-  const fetchStats = async () => {
-      try {
-          // Use the full backend URL
-          const res = await fetch(`${API_URL}/api/stats`, {
-              headers: {
-                  "Content-Type": "application/json",
-              },
-              // Critical for passing the HttpOnly cookie to the backend
-              credentials: "include" 
-          });
-          
-          if (res.ok) {
-              const data = await res.json();
-              setStats(data);
-          } else {
-              console.error("Failed to fetch stats:", res.status, res.statusText);
-          }
-      } catch (error) {
-          console.error("Failed to fetch stats", error);
-      }
-  };
-
-  useEffect(() => {
-      fetchStats();
-      const interval = setInterval(fetchStats, 10000); // Poll every 10s
-      return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    if (socket) {
-        socket.emit("status"); // Request current status on mount/connect
-
-        socket.on("pairing_code", (data: { code: string }) => {
-            console.log("Frontend: Pairing Code Received", data.code);
-            setPairingCode(data.code);
-        });
-
-        socket.on("ready", () => {
-            console.log("Frontend: Client ready, clearing pairing code");
-            setPairingCode("");
-            setShowPairingCodeInput(false);
-            // Optionally set a specialized 'isWhatsAppReady' state here if you add one
-        });
-
-        socket.on("authenticated", () => {
-             console.log("Frontend: Client authenticated");
-             setPairingCode("");
-             setShowPairingCodeInput(false);
-             fetchStats(); // Refresh stats on connect
-             // Show success message (simple alert for now, or a toast component if available)
-             // utilizing a simple browser notification or state-based UI message
-             const notification = new Notification("WhatsApp Connected Successfully!");
-        });
-
-        socket.on("error", (data: { message: string }) => {
-            console.error("Frontend: Socket Error", data.message);
-            alert("Error: " + data.message);
-        });
-        
-        socket.on("bulk_progress", (data: any) => {
-             // Refresh stats when bulk sending progresses
-             if (data.status === "Completed" || data.current % 5 === 0) {
-                 fetchStats();
-             }
-        });
-    }
-    return () => {
-        if (socket) {
-            socket.off("pairing_code");
-            socket.off("ready");
-            socket.off("authenticated");
-            socket.off("error");
-            socket.off("bulk_progress");
-        }
-    }
-  }, [socket]);
-
-  // Request notification permission on mount
-  useEffect(() => {
-      if (Notification.permission === "default") {
-          Notification.requestPermission();
-      }
-  }, []);
-
-
   const toggleLanguage = () => {
     setLanguage(language === "en" ? "fr" : "en");
-  };
-
-  const requestPairingCode = () => {
-      console.log("Requesting Pairing Code for:", phoneNumber);
-      if (socket && phoneNumber) {
-          console.log("Socket exists, emitting event...");
-          socket.emit("request_pairing_code", { phoneNumber });
-      } else {
-          console.log("Socket or phoneNumber missing", { socket: !!socket, phoneNumber });
-      }
   };
 
   return (
@@ -189,40 +81,43 @@ export default function Home() {
 
       {/* Main Content */}
       <main className="flex-1 p-8 overflow-y-auto">
-        <div className="max-w-5xl mx-auto space-y-8">
+        <div className="max-w-4xl mx-auto space-y-8">
           {activeTab === "dashboard" && (
-            <div className="space-y-8">
-              {/* Stats or Info */}
-              <div className="bg-gradient-to-br from-indigo-600 to-purple-700 rounded-3xl p-8 text-white shadow-xl relative overflow-hidden">
-                <div className="absolute top-0 right-0 p-8 opacity-10">
-                    <Smartphone className="w-48 h-48" />
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                {/* QR Code Section */}
+                <div className="space-y-4">
+                  <h2 className="text-lg font-semibold text-gray-800">{t("scanQr")}</h2>
+                  <QRCodeDisplay socket={socket} />
                 </div>
-                <div className="relative z-10">
-                    <h3 className="text-2xl font-bold mb-3">{t("campaignDetails")}</h3>
-                    <p className="text-indigo-100 mb-8 max-w-lg leading-relaxed text-lg">{t("whatsappReadyDesc")}</p>
 
-                    <div className="flex gap-6">
-                        <div className="bg-white/10 p-6 rounded-2xl backdrop-blur-md border border-white/20 min-w-[160px]">
-                            <div className="text-4xl font-extrabold tracking-tight mb-1">{stats.success}</div>
-                            <div className="text-sm font-medium text-indigo-200 uppercase tracking-wider">{t("success")}</div>
-                        </div>
-                        <div className="bg-white/10 p-6 rounded-2xl backdrop-blur-md border border-white/20 min-w-[160px]">
-                            <div className="text-4xl font-extrabold tracking-tight mb-1">{stats.contacts}</div>
-                            <div className="text-sm font-medium text-indigo-200 uppercase tracking-wider">{t("contacts")}</div>
-                        </div>
+                {/* Stats Card */}
+                <div className="bg-gradient-to-br from-blue-500 to-purple-600 rounded-xl p-6 text-white shadow-lg">
+                  <h3 className="text-lg font-semibold mb-2">{t("campaignDetails")}</h3>
+                  <p className="text-blue-100 mb-6">{t("whatsappReadyDesc")}</p>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-white/10 p-4 rounded-lg backdrop-blur-sm">
+                      <div className="text-2xl font-bold">0</div>
+                      <div className="text-xs text-blue-100">{t("success")}</div>
                     </div>
+                    <div className="bg-white/10 p-4 rounded-lg backdrop-blur-sm">
+                      <div className="text-2xl font-bold">0</div>
+                      <div className="text-xs text-blue-100">{t("contacts")}</div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
               {/* Bulk Sender */}
-              <div className="bg-white rounded-3xl p-8 shadow-sm border border-gray-100">
+              <div className="pt-8 border-t border-gray-200">
                 <BulkSender socket={socket} />
               </div>
-            </div>
+            </>
           )}
 
           {activeTab === "devices" && (
-             <DeviceManager />
+            <DeviceManager />
           )}
 
           {activeTab === "contacts" && (

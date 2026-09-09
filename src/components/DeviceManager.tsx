@@ -15,7 +15,7 @@ interface Device {
     loadingMessage: string;
 }
 
-export default function DeviceManager() {
+export function DeviceManager() {
     const [devices, setDevices] = useState<Device[]>([]);
     const [socket, setSocket] = useState<any>(null);
     const [showAddModal, setShowAddModal] = useState(false);

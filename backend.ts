@@ -156,6 +156,8 @@ const initializeClient = async (userId: string, deviceId: string, deviceSession:
         deviceSession.loadingMessage = "Scan QR Code";
         deviceSession.loadingPercent = 0;
         io.to(userId).emit("device_qr", { deviceId, qr });
+        // Legacy single-device event for QRCodeDisplay compatibility
+        io.to(userId).emit("qr", qr);
     });
 
     client.on("ready", () => {
@@ -165,6 +167,9 @@ const initializeClient = async (userId: string, deviceId: string, deviceSession:
         deviceSession.loadingMessage = "Client Ready";
         deviceSession.loadingPercent = 100;
         io.to(userId).emit("device_ready", { deviceId });
+        // Legacy events
+        io.to(userId).emit("ready", true);
+        io.to(userId).emit("authenticated", true);
     });
 
     client.on("remote_session_saved", () => {
@@ -176,6 +181,7 @@ const initializeClient = async (userId: string, deviceId: string, deviceSession:
         deviceSession.loadingMessage = "Authenticated";
         deviceSession.loadingPercent = 50;
         io.to(userId).emit("device_update", { deviceId, status: "authenticated" });
+        io.to(userId).emit("authenticated", true); // Legacy
     });
 
     client.on("auth_failure", (msg: string) => {
@@ -193,6 +199,7 @@ const initializeClient = async (userId: string, deviceId: string, deviceSession:
             deviceSession.loadingPercent = percent;
             deviceSession.loadingMessage = message;
             io.to(userId).emit("device_update", { deviceId, percent, message });
+            io.to(userId).emit("loading_screen", { percent, message }); // Legacy
         }
     });
 
