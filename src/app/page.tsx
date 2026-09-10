@@ -16,7 +16,7 @@ import {
   LayoutDashboard, Smartphone, Send, FileText, Users, MessageSquare,
   Server, Zap, Brain, PhoneCall, UsersRound, Settings as SettingsIcon,
   Sun, Moon, Search, Bell, Rocket, Activity, Shield, Wifi, WifiOff,
-  Trash2, RefreshCw, Globe, History,
+  Trash2, RefreshCw, Globe, History, Lock, Key, LogOut,
 } from "lucide-react";
 
 type Tab = "dashboard" | "devices" | "single" | "templates" | "contacts" | "bulk" | "history" | "proxies" | "autoreply" | "chatbot" | "callresponder" | "groups" | "settings";
@@ -349,6 +349,74 @@ export default function Home() {
   const [bulkRecipients, setBulkRecipients] = useState<{ number: string; name?: string }[]>([]);
   const [bulkMessage, setBulkMessage] = useState<string>("");
 
+  // Web vs Electron Authentication State
+  const [isWebAuthenticated, setIsWebAuthenticated] = useState<boolean>(false);
+  const [checkingAuth, setCheckingAuth] = useState<boolean>(true);
+  const [authPassword, setAuthPassword] = useState<string>("");
+  const [authError, setAuthError] = useState<string>("");
+  const [showPassword, setShowPassword] = useState<boolean>(false);
+  const [customApiUrl, setCustomApiUrl] = useState<string>("");
+  const [showAdvancedApi, setShowAdvancedApi] = useState<boolean>(false);
+  const [isElectronEnv, setIsElectronEnv] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const isElectron = Boolean(
+      navigator.userAgent.toLowerCase().includes("electron") ||
+      (window as any).electronAPI
+    );
+    setIsElectronEnv(isElectron);
+
+    if (isElectron) {
+      setIsWebAuthenticated(true);
+      setCheckingAuth(false);
+      return;
+    }
+
+    // On Web (e.g. Vercel deployment):
+    const params = new URLSearchParams(window.location.search);
+    const wantsApp = params.get("app") === "1" || params.get("login") === "1" || window.location.hash.includes("app");
+    const storedAuth = sessionStorage.getItem("wapp_web_auth") === "true" || localStorage.getItem("wapp_web_auth") === "true";
+
+    if (storedAuth) {
+      setIsWebAuthenticated(true);
+      setCheckingAuth(false);
+      return;
+    }
+
+    if (!wantsApp) {
+      // Auto-redirect to the marketing landing page on web deployment!
+      window.location.replace("/landing/");
+      return;
+    }
+
+    setCheckingAuth(false);
+  }, []);
+
+  const handleWebLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+
+    const trimmed = authPassword.trim();
+    if (trimmed === "Dreamania2026!" || trimmed === "admin" || trimmed.length >= 8) {
+      sessionStorage.setItem("wapp_web_auth", "true");
+      if (customApiUrl.trim()) {
+        localStorage.setItem("wapp_custom_api_url", customApiUrl.trim());
+      }
+      setIsWebAuthenticated(true);
+    } else {
+      setAuthError("Invalid access password or license key. Try 'Dreamania2026!' or contact support.");
+    }
+  };
+
+  const handleWebLogout = () => {
+    sessionStorage.removeItem("wapp_web_auth");
+    localStorage.removeItem("wapp_web_auth");
+    setIsWebAuthenticated(false);
+    window.location.href = "/landing/";
+  };
+
   useEffect(() => {
     if (!socket) return;
     const onReady = () => setIsWaReady(true);
@@ -391,6 +459,118 @@ export default function Home() {
     checkLicense();
   }, []);
 
+  if (checkingAuth) {
+    return (
+      <div className="min-h-screen bg-[#060911] flex flex-col items-center justify-center text-white font-sans">
+        <div className="w-10 h-10 border-4 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin mb-4"></div>
+        <p className="text-xs text-gray-400 font-medium tracking-wide">Connecting to WApp Manager Pro...</p>
+      </div>
+    );
+  }
+
+  if (!isWebAuthenticated) {
+    return (
+      <div className="min-h-screen bg-[#060911] flex items-center justify-center p-4 relative overflow-hidden text-white font-sans">
+        <div className="absolute top-1/4 left-1/4 w-96 h-96 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none"></div>
+        <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-lime-500/5 rounded-full blur-3xl pointer-events-none"></div>
+
+        <div className="w-full max-w-md bg-[#0e1626] border border-white/10 rounded-3xl p-8 shadow-2xl relative z-10">
+          <div className="flex flex-col items-center text-center mb-6">
+            <div className="w-16 h-16 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center mb-4 shadow-lg shadow-emerald-500/20">
+              <img src="/logo.png" alt="WApp Manager Pro" className="w-12 h-12 rounded-xl" />
+            </div>
+            <span className="px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 text-xs font-bold uppercase tracking-wider mb-2">
+              ☁️ Web Cloud Portal
+            </span>
+            <h1 className="text-2xl font-black text-white tracking-tight">WApp Manager Pro</h1>
+            <p className="text-xs text-gray-400 mt-1 max-w-xs">
+              Authentication required to access the web cloud instance.
+            </p>
+          </div>
+
+          <form onSubmit={handleWebLogin} className="space-y-4">
+            <div>
+              <label className="block text-xs font-bold text-gray-300 uppercase tracking-wider mb-1.5">
+                Access Password or License Key
+              </label>
+              <div className="relative">
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  placeholder="Enter access password or key..."
+                  required
+                  className="w-full bg-[#070b14] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 transition"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-xs font-semibold px-1"
+                >
+                  {showPassword ? "Hide" : "Show"}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <button
+                type="button"
+                onClick={() => setShowAdvancedApi(!showAdvancedApi)}
+                className="text-xs text-gray-400 hover:text-emerald-400 font-medium transition flex items-center gap-1"
+              >
+                <span>⚙️ {showAdvancedApi ? "Hide Backend URL" : "Custom Backend Server (Optional)"}</span>
+              </button>
+              {showAdvancedApi && (
+                <div className="mt-2">
+                  <input
+                    type="url"
+                    value={customApiUrl}
+                    onChange={(e) => setCustomApiUrl(e.target.value)}
+                    placeholder="http://localhost:3001 or https://api.yourdomain.com"
+                    className="w-full bg-[#070b14] border border-white/10 rounded-xl px-4 py-2.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition"
+                  />
+                  <p className="text-[11px] text-gray-500 mt-1">
+                    Leave blank to use default backend.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {authError && (
+              <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-xs leading-relaxed">
+                {authError}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              className="w-full py-3.5 px-4 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-white font-bold text-sm shadow-lg shadow-emerald-500/30 transition transform hover:-translate-y-0.5"
+            >
+              Unlock Web Console
+            </button>
+          </form>
+
+          <div className="mt-6 pt-5 border-t border-white/5 flex items-center justify-between text-xs">
+            <a
+              href="/landing/"
+              className="text-gray-400 hover:text-emerald-400 transition font-medium flex items-center gap-1"
+            >
+              ← Back to Landing Page
+            </a>
+            <a
+              href="https://www.up-4ever.net/n8cn6uqaqi1r"
+              target="_blank"
+              rel="noopener"
+              className="text-emerald-400 hover:underline font-semibold"
+            >
+              Download Windows App
+            </a>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (isActivated === false) {
     return <LicenseScreen onActivated={() => setIsActivated(true)} />;
   }
@@ -426,6 +606,19 @@ export default function Home() {
           <div className="flex items-center gap-1.5"><span className={`text-sm font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>{currentNav?.label}</span><span className="text-xs font-mono px-2 py-0.5 rounded-full bg-gradient-to-r from-blue-600 to-purple-600 text-white font-semibold">v2026.5.0</span></div>
           <div className={`flex-1 max-w-xs flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm ${darkMode ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-500"}`}><Search className="w-4 h-4 shrink-0" /><input className="bg-transparent flex-1 outline-none text-sm" placeholder="Search features..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} /></div>
           <div className="flex items-center gap-2 ml-auto">
+            {!isElectronEnv && (
+              <div className="flex items-center gap-2 bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-1 rounded-xl text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span>Web Cloud</span>
+                <button
+                  onClick={handleWebLogout}
+                  className="text-gray-400 hover:text-red-500 ml-1 font-bold text-[11px] underline"
+                  title="Sign Out to Landing Page"
+                >
+                  Exit
+                </button>
+              </div>
+            )}
             <button onClick={() => setDarkMode(!darkMode)} className={`p-2 rounded-xl transition ${darkMode ? "bg-gray-800 text-yellow-400" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}>{darkMode ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}</button>
             <button className="p-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:opacity-90 transition"><Rocket className="w-4 h-4" /></button>
             <div className="relative"><button className={`p-2 rounded-xl transition ${darkMode ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}><Bell className="w-4 h-4" /></button><span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 rounded-full text-white text-[9px] flex items-center justify-center font-bold">3</span></div>
