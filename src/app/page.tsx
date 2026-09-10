@@ -477,7 +477,7 @@ export default function Home() {
         <div className="w-full max-w-md bg-[#0e1626] border border-white/10 rounded-3xl p-8 shadow-2xl relative z-10">
           <div className="flex flex-col items-center text-center mb-6">
             <div className="w-16 h-16 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center mb-4 shadow-lg shadow-emerald-500/20">
-              <img src="/logo.png" alt="WApp Manager Pro" className="w-12 h-12 rounded-xl" />
+              <img src="/logo.png" alt="WApp Manager Pro" className="w-12 h-12 rounded-xl object-contain p-1" />
             </div>
             <span className="px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-emerald-400 text-xs font-bold uppercase tracking-wider mb-2">
               ☁️ Web Cloud Portal

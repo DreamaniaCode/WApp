@@ -222,11 +222,16 @@ nav {
 }
 
 .nav-logo {
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  box-shadow: 0 0 20px rgba(34, 197, 94, 0.35);
-  border: 1px solid rgba(34, 197, 94, 0.3);
+  width: 42px;
+  height: 42px;
+  object-fit: contain;
+  filter: drop-shadow(0 0 10px rgba(34, 197, 94, 0.45));
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), filter 0.3s ease;
+}
+
+.nav-brand:hover .nav-logo {
+  transform: scale(1.08);
+  filter: drop-shadow(0 0 16px rgba(74, 222, 128, 0.7));
 }
 
 .nav-title {
@@ -2941,7 +2946,7 @@ window.addEventListener('DOMContentLoaded', () => {
 <div class="chatbot-window" id="cb-window">
   <div class="cb-header">
     <div class="cb-header-info">
-      <div class="cb-avatar">🤖</div>
+      <div class="cb-avatar"><img src="logo.png" alt="WApp Logo" style="width: 24px; height: 24px; object-fit: contain;"></div>
       <div>
         <div class="cb-header-title">Dreamania Sales AI</div>
         <div class="cb-header-status" id="cb-status-txt">Online · Instant Activation</div>
