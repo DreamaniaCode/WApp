@@ -1,0 +1,30 @@
+[
+  {
+    "id": "tpl-welcome",
+    "title": "Welcome Greeting",
+    "category": "Onboarding",
+    "content": "Hello {{name}}! 👋 Welcome to our service. We are excited to have you with us! Let us know if you have any questions.",
+    "createdAt": "2026-09-10T00:12:28.661Z"
+  },
+  {
+    "id": "tpl-reminder",
+    "title": "Appointment / Meeting Reminder",
+    "category": "Reminders",
+    "content": "Hi {{name}}, this is a friendly reminder for our scheduled appointment. Please let us know if you need any adjustments. Have a great day!",
+    "createdAt": "2026-09-10T00:12:28.662Z"
+  },
+  {
+    "id": "tpl-promo",
+    "title": "VIP Exclusive Discount",
+    "category": "Marketing",
+    "content": "🎉 Special offer for {{name}}! Enjoy 20% off your next order today with promo code VIP2026. Reply here to claim your offer!",
+    "createdAt": "2026-09-10T00:12:28.662Z"
+  },
+  {
+    "id": "tpl-followup",
+    "title": "Customer Satisfaction Check",
+    "category": "Support",
+    "content": "Hi {{name}}, following up on our recent conversation. How was your experience? Your feedback means a lot to us!",
+    "createdAt": "2026-09-10T00:12:28.662Z"
+  }
+]

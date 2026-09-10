@@ -11,7 +11,8 @@
     "backend": "node backend.js",
     "electron:dev": "electron .",
     "electron:start": "electron .",
-    "build": "next build",
+    "postinstall": "node patch-wwebjs.js",
+    "build": "node patch-wwebjs.js && next build && node fix-paths.js",
     "dist": "electron-builder"
   },
   "build": {
@@ -67,6 +68,7 @@
       "main.js",
       "preload.js",
       "backend.js",
+      "patch-wwebjs.js",
       "chatbot_rag.js",
       "learned_knowledge.json",
       "rag_sources.json",

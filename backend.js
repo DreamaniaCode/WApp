@@ -1,5 +1,5 @@
 process.on('unhandledRejection', (reason) => {
-    const msg = reason?.message || String(reason);
+    const msg = reason?.stack || reason?.message || String(reason);
     if (msg.includes('Execution context was destroyed')) {
         console.log('[Puppeteer] Navigation context handled smoothly.');
         return;
@@ -7,7 +7,7 @@ process.on('unhandledRejection', (reason) => {
     console.warn('[Process] Handled async rejection:', msg);
 });
 process.on('uncaughtException', (err) => {
-    console.error('[Process] Handled uncaught exception:', err.message);
+    console.error('[Process] Handled uncaught exception:', err?.stack || err?.message || String(err));
 });
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
@@ -25,6 +25,9 @@ const os_1 = __importDefault(require("os"));
 const crypto_1 = __importDefault(require("crypto"));
 const https_1 = __importDefault(require("https"));
 const ChatbotRagEngine = require("./chatbot_rag");
+try { require("./patch-wwebjs"); } catch (_) {}
+const { LoadUtils } = require("whatsapp-web.js/src/util/Injected/Utils");
+const { ExposeStore } = require("whatsapp-web.js/src/util/Injected/Store");
 const port = 3001;
 const app = (0, express_1.default)();
 const httpServer = (0, http_1.createServer)(app);
@@ -78,36 +81,44 @@ const LICENSE_PATH = path_1.default.join(DATA_DIR, "license.json");
 const botEngine = new ChatbotRagEngine(DATA_DIR);
 
 function killStaleBrowserProcesses() {
-    if (process.platform === 'win32') {
-        try {
-            const { execSync } = require('child_process');
-            execSync('wmic process where "name=\'chrome.exe\' and commandline like \'%.wwebjs_auth%\'" call terminate', { stdio: 'ignore' });
-        } catch (e) {}
-    }
+    return new Promise((resolve) => {
+        if (process.platform === 'win32') {
+            try {
+                const { exec } = require('child_process');
+                exec('powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter \\"name = \'chrome.exe\'\\" | Where-Object { $_.CommandLine -like \'*wwebjs_auth*\' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"', { timeout: 6000 }, () => resolve());
+            } catch (e) {
+                resolve();
+            }
+        } else {
+            resolve();
+        }
+    });
 }
 
 function cleanChromiumLocks() {
-    killStaleBrowserProcesses();
     const authPath = process.env.WWEBJS_DATA_PATH || path_1.default.join(process.cwd(), ".wwebjs_auth");
     if (!fs_1.default.existsSync(authPath)) return;
 
-    function removeLocksRecursively(currentDir) {
-        try {
-            const entries = fs_1.default.readdirSync(currentDir, { withFileTypes: true });
-            for (const entry of entries) {
-                const fullPath = path_1.default.join(currentDir, entry.name);
-                if (entry.isDirectory()) {
-                    removeLocksRecursively(fullPath);
-                } else if (["SingletonLock", "SingletonCookie", "SingletonSocket", "LOCK", "LOG.old"].includes(entry.name)) {
+    // Only clean Chromium profile-level singleton locks, NEVER LevelDB database locks inside IndexedDB/LocalStorage
+    const lockTargets = [
+        authPath,
+        path_1.default.join(authPath, "session"),
+        path_1.default.join(authPath, "session", "Default")
+    ];
+
+    for (const dir of lockTargets) {
+        if (fs_1.default.existsSync(dir)) {
+            for (const lockFile of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
+                const target = path_1.default.join(dir, lockFile);
+                if (fs_1.default.existsSync(target)) {
                     try {
-                        fs_1.default.unlinkSync(fullPath);
-                        console.log(`[Watchdog] Removed stale Chromium lock: ${fullPath}`);
+                        fs_1.default.unlinkSync(target);
+                        console.log(`[Watchdog] Removed stale Chromium singleton lock: ${target}`);
                     } catch (e) {}
                 }
             }
-        } catch (e) {}
+        }
     }
-    removeLocksRecursively(authPath);
 }
 
 function safeClearFolder(dirPath, maxRetries = 5, delayMs = 500) {
@@ -119,8 +130,9 @@ function safeClearFolder(dirPath, maxRetries = 5, delayMs = 500) {
             return true;
         } catch (err) {
             console.warn(`[Watchdog] Attempt ${i + 1} to remove ${dirPath} failed (${err.message}), retrying...`);
-            const end = Date.now() + delayMs;
-            while (Date.now() < end) {}
+            try {
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
+            } catch (_) {}
         }
     }
     return false;
@@ -137,34 +149,71 @@ function getStoredLicense() {
     }
     return null;
 }
-// ─── Shared puppeteer args (tuned for fast startup and stability) ────────────
+
+/**
+ * Ensures window.Store and window.WWebJS (with getChat, sendMessage, etc.) are
+ * properly injected into the WhatsApp Web Chromium page before any message is sent.
+ * This completely avoids "Cannot read properties of undefined (reading 'getChat')".
+ */
+async function ensureWWebJSInjected(client) {
+    if (!client || !client.pupPage || client.pupPage.isClosed()) return false;
+    try {
+        const alreadyInjected = await client.pupPage.evaluate(() => {
+            return typeof window.WWebJS !== 'undefined' && typeof window.WWebJS.getChat === 'function';
+        }).catch(() => false);
+
+        if (alreadyInjected) return true;
+
+        // Ensure window.Store is exposed
+        let hasStore = await client.pupPage.evaluate(() => {
+            return typeof window.Store !== 'undefined' && !!window.Store.Chat;
+        }).catch(() => false);
+
+        if (!hasStore) {
+            await client.pupPage.evaluate(ExposeStore).catch(() => {});
+            for (let i = 0; i < 20; i++) {
+                hasStore = await client.pupPage.evaluate(() => {
+                    return typeof window.Store !== 'undefined' && !!window.Store.Chat;
+                }).catch(() => false);
+                if (hasStore) break;
+                await new Promise(r => setTimeout(r, 200));
+            }
+        }
+
+        // Evaluate LoadUtils to populate window.WWebJS
+        await client.pupPage.evaluate(LoadUtils).catch(err => {
+            console.warn("[Watchdog] Notice evaluating LoadUtils:", err.message);
+        });
+
+        // Verify that window.WWebJS.getChat is now a function
+        const verified = await client.pupPage.evaluate(() => {
+            return typeof window.WWebJS !== 'undefined' && typeof window.WWebJS.getChat === 'function';
+        }).catch(() => false);
+
+        if (verified) {
+            console.log("[Watchdog] window.WWebJS utilities successfully confirmed on page.");
+        }
+        return !!verified;
+    } catch (err) {
+        console.warn("[Watchdog] ensureWWebJSInjected error:", err.message);
+        return false;
+    }
+}
+// ─── Shared puppeteer args ──────────────────────────────────────────────────
+const WIN_CHROME_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36";
 const PUPPETEER_ARGS = [
     "--no-sandbox",
     "--disable-setuid-sandbox",
-    "--disable-dev-shm-usage",
-    "--disable-accelerated-2d-canvas",
-    "--no-first-run",
-    "--no-zygote",
-    "--disable-gpu",
-    "--disable-extensions",
     "--disable-blink-features=AutomationControlled",
-    "--safebrowsing-disable-auto-update",
-    // Performance & Keep-alive: keep renderer alive even when backgrounded/minimized
+    "--no-first-run",
+    "--no-default-browser-check",
     "--disable-backgrounding-occluded-windows",
     "--disable-renderer-backgrounding",
     "--disable-background-timer-throttling",
     "--disable-features=CalculateNativeWinOcclusion",
-    "--disable-breakpad",
-    "--disable-client-side-phishing-detection",
-    // Reduce memory overhead
-    "--disable-ipc-flooding-protection",
-    "--memory-pressure-off",
-    "--disable-hang-monitor",
-    "--disable-prompt-on-repost",
-    "--disable-translate",
-    "--metrics-recording-only",
-    "--mute-audio",
-    "--no-default-browser-check",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    `--user-agent=${WIN_CHROME_USER_AGENT}`,
 ];
 // ─── State ────────────────────────────────────────────────────────────────────
 let qrCodeData = "";
@@ -198,17 +247,25 @@ loadAutoResponses();
 
 /**
  * Intelligent WhatsApp Phone Number Resolver:
- * Cleans formatting and resolves local format numbers (e.g. 0638273545) by determining
+ * Cleans formatting and resolves local format numbers (e.g. 0612345678) by determining
  * the user's active country code (+212 / +33 / etc.) and verifying via getNumberId.
  */
 async function resolveWhatsAppNumber(rawNumber, client) {
     if (!rawNumber) return null;
-    let clean = String(rawNumber).trim().replace(/[^\d+]/g, '');
+    const str = String(rawNumber).trim();
+    if (str.includes('@lid') || str.includes('@c.us') || str.includes('@g.us')) {
+        return {
+            jid: str,
+            number: str.split('@')[0]
+        };
+    }
+
+    let clean = str.replace(/[^\d+]/g, '');
     if (clean.startsWith('00')) clean = clean.substring(2);
     if (clean.startsWith('+')) clean = clean.substring(1);
 
     // Extract country code from active client's own phone number if available
-    let myCountryCode = "";
+    let myCountryCode = "212"; // Default to Morocco
     try {
         const myWid = client?.info?.wid?.user || "";
         if (myWid.startsWith("212")) myCountryCode = "212";
@@ -225,24 +282,24 @@ async function resolveWhatsAppNumber(rawNumber, client) {
 
     const candidates = [];
 
-    // Case 1: Local number starting with 0 (e.g. 0638273545)
+    // Case 1: Local number starting with 0 (e.g. 0612345678 or 0707031614)
     if (clean.startsWith('0') && clean.length >= 9) {
         const withoutZero = clean.substring(1);
-        if (myCountryCode) candidates.push(`${myCountryCode}${withoutZero}`);
+        if (myCountryCode && !candidates.includes(`${myCountryCode}${withoutZero}`)) candidates.push(`${myCountryCode}${withoutZero}`);
         if (!candidates.includes(`212${withoutZero}`)) candidates.push(`212${withoutZero}`);
         if (!candidates.includes(`33${withoutZero}`)) candidates.push(`33${withoutZero}`);
     }
 
-    // Case 2: Number already includes country code (or raw)
-    if (!candidates.includes(clean)) {
-        candidates.push(clean);
-    }
-
-    // Case 3: 9 digits without 0 (e.g. 638273545)
+    // Case 2: 9 digits without 0 (e.g. 638273545 or 707031614)
     if (clean.length === 9 && (clean.startsWith('6') || clean.startsWith('7'))) {
         if (myCountryCode && !candidates.includes(`${myCountryCode}${clean}`)) candidates.push(`${myCountryCode}${clean}`);
         if (!candidates.includes(`212${clean}`)) candidates.push(`212${clean}`);
         if (!candidates.includes(`33${clean}`)) candidates.push(`33${clean}`);
+    }
+
+    // Case 3: Full international format or raw digits
+    if (!candidates.includes(clean)) {
+        candidates.push(clean);
     }
 
     // Test candidates on WhatsApp
@@ -393,31 +450,15 @@ function buildClientOptions(pairWithPhoneNumber) {
         authStrategy: new whatsapp_web_js_1.LocalAuth({
             dataPath: process.env.WWEBJS_DATA_PATH || "./.wwebjs_auth",
         }),
-        // Cache disabled to avoid getting stuck during authentication
         webVersionCache: {
             type: 'none',
         },
-        // Raise auth timeout so slow machines don't give up early
         authTimeoutMs: 60000,
-        userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
-        evalOnNewDoc: () => {
-            try {
-                // Strip webdriver automation flag
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                // Provide realistic mock of window.chrome
-                window.chrome = {
-                    runtime: {},
-                    loadTimes: function () {},
-                    csi: function () {},
-                    app: {}
-                };
-                // Realistic languages and plugins
-                Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en', 'fr'] });
-                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            } catch (_) {}
-        },
+        takeoverOnConflict: true,
+        takeoverTimeoutMs: 10000,
+        userAgent: WIN_CHROME_USER_AGENT,
         puppeteer: {
-            headless: true,
+            headless: process.env.SHOW_CHROME === 'true' ? false : true,
             dumpio: false,
             executablePath: chromePath,
             args: PUPPETEER_ARGS,
@@ -429,6 +470,27 @@ function buildClientOptions(pairWithPhoneNumber) {
         opts.pairWithPhoneNumber = pairWithPhoneNumber;
     }
     return opts;
+}
+
+function hookPageLogging(client) {
+    let checkCount = 0;
+    const interval = setInterval(() => {
+        checkCount++;
+        if (client.pupPage && !client.pupPage.isClosed()) {
+            clearInterval(interval);
+            client.pupPage.on('console', msg => {
+                const text = msg.text();
+                if (text.includes('Error') || text.includes('error') || text.includes('fail') || text.includes('denied') || text.includes('WA')) {
+                    console.log(`[Browser Console] ${text.slice(0, 200)}`);
+                }
+            });
+            client.pupPage.on('pageerror', err => {
+                console.log(`[Browser PageError] ${err.message}`);
+            });
+        } else if (checkCount > 50) {
+            clearInterval(interval);
+        }
+    }, 250);
 }
 /**
  * Destroy the active client cleanly, reset shared state.
@@ -498,6 +560,7 @@ function scheduleAutoReconnect(delayMs = 5000) {
 
 function startWatchdogHeartbeat() {
     if (heartbeatInterval) clearInterval(heartbeatInterval);
+    let consecutiveFailures = 0;
     heartbeatInterval = setInterval(async () => {
         if (!activeClient || !isReady) return;
         try {
@@ -505,9 +568,19 @@ function startWatchdogHeartbeat() {
                 activeClient.getState(),
                 new Promise((_, reject) => setTimeout(() => reject(new Error("Heartbeat timeout")), 10000))
             ]);
-            if (!state || state === "CONFLICT" || state === "UNPAIRED") {
-                console.warn(`[Watchdog] Abnormal WhatsApp state: ${state}. Auto-reconnecting...`);
-                scheduleAutoReconnect(3000);
+            if (state === "CONNECTED" || state === "PAIRING" || state === "OPENING") {
+                consecutiveFailures = 0;
+                return;
+            }
+            if (state === "UNPAIRED") {
+                consecutiveFailures++;
+                console.warn(`[Watchdog] Unpaired state detected (${consecutiveFailures}/3)`);
+                if (consecutiveFailures >= 3) {
+                    console.warn(`[Watchdog] Confirmed UNPAIRED. Auto-reconnecting...`);
+                    scheduleAutoReconnect(3000);
+                }
+            } else {
+                console.log(`[Watchdog] Heartbeat state: ${state || 'transient/syncing'}`);
             }
         } catch (err) {
             console.warn(`[Watchdog] Heartbeat check issue:`, err.message);
@@ -524,8 +597,12 @@ function createAndStartQRClient() {
     const client = new whatsapp_web_js_1.Client(buildClientOptions());
     activeClient = client;
     registerClientEvents(client);
+    hookPageLogging(client);
     client.initialize().catch(err => {
         console.warn("[Watchdog] WhatsApp initialize notice:", err?.stack || err);
+        if (activeClient === client) {
+            scheduleAutoReconnect(3000);
+        }
     });
     return client;
 }
@@ -534,6 +611,9 @@ function createAndStartQRClient() {
  * All socket.io broadcasts happen here.
  */
 function registerClientEvents(client) {
+    client.on("error", (err) => {
+        console.warn("[Watchdog] WhatsApp client emitted error:", err?.message || String(err));
+    });
     client.on("qr", (qr) => {
         console.log("QR RECEIVED");
         qrCodeData = qr;
@@ -545,12 +625,13 @@ function registerClientEvents(client) {
         }
         io.emit("qr", qr);
     });
-    client.on("ready", () => {
+    client.on("ready", async () => {
         console.log("Client is ready!");
         if (authStallTimer) {
             clearInterval(authStallTimer);
             authStallTimer = null;
         }
+        await ensureWWebJSInjected(client);
         isReady = true;
         isAuthenticated = true;
         qrCodeData = ""; // clear QR once ready
@@ -563,68 +644,102 @@ function registerClientEvents(client) {
         qrCodeData = "";
         io.emit("authenticated", true);
 
-        // Active DOM Watchdog: Monitor WhatsApp Web UI directly in Chromium
-        // NEVER destructively wipe the session while authenticated!
-        if (authStallTimer) clearInterval(authStallTimer);
-        let checks = 0;
+        // Responsive watchdog: Polls every 1.5s after authentication to detect when WhatsApp Web finishes chat sync
+        if (authStallTimer) {
+            clearInterval(authStallTimer);
+            clearTimeout(authStallTimer);
+        }
+        let checkCount = 0;
         authStallTimer = setInterval(async () => {
-            checks++;
-            if (isReady || activeClient !== client) {
-                clearInterval(authStallTimer);
+            checkCount++;
+            if (isReady || activeClient !== client || checkCount > 40) {
+                if (authStallTimer) clearInterval(authStallTimer);
                 authStallTimer = null;
                 return;
             }
             try {
                 if (client.pupPage && !client.pupPage.isClosed()) {
-                    const uiReady = await client.pupPage.evaluate(() => {
-                        const hasPane = !!document.querySelector('#pane-side, [data-testid="chat-list"], [data-testid="chat-list-search"], header');
-                        const hasStore = typeof window.Store !== 'undefined' && !!(window.Store.Conn || window.Store.User);
+                    const uiActive = await client.pupPage.evaluate(() => {
+                        const hasPane = !!(document.querySelector('#pane-side') || document.querySelector('[data-testid="chat-list"]'));
+                        const hasStore = typeof window.Store !== 'undefined' && !!(window.Store.Chat || window.Store.SendMessage);
                         return hasPane || hasStore;
                     }).catch(() => false);
 
-                    if (uiReady && !isReady) {
-                        console.log("[Watchdog] WhatsApp Web UI confirmed ready in Chromium! Transitioning to READY.");
-                        clearInterval(authStallTimer);
+                    if (uiActive && !isReady) {
+                        console.log("[Watchdog] WhatsApp Web UI confirmed active. Ensuring WWebJS injection & emitting ready!");
+                        if (authStallTimer) clearInterval(authStallTimer);
                         authStallTimer = null;
+                        await ensureWWebJSInjected(client);
                         isReady = true;
                         isAuthenticated = true;
                         qrCodeData = "";
                         io.emit("ready", true);
                         startWatchdogHeartbeat();
-                        return;
                     }
                 }
-            } catch (err) {
-                // Ignore transient frame navigation context errors
-            }
-
-            // Large account progress notification (keep session intact!)
-            if (checks === 60) {
-                console.log("[Watchdog] Chat sync is ongoing for large account, keeping session intact...");
-                io.emit("loading_screen", { percent: 99, message: "Synchronizing chat history... Keep WhatsApp open on phone." });
-            }
+            } catch (_) {}
         }, 1500);
     });
-    client.on("disconnected", (reason) => {
+    client.on("disconnected", async (reason) => {
         console.log("Client was logged out or disconnected:", reason);
         if (authStallTimer) {
-            clearInterval(authStallTimer);
+            clearTimeout(authStallTimer);
             authStallTimer = null;
         }
         if (client === activeClient) {
-            isReady = false;
-            isAuthenticated = false;
-            qrCodeData = "";
-            io.emit("disconnected", reason);
             if (reason === "LOGOUT") {
-                console.log("[Watchdog] Logged out by WhatsApp server. Cleaning session folder for fresh QR...");
+                console.log("[Watchdog] Logged out by WhatsApp server. Stopping browser and wiping session for fresh QR...");
+                isReady = false;
+                isAuthenticated = false;
+                qrCodeData = "";
+                io.emit("disconnected", reason);
+                
+                // MUST destroy client and kill processes FIRST so Windows releases Crashpad/LevelDB locks!
+                await destroyActiveClient(true);
+                await killStaleBrowserProcesses();
+                await new Promise(r => setTimeout(r, 600));
+
                 const authPath = process.env.WWEBJS_DATA_PATH || path_1.default.join(process.cwd(), ".wwebjs_auth");
                 safeClearFolder(authPath);
                 cleanChromiumLocks();
-                scheduleAutoReconnect(1000);
+
+                setTimeout(() => {
+                    console.log("[Watchdog] Restarting fresh client for new QR code...");
+                    createAndStartQRClient();
+                }, 1000);
+            } else if (reason === "Max qrcode retries reached") {
+                console.log("[Watchdog] QR max retries reached. Refreshing QR...");
+                isReady = false;
+                isAuthenticated = false;
+                qrCodeData = "";
+                io.emit("disconnected", reason);
+                scheduleAutoReconnect(2000);
             } else if (reason !== "manual_reset") {
-                console.log(`[Watchdog] Unexpected disconnect (${reason}). Triggering auto-reconnect...`);
-                scheduleAutoReconnect(3000);
+                // If client was authenticated, do NOT immediately destroy the session on transient disconnect
+                console.log(`[Watchdog] Disconnect event with reason: ${reason}. Checking if browser session is alive...`);
+                setTimeout(async () => {
+                    if (activeClient === client && client.pupPage && !client.pupPage.isClosed()) {
+                        try {
+                            const stillAlive = await client.pupPage.evaluate(() => {
+                                return !!(document.querySelector('#pane-side') || (window.Store && window.Store.Chat));
+                            }).catch(() => false);
+                            if (stillAlive) {
+                                console.log("[Watchdog] Session is still alive in Chromium. Restoring ready state!");
+                                await ensureWWebJSInjected(client);
+                                isReady = true;
+                                isAuthenticated = true;
+                                io.emit("ready", true);
+                                return;
+                            }
+                        } catch (_) {}
+                    }
+                    console.log(`[Watchdog] Session confirmed lost (${reason}). Scheduling auto-reconnect...`);
+                    isReady = false;
+                    isAuthenticated = false;
+                    qrCodeData = "";
+                    io.emit("disconnected", reason);
+                    scheduleAutoReconnect(5000);
+                }, 4000);
             }
         }
     });
@@ -781,17 +896,22 @@ io.on("connection", (socket) => {
     else if (qrCodeData) {
         socket.emit("qr", qrCodeData);
     }
-    socket.on("get_status", () => {
+    const sendStatus = () => {
         if (isReady) {
             socket.emit("ready", true);
+        }
+        else if (isAuthenticated) {
+            socket.emit("authenticated", true);
         }
         else if (qrCodeData) {
             socket.emit("qr", qrCodeData);
         }
         else {
-            socket.emit("status_response", { isReady: false, qr: null });
+            socket.emit("status_response", { isReady: false, isAuthenticated: false, qr: null });
         }
-    });
+    };
+    socket.on("get_status", sendStatus);
+    socket.on("status", sendStatus);
     socket.on("disconnect", () => {
         console.log("Client disconnected");
     });
@@ -800,18 +920,43 @@ io.on("connection", (socket) => {
         if (!activeClient)
             return socket.emit("messageError", { number, error: "No active client" });
         try {
+            await ensureWWebJSInjected(activeClient);
             const formattedNumber = number.includes("@c.us") ? number : `${number}@c.us`;
-            await activeClient.sendMessage(formattedNumber, message);
+            try {
+                await activeClient.sendMessage(formattedNumber, message);
+            } catch (firstErr) {
+                if (firstErr.message && (firstErr.message.includes("getChat") || firstErr.message.includes("WWebJS"))) {
+                    await ensureWWebJSInjected(activeClient);
+                    await new Promise(r => setTimeout(r, 600));
+                    await activeClient.sendMessage(formattedNumber, message);
+                } else {
+                    throw firstErr;
+                }
+            }
             socket.emit("messageSent", { number, status: "success" });
         }
         catch (error) {
             console.error("Error sending message:", error);
-            socket.emit("messageError", { number, error: "Failed to send" });
+            socket.emit("messageError", { number, error: error.message || "Failed to send" });
         }
     });
 });
 // ─── REST API ─────────────────────────────────────────────────────────────────
-app.get("/api/wa-status", (_req, res) => {
+app.get("/api/wa-status", async (_req, res) => {
+    if (!isReady && isAuthenticated && activeClient && activeClient.pupPage && !activeClient.pupPage.isClosed()) {
+        try {
+            const hasPane = await activeClient.pupPage.evaluate(() => {
+                return !!(document.querySelector('#pane-side') || document.querySelector('[data-testid="chat-list"]') || (window.Store && window.Store.Chat));
+            }).catch(() => false);
+            if (hasPane) {
+                console.log("[Status API] Detected active WhatsApp Web UI while not marked ready. Marking session ready!");
+                await ensureWWebJSInjected(activeClient);
+                isReady = true;
+                qrCodeData = "";
+                io.emit("ready", true);
+            }
+        } catch (_) {}
+    }
     res.json({ isReady, authenticated: isAuthenticated, qr: qrCodeData || null });
 });
 
@@ -820,9 +965,11 @@ app.post("/api/logout", async (_req, res) => {
     console.log("[API] User requested logout...");
     io.emit("disconnected", "logout");
     await destroyActiveClient(true);
+    await killStaleBrowserProcesses();
+    cleanChromiumLocks();
+    await new Promise(r => setTimeout(r, 600));
     const authPath = process.env.WWEBJS_DATA_PATH || path_1.default.join(process.cwd(), ".wwebjs_auth");
     safeClearFolder(authPath);
-    cleanChromiumLocks();
     setTimeout(() => {
         console.log("[API] Restarting in fresh QR mode after logout...");
         createAndStartQRClient();
@@ -947,8 +1094,9 @@ app.post("/api/send-bulk", async (req, res) => {
                 console.log("Campaign stopped by user");
                 break;
             }
+            const number = recipient.number || "";
+            const recipientName = recipient.name || (recipient.variables && recipient.variables.name) || "";
             try {
-                const number = recipient.number || "";
                 console.log(`Resolving contact number on WhatsApp: ${number}`);
                 const resolved = await resolveWhatsAppNumber(number, client);
                 if (!resolved || !resolved.jid) {
@@ -957,9 +1105,15 @@ app.post("/api/send-bulk", async (req, res) => {
                 }
                 const formattedNumber = resolved.jid;
                 console.log(`Formatted number: ${formattedNumber}`);
-                const personalizedMessage = message ? message.replace(/{{name}}/g, name) : "";
+                let personalizedMessage = message ? message.replace(/{{name}}/g, recipientName) : "";
+                if (personalizedMessage && recipient.variables && typeof recipient.variables === "object") {
+                    for (const [k, v] of Object.entries(recipient.variables)) {
+                        personalizedMessage = personalizedMessage.replace(new RegExp(`{{${k}}}`, 'g'), v || "");
+                    }
+                }
                 if (!isReady)
                     throw new Error("WhatsApp disconnected during campaign");
+                await ensureWWebJSInjected(client);
                 if (attachments.length > 0) {
                     const { mimetype, data, filename } = attachments[0];
                     const media = new whatsapp_web_js_1.MessageMedia(mimetype, data, filename);
@@ -977,17 +1131,29 @@ app.post("/api/send-bulk", async (req, res) => {
                     console.log(`Message sent to ${formattedNumber}`);
                 }
                 sentCount++;
-                currentBulkResults.push({ number, name: recipient.name, status: "success" });
+                const resultItem = {
+                    number,
+                    name: recipientName,
+                    status: "success",
+                    timestamp: new Date().toISOString()
+                };
+                currentBulkResults.push(resultItem);
                 console.log(`Sent to ${number} (${sentCount}/${total})`);
                 const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
                 const nextSendAt = Date.now() + delay;
-                io.emit("bulkProgress", {
-                    current: sentCount,
+                const progressPayload = {
+                    current: sentCount + failCount,
                     total,
+                    success: sentCount,
+                    failed: failCount,
                     lastNumber: number,
-                    status: "success",
+                    lastResult: resultItem,
+                    status: "Sending...",
                     nextSendAt: (sentCount + failCount) < total && isBulkRunning ? nextSendAt : null,
-                });
+                    results: currentBulkResults
+                };
+                io.emit("bulkProgress", progressPayload);
+                io.emit("bulk_progress", progressPayload);
                 if ((sentCount + failCount) < total && isBulkRunning) {
                     await new Promise(resolve => setTimeout(resolve, delay));
                 }
@@ -995,20 +1161,31 @@ app.post("/api/send-bulk", async (req, res) => {
             catch (e) {
                 console.error(`Failed to send to ${recipient.number}`, e);
                 failCount++;
-                currentBulkResults.push({
+                let errMsg = e.message || "Failed to send";
+                if (errMsg.includes("No LID for user") || errMsg.includes("wid error") || errMsg.includes("not registered")) {
+                    errMsg = "Number not registered on WhatsApp";
+                }
+                const failItem = {
                     number: recipient.number,
-                    name: recipient.name,
+                    name: recipientName,
                     status: "error",
-                    error: e.message
-                });
-                io.emit("bulkProgress", {
-                    current: sentCount,
+                    error: errMsg,
+                    timestamp: new Date().toISOString()
+                };
+                currentBulkResults.push(failItem);
+                const progressPayload = {
+                    current: sentCount + failCount,
                     total,
+                    success: sentCount,
+                    failed: failCount,
                     lastNumber: recipient.number,
-                    status: "error",
-                    error: e.message,
+                    lastResult: failItem,
+                    status: "Sending...",
                     nextSendAt: (sentCount + failCount) < total && isBulkRunning ? Date.now() + 500 : null,
-                });
+                    results: currentBulkResults
+                };
+                io.emit("bulkProgress", progressPayload);
+                io.emit("bulk_progress", progressPayload);
                 if ((sentCount + failCount) < total && isBulkRunning) {
                     await new Promise(resolve => setTimeout(resolve, 500)); // Short delay after error
                 }
@@ -1021,9 +1198,11 @@ app.post("/api/send-bulk", async (req, res) => {
             timestamp: new Date().toISOString(),
             total,
             sentCount,
-            message,
+            failCount,
+            message: message || (attachments.length > 0 ? `[${attachments.length} File(s)]` : ""),
             attachmentCount: attachments.length,
             duration: Math.floor((endTime - startTime) / 1000),
+            results: currentBulkResults
         };
         try {
             const historyPath = path_1.default.join(DATA_DIR, 'history.json');
@@ -1032,12 +1211,24 @@ app.post("/api/send-bulk", async (req, res) => {
                 history = JSON.parse(fs_1.default.readFileSync(historyPath, 'utf8'));
             }
             history.unshift(historyItem);
-            fs_1.default.writeFileSync(historyPath, JSON.stringify(history.slice(0, 50), null, 2));
+            fs_1.default.writeFileSync(historyPath, JSON.stringify(history.slice(0, 100), null, 2));
         }
         catch (err) {
             console.error("Failed to save history:", err);
         }
-        io.emit("bulkComplete", { total, sentCount, results: currentBulkResults });
+        const completePayload = {
+            total,
+            current: total,
+            sentCount,
+            failCount,
+            success: sentCount,
+            failed: failCount,
+            status: "Completed",
+            results: currentBulkResults
+        };
+        io.emit("bulkProgress", completePayload);
+        io.emit("bulk_progress", completePayload);
+        io.emit("bulkComplete", completePayload);
     })();
     // @ts-ignore
     res.json({ success: true, message: "Bulk sending started" });
@@ -1060,6 +1251,30 @@ app.get("/api/history", (_req, res) => {
     }
     catch {
         res.status(500).json({ error: "Failed to load history" });
+    }
+});
+app.delete("/api/history", (_req, res) => {
+    try {
+        const historyPath = path_1.default.join(DATA_DIR, 'history.json');
+        fs_1.default.writeFileSync(historyPath, JSON.stringify([], null, 2));
+        res.json({ success: true, message: "History cleared successfully" });
+    }
+    catch {
+        res.status(500).json({ error: "Failed to clear history" });
+    }
+});
+app.delete("/api/history/:id", (req, res) => {
+    try {
+        const historyPath = path_1.default.join(DATA_DIR, 'history.json');
+        if (fs_1.default.existsSync(historyPath)) {
+            let history = JSON.parse(fs_1.default.readFileSync(historyPath, 'utf8'));
+            history = history.filter((h) => h.id !== req.params.id);
+            fs_1.default.writeFileSync(historyPath, JSON.stringify(history, null, 2));
+        }
+        res.json({ success: true, message: "Campaign removed from history" });
+    }
+    catch {
+        res.status(500).json({ error: "Failed to delete item from history" });
     }
 });
 // ─── Group Extraction ─────────────────────────────────────────────────────────
@@ -1319,7 +1534,7 @@ app.post("/api/reconnect", async (_req, res) => {
 });
 // ─── Chatbot & RAG API ────────────────────────────────────────────────────────
 app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", version: "2026.4.0", timestamp: Date.now() });
+    res.json({ status: "ok", version: "2026.5.0", timestamp: Date.now() });
 });
 app.get("/api/chatbot/stats", (_req, res) => {
     res.json({
@@ -1512,6 +1727,7 @@ app.post("/api/send-single", async (req, res) => {
                 return !!(document.querySelector('#pane-side') || (window.Store && window.Store.Chat));
             });
             if (hasChats) {
+                await ensureWWebJSInjected(activeClient);
                 isReady = true;
                 isAuthenticated = true;
             }
@@ -1529,6 +1745,8 @@ app.post("/api/send-single", async (req, res) => {
         return res.status(503).json({ error: "WhatsApp client is not connected. Please connect your session in Devices." });
     }
     try {
+        await ensureWWebJSInjected(activeClient);
+
         const resolved = await resolveWhatsAppNumber(recipient, activeClient);
         if (!resolved || !resolved.jid) {
             return res.status(400).json({ error: "Invalid phone number." });
@@ -1537,14 +1755,29 @@ app.post("/api/send-single", async (req, res) => {
         const formattedNumber = resolved.jid;
         let sentResult;
 
-        if (attachment && attachment.data && attachment.mimetype) {
-            const media = new whatsapp_web_js_1.MessageMedia(attachment.mimetype, attachment.data, attachment.filename || 'file');
-            const options = message && message.trim() ? { caption: message.trim() } : {};
-            sentResult = await activeClient.sendMessage(formattedNumber, media, options);
-        } else if (message && message.trim()) {
-            sentResult = await activeClient.sendMessage(formattedNumber, message.trim());
-        } else {
-            return res.status(400).json({ error: "Message text or media attachment is required." });
+        const doSend = async () => {
+            if (attachment && attachment.data && attachment.mimetype) {
+                const media = new whatsapp_web_js_1.MessageMedia(attachment.mimetype, attachment.data, attachment.filename || 'file');
+                const options = message && message.trim() ? { caption: message.trim() } : {};
+                return await activeClient.sendMessage(formattedNumber, media, options);
+            } else if (message && message.trim()) {
+                return await activeClient.sendMessage(formattedNumber, message.trim());
+            } else {
+                throw new Error("Message text or media attachment is required.");
+            }
+        };
+
+        try {
+            sentResult = await doSend();
+        } catch (sendErr) {
+            if (sendErr.message && (sendErr.message.includes("getChat") || sendErr.message.includes("WWebJS"))) {
+                console.warn("[/api/send-single] Retrying after injecting WWebJS utils...", sendErr.message);
+                await ensureWWebJSInjected(activeClient);
+                await new Promise(r => setTimeout(r, 800));
+                sentResult = await doSend();
+            } else {
+                throw sendErr;
+            }
         }
 
         console.log(`[/api/send-single] Message successfully sent to ${formattedNumber}`);
@@ -1556,7 +1789,11 @@ app.post("/api/send-single", async (req, res) => {
         });
     } catch (err) {
         console.error("[/api/send-single] Error:", err);
-        res.status(500).json({ error: err.message || "Failed to send message" });
+        let userMsg = err.message || "Failed to send message";
+        if (userMsg.includes("No LID for user") || userMsg.includes("wid error") || userMsg.includes("not registered")) {
+            userMsg = `The phone number (${recipient}) is not registered on WhatsApp or is invalid. Please check the number with country code.`;
+        }
+        res.status(500).json({ error: userMsg });
     }
 });
 
@@ -1735,6 +1972,7 @@ app.get("/api/dashboard-metrics", (_req, res) => {
     const botStats = typeof botEngine.getStats === 'function' ? botEngine.getStats() : { totalOutgoingLearned: 0, incomingRecorded: 0 };
 
     res.json({
+        totalMessages: totalSent,
         messagesSent: totalSent,
         messagesSentToday: sentToday,
         activeDevices: isReady ? 1 : 0,
@@ -1745,13 +1983,19 @@ app.get("/api/dashboard-metrics", (_req, res) => {
             } catch(e) {}
             return 0;
         })(),
+        totalTemplates: messageTemplates.length,
         templatesCount: messageTemplates.length,
         autoReplyRules: autoResponses.length,
         autoReplyTotalResponses: botStats.totalOutgoingLearned || autoResponses.length * 2,
+        chatbotEnabled: (typeof chatbotConfig !== 'undefined' && chatbotConfig.enabled) || false,
         chatbotActiveFlows: botEngine.sources ? botEngine.sources.length : 1,
         chatbotConversations: botStats.incomingRecorded || 0,
+        callResponderEnabled: callResponderConfig.enabled || false,
         callResponderActiveRules: callResponderConfig.enabled ? 1 : 0,
         callResponderTotalResponses: callResponderConfig.stats.repliesSent || 0,
+        rejectedCalls: callResponderConfig.stats.rejectedCalls || 0,
+        botReplies: botStats.totalOutgoingLearned || 0,
+        bulkCampaigns: history.length,
         bulkCampaignsCompleted: history.length,
         bulkSuccessRate: successRate
     });
@@ -1799,6 +2043,7 @@ app.post("/api/request-pairing-code", async (req, res) => {
     }));
     activeClient = phoneClient;
     registerClientEvents(phoneClient);
+    hookPageLogging(phoneClient);
     // Wrap in a promise that resolves when the "code" event fires
     const codePromise = new Promise((resolve, reject) => {
         // whatsapp-web.js emits "code" with the pairing code
@@ -1837,29 +2082,68 @@ app.post("/api/request-pairing-code", async (req, res) => {
         res.status(500).json({ error: error.message || "Failed to get pairing code" });
     }
 });
+
+// ─── Health API ─────────────────────────────────────────────────────────────
+app.get("/api/health", (_req, res) => {
+    res.json({ status: "ok", timestamp: Date.now() });
+});
+
+// ─── Status API ──────────────────────────────────────────────────────────────
+app.get("/api/status", async (_req, res) => {
+    if (!isReady && isAuthenticated && activeClient && activeClient.pupPage && !activeClient.pupPage.isClosed()) {
+        try {
+            const hasPane = await activeClient.pupPage.evaluate(() => {
+                return !!(document.querySelector('#pane-side') || document.querySelector('[data-testid="chat-list"]') || (window.Store && window.Store.Chat));
+            }).catch(() => false);
+            if (hasPane) {
+                console.log("[Status API] Detected active WhatsApp Web UI while not marked ready. Marking session ready!");
+                await ensureWWebJSInjected(activeClient);
+                isReady = true;
+                qrCodeData = "";
+                io.emit("ready", true);
+            }
+        } catch (_) {}
+    }
+    res.json({
+        isReady,
+        isAuthenticated,
+        hasQr: !!qrCodeData,
+        qr: qrCodeData || ""
+    });
+});
+
 // ─── Reset Session ────────────────────────────────────────────────────────────
 app.post("/api/reset-session", async (_req, res) => {
     console.log("[API] Resetting WhatsApp session on request...");
     // Notify frontend
     io.emit("disconnected", "manual_reset");
+    io.emit("loading_screen", { percent: 10, message: "Resetting WhatsApp session and clearing locks..." });
     await destroyActiveClient(true);
-    // Clear auth folder for a clean restart
+    // Kill any lingering browser processes first so files aren't locked
+    await killStaleBrowserProcesses();
+    cleanChromiumLocks();
+    await new Promise(r => setTimeout(r, 800));
+    // Clear auth folder for a fresh start
     const authPath = process.env.WWEBJS_DATA_PATH || path_1.default.join(process.cwd(), ".wwebjs_auth");
     safeClearFolder(authPath);
-    cleanChromiumLocks();
-    // Short delay, then restart in QR mode
+    // 2.5s delay to ensure Windows releases all file handles before launching fresh Chromium
     setTimeout(() => {
         console.log("[API] Restarting fresh in QR mode...");
         createAndStartQRClient();
-    }, 600);
+    }, 2500);
     res.json({ success: true, message: "Session reset. Restarting in QR mode." });
 });
 // ─── Static files & Web UI ──────────────────────────────────────────────────
+const landingPath = path_1.default.join(__dirname, "landing");
+if (fs_1.default.existsSync(landingPath)) {
+    app.use("/landing", express_1.default.static(landingPath));
+}
+
 const outPath = path_1.default.join(__dirname, "out");
 if (fs_1.default.existsSync(outPath)) {
     app.use(express_1.default.static(outPath));
     app.get("*", (req, res, next) => {
-        if (req.path.startsWith("/api/")) return next();
+        if (req.path.startsWith("/api/") || req.path.startsWith("/landing")) return next();
         res.sendFile(path_1.default.join(outPath, "index.html"));
     });
 }

@@ -4,8 +4,99 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
 
+// Enforce single instance so multiple clicks don't spawn duplicate instances
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+    // Secondary instance: immediately exit without triggering quit cleanup hooks on the primary instance
+    app.exit(0);
+}
+
 let mainWindow;
 let backendProcess;
+let isAppQuitting = false;
+let backendStarted = false;
+
+const SPLASH_HTML = `data:text/html;charset=utf-8,${encodeURIComponent(`
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Starting WApp Manager Pro...</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 0;
+    background: #0a0e1a;
+    color: #f8fafc;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    user-select: none;
+    overflow: hidden;
+  }
+  .card {
+    text-align: center;
+    padding: 44px 36px;
+    border-radius: 24px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6);
+    max-width: 440px;
+    width: 90%;
+  }
+  .spinner {
+    width: 52px;
+    height: 52px;
+    margin: 0 auto 24px;
+    border: 3.5px solid rgba(99, 102, 241, 0.15);
+    border-top-color: #6366f1;
+    border-right-color: #a855f7;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  h1 {
+    margin: 0 0 8px;
+    font-size: 22px;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+    background: linear-gradient(135deg, #60a5fa 0%, #a855f7 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  p {
+    margin: 0;
+    font-size: 13px;
+    color: #94a3b8;
+    line-height: 1.5;
+  }
+  .badge {
+    display: inline-block;
+    margin-top: 16px;
+    padding: 4px 12px;
+    border-radius: 9999px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #60a5fa;
+    background: rgba(59, 130, 246, 0.1);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+  }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="spinner"></div>
+    <h1>WApp Manager Pro</h1>
+    <p>Starting WhatsApp engine &amp; UI services...</p>
+    <div class="badge">Enterprise Edition v2026.5.0</div>
+  </div>
+</body>
+</html>
+`)}`;
 
 function createWindow() {
     let appIcon = null;
@@ -37,20 +128,29 @@ function createWindow() {
         title: 'WApp Manager Pro v2026.5.0 – Ultimate Enterprise Edition Full Activated (ViP) - [ DreamaniaCode ]'
     });
 
-    // Attempt loading from backend on port 3001 with active retry
-    let retries = 0;
-    const tryLoad = () => {
-        mainWindow.loadURL('http://localhost:3001').catch(() => {
-            retries++;
-            if (retries < 10 && mainWindow && !mainWindow.isDestroyed()) {
-                setTimeout(tryLoad, 800);
-            } else if (mainWindow && !mainWindow.isDestroyed()) {
-                const indexPath = path.join(__dirname, 'out', 'index.html');
-                mainWindow.loadFile(indexPath);
+    // Show beautiful branded dark-theme splash card while backend boots
+    mainWindow.loadURL(SPLASH_HTML);
+
+    // Actively poll until http://localhost:3001 is healthy, then load the full Next.js UI
+    let isAppLoaded = false;
+    const pollBackend = () => {
+        if (isAppLoaded || !mainWindow || mainWindow.isDestroyed()) return;
+
+        http.get('http://localhost:3001/api/health', (res) => {
+            if (res.statusCode === 200 && !isAppLoaded && mainWindow && !mainWindow.isDestroyed()) {
+                isAppLoaded = true;
+                mainWindow.loadURL('http://localhost:3001');
+            } else if (!isAppLoaded) {
+                setTimeout(pollBackend, 500);
+            }
+        }).on('error', () => {
+            if (!isAppLoaded) {
+                setTimeout(pollBackend, 500);
             }
         });
     };
-    tryLoad();
+
+    setTimeout(pollBackend, 300);
 
     mainWindow.on('closed', function () {
         mainWindow = null;
@@ -127,36 +227,46 @@ function startBackend() {
 
     backendProcess.on('exit', (code) => {
         logStream.write(`[BACKEND] exited with code ${code}\n`);
+        backendProcess = null;
+        backendStarted = false;
+        if (!isAppQuitting) {
+            logStream.write(`[BACKEND] Backend exited unexpectedly while app is running. Respawning in 2s...\n`);
+            setTimeout(() => {
+                if (!isAppQuitting && !backendProcess) {
+                    ensureBackendStarted();
+                }
+            }, 2000);
+        }
     });
 }
 
-function waitForBackendAndCreateWindow(maxWaitMs = 12000) {
-    const startTime = Date.now();
-    const interval = setInterval(() => {
-        const req = http.get('http://localhost:3001/api/health', (res) => {
-            if (res.statusCode === 200) {
-                clearInterval(interval);
-                if (!mainWindow) {
-                    createWindow();
-                    if (process.env.DEBUG_WAPP === 'true') {
-                        mainWindow.webContents.openDevTools({ mode: 'detach' });
-                    }
-                }
-            }
-        });
-        req.on('error', () => {
-            if (Date.now() - startTime > maxWaitMs) {
-                clearInterval(interval);
-                if (!mainWindow) {
-                    createWindow();
-                    if (process.env.DEBUG_WAPP === 'true') {
-                        mainWindow.webContents.openDevTools({ mode: 'detach' });
-                    }
-                }
-            }
-        });
-        req.setTimeout(500, () => req.destroy());
-    }, 400);
+function ensureBackendStarted() {
+    if (backendStarted) return;
+    backendStarted = true;
+    killStalePortProcesses(3001);
+    try {
+        startBackend();
+    } catch (err) {
+        console.error("Critical: Failed to start backend:", err);
+    }
+}
+
+app.on('second-instance', () => {
+    if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.focus();
+    }
+});
+
+function killStalePortProcesses(targetPort = 3001) {
+    if (process.platform === 'win32') {
+        try {
+            const { execSync } = require('child_process');
+            const myPid = process.pid;
+            const backendPid = backendProcess ? backendProcess.pid : 0;
+            execSync(`powershell -NoProfile -NonInteractive -Command "Get-NetTCPConnection -LocalPort ${targetPort} -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -ne ${myPid} -and $_.OwningProcess -ne ${backendPid} } | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`, { timeout: 4000 });
+        } catch (_) {}
+    }
 }
 
 app.on('ready', () => {
@@ -165,26 +275,30 @@ app.on('ready', () => {
         app.setAppUserModelId("com.wapp.manager");
     }
 
-    const checkReq = http.get('http://localhost:3001/api/health', (res) => {
-        console.log("Backend already running on port 3001, opening window directly.");
-        createWindow();
-        if (process.env.DEBUG_WAPP === 'true') {
-            mainWindow.webContents.openDevTools({ mode: 'detach' });
+    createWindow();
+
+    let checked = false;
+    const onCheckFinish = (isOnline) => {
+        if (checked) return;
+        checked = true;
+        if (!isOnline) {
+            ensureBackendStarted();
+        } else {
+            console.log("Backend already active on port 3001.");
         }
+    };
+
+    const checkReq = http.get('http://localhost:3001/api/health', (res) => {
+        onCheckFinish(res.statusCode === 200);
     });
 
     checkReq.on('error', () => {
-        console.log("Backend not detected on 3001, launching backend process...");
-        try {
-            startBackend();
-        } catch (err) {
-            console.error("Critical: Failed to start backend:", err);
-        }
-        waitForBackendAndCreateWindow();
+        onCheckFinish(false);
     });
 
     checkReq.setTimeout(800, () => {
         checkReq.destroy();
+        onCheckFinish(false);
     });
 });
 
@@ -194,18 +308,30 @@ process.on('uncaughtException', (error) => {
 
 app.on('window-all-closed', function () {
     if (process.platform !== 'darwin') {
+        isAppQuitting = true;
         app.quit();
     }
 });
 
+app.on('before-quit', () => {
+    isAppQuitting = true;
+});
+
 app.on('quit', () => {
-    if (backendProcess) {
+    isAppQuitting = true;
+    if (backendProcess && backendProcess.pid) {
         try {
             // Kill the process tree on Windows
             spawn('taskkill', ['/F', '/T', '/PID', backendProcess.pid]);
         } catch (e) {
-            backendProcess.kill();
+            try { backendProcess.kill(); } catch (_) {}
         }
+    }
+    if (process.platform === 'win32') {
+        try {
+            const { exec } = require('child_process');
+            exec('powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter \\"name = \'chrome.exe\'\\" | Where-Object { $_.CommandLine -like \'*wwebjs_auth*\' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"', () => {});
+        } catch (_) {}
     }
 });
 

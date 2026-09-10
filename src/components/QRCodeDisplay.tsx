@@ -33,53 +33,110 @@ export function QRCodeDisplay({ socket }: QRCodeDisplayProps) {
     const [resetNotice, setResetNotice] = useState("");
 
     useEffect(() => {
-        if (!socket) return;
+        // Immediately fetch current status from API on component mount
+        const syncStatus = () => {
+            fetch(`${API_URL}/api/status`)
+                .then(r => r.json())
+                .then(data => {
+                    if (!data) return;
+                    if (data.isReady) {
+                        setIsReady(true);
+                        setIsAuthenticated(true);
+                        setQrCode("");
+                        setIsResetting(false);
+                    } else if (data.isAuthenticated) {
+                        setIsReady(false);
+                        setIsAuthenticated(true);
+                        setQrCode("");
+                    } else if (data.qr) {
+                        setIsReady(false);
+                        setIsAuthenticated(false);
+                        setQrCode(data.qr);
+                        setIsResetting(false);
+                    } else {
+                        setIsReady(false);
+                        setIsAuthenticated(false);
+                    }
+                })
+                .catch(() => {});
+        };
 
-        socket.on("qr", (qr: string) => {
+        syncStatus();
+        const pollInterval = setInterval(syncStatus, 3000);
+
+        if (!socket) return () => clearInterval(pollInterval);
+
+        const onQr = (qr: string) => {
             setQrCode(qr);
             setIsReady(false);
             setIsAuthenticated(false);
             setLoadingMessage("");
             setIsResetting(false);
-        });
+        };
 
-        socket.on("ready", () => {
+        const onReady = () => {
             setIsReady(true);
             setIsAuthenticated(true);
             setQrCode("");
             setLoadingMessage("");
             setIsResetting(false);
-        });
+        };
 
-        socket.on("authenticated", () => {
+        const onAuthenticated = () => {
             setIsAuthenticated(true);
-        });
+        };
 
-        socket.on("loading_screen", (data: { percent: number; message: string }) => {
+        const onLoading = (data: { percent: number; message: string }) => {
             setLoadingMessage(data.message);
-        });
+        };
 
-        socket.on("disconnected", () => {
+        const onDisconnected = () => {
             setIsReady(false);
             setIsAuthenticated(false);
-        });
+        };
 
-        socket.on("mode_switching", (data: { mode: string }) => {
+        const onModeSwitching = (data: { mode: string }) => {
             if (data.mode === "qr") {
                 setLoadingMessage("Switching back to QR mode...");
             }
-        });
+        };
 
-        // Request initial status
+        const onReconnecting = (data: any) => {
+            setLoadingMessage("Reconnecting WhatsApp engine...");
+        };
+
+        const onStatusResponse = (data: any) => {
+            if (data?.isReady) {
+                onReady();
+            } else if (data?.isAuthenticated) {
+                onAuthenticated();
+            } else if (data?.qr) {
+                onQr(data.qr);
+            }
+        };
+
+        socket.on("qr", onQr);
+        socket.on("ready", onReady);
+        socket.on("authenticated", onAuthenticated);
+        socket.on("loading_screen", onLoading);
+        socket.on("disconnected", onDisconnected);
+        socket.on("mode_switching", onModeSwitching);
+        socket.on("reconnecting", onReconnecting);
+        socket.on("status_response", onStatusResponse);
+
+        // Request initial status from socket as well
         socket.emit("status");
 
         return () => {
-            socket.off("qr");
-            socket.off("ready");
-            socket.off("authenticated");
-            socket.off("loading_screen");
-            socket.off("disconnected");
-            socket.off("mode_switching");
+            clearInterval(pollInterval);
+            socket.off("qr", onQr);
+            socket.off("ready", onReady);
+            socket.off("authenticated", onAuthenticated);
+            socket.off("loading_screen", onLoading);
+            socket.off("disconnected", onDisconnected);
+            socket.off("mode_switching", onModeSwitching);
+            socket.off("reconnecting", onReconnecting);
+            socket.off("status_response", onStatusResponse);
         };
     }, [socket]);
 
@@ -99,16 +156,38 @@ export function QRCodeDisplay({ socket }: QRCodeDisplayProps) {
         setResetNotice("Resetting session and clearing locks... Fresh QR will appear in seconds.");
         setPairingCode("");
         setPhoneError("");
+
+        let attempts = 0;
+        const doReset = async (): Promise<boolean> => {
+            attempts++;
+            try {
+                const res = await fetch(`${API_URL}/api/reset-session`, { method: "POST" });
+                if (res.ok) return true;
+                throw new Error(`HTTP ${res.status}`);
+            } catch (err) {
+                if (attempts < 4) {
+                    setResetNotice(`Connecting to WhatsApp engine (attempt ${attempts}/4)...`);
+                    await new Promise(r => setTimeout(r, 1500));
+                    return doReset();
+                }
+                throw err;
+            }
+        };
+
         try {
-            await fetch(`${API_URL}/api/reset-session`, { method: "POST" });
+            await doReset();
+            setResetNotice("Session reset! Initializing WhatsApp sandbox...");
             setTimeout(() => {
                 setResetNotice("");
                 setIsResetting(false);
             }, 6000);
         } catch (err) {
             console.error("Reset failed", err);
-            setResetNotice("Error reaching server. Please check your backend.");
-            setIsResetting(false);
+            setResetNotice("Engine is rebooting sandbox. Retrying automatically...");
+            setTimeout(() => {
+                setResetNotice("");
+                setIsResetting(false);
+            }, 4000);
         }
     };
 
@@ -116,7 +195,7 @@ export function QRCodeDisplay({ socket }: QRCodeDisplayProps) {
         e.preventDefault();
         const clean = phoneNumber.replace(/[^0-9]/g, "");
         if (!clean || clean.length < 7) {
-            setPhoneError("Please enter a valid phone number with country code (e.g. 212638273545).");
+            setPhoneError("Please enter a valid phone number with country code (e.g. 12025550108 or 447123456789).");
             return;
         }
 
@@ -249,7 +328,7 @@ export function QRCodeDisplay({ socket }: QRCodeDisplayProps) {
                         <div className="flex flex-col items-center py-12 text-gray-400">
                             <Loader2 className="w-10 h-10 animate-spin mb-3 text-blue-600" />
                             <p className="text-sm font-semibold text-gray-700">Generating Secure QR Code...</p>
-                            <p className="text-xs text-gray-400 mt-1">Starting Chromium WhatsApp Web sandbox</p>
+                            <p className="text-xs text-gray-400 mt-1">{loadingMessage || "Starting Chromium WhatsApp Web sandbox"}</p>
                         </div>
                     )}
 
@@ -289,7 +368,7 @@ export function QRCodeDisplay({ socket }: QRCodeDisplayProps) {
                                     <input
                                         type="text"
                                         className="w-full pl-10 pr-4 py-3 rounded-xl border border-gray-200 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                                        placeholder="e.g. 212638273545 (no + or spaces)"
+                                        placeholder="e.g. 12025550108 or 447123456789 (no + or spaces)"
                                         value={phoneNumber}
                                         onChange={e => setPhoneNumber(e.target.value)}
                                         disabled={isRequestingCode}

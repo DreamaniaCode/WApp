@@ -63,7 +63,7 @@ export function DeviceConnector() {
                                 className="input-dark w-full pl-10 pr-4 py-2.5 rounded-xl text-sm"
                                 value={phoneNumber}
                                 onChange={e => setPhoneNumber(e.target.value)}
-                                placeholder="e.g. 212661234567"
+                                placeholder="e.g. 12025550108 or 447123456789"
                             />
                         </div>
                         <p className="text-[10px] text-slate-600 mt-2">

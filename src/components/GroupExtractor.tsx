@@ -2,7 +2,8 @@
 
 import React, { useState } from "react";
 import { API_URL } from "@/lib/config";
-import { Users, Download, Loader2, FolderClosed, Search, FileDown } from "lucide-react";
+import { Users, Loader2, FolderClosed, Search, FileDown, Send, CheckCircle2 } from "lucide-react";
+
 interface Group {
     id: string;
     name: string;
@@ -16,31 +17,66 @@ interface Participant {
 
 interface GroupExtractorProps {
     isReady: boolean;
+    onSendToBulk?: (participants: { number: string; name: string }[]) => void;
 }
 
-export function GroupExtractor({ isReady }: GroupExtractorProps) {
+export function GroupExtractor({ isReady, onSendToBulk }: GroupExtractorProps) {
     const [groups, setGroups] = useState<Group[]>([]);
     const [loadingGroups, setLoadingGroups] = useState(false);
     const [extractingId, setExtractingId] = useState<string | null>(null);
+    const [sendingBulkId, setSendingBulkId] = useState<string | null>(null);
     const [searchQuery, setSearchQuery] = useState("");
     const [error, setError] = useState<string | null>(null);
+    const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
     const fetchGroups = async () => {
         if (!isReady) return;
         setLoadingGroups(true);
         setError(null);
+        setSuccessMessage(null);
         try {
             const res = await fetch(`${API_URL}/api/groups`);
             const data = await res.json();
             if (data.success) {
-                setGroups(data.groups);
+                setGroups(data.groups || []);
             } else {
                 setError(data.error || "Failed to fetch groups");
             }
-        } catch (e) {
+        } catch {
             setError("Could not connect to backend");
         } finally {
             setLoadingGroups(false);
+        }
+    };
+
+    const sendGroupToBulk = async (groupId: string, groupName: string) => {
+        if (!isReady) return;
+        setSendingBulkId(groupId);
+        setError(null);
+        setSuccessMessage(null);
+        try {
+            const res = await fetch(`${API_URL}/api/groups/${encodeURIComponent(groupId)}/participants`);
+            const data = await res.json();
+            if (data.success && data.participants) {
+                const cleanParticipants = data.participants
+                    .map((p: any) => ({
+                        number: p.number || "",
+                        name: p.name || ""
+                    }))
+                    .filter((p: any) => p.number && p.number.length >= 6);
+
+                localStorage.setItem("bulk_imported_recipients", JSON.stringify(cleanParticipants));
+                setSuccessMessage(`Loaded ${cleanParticipants.length} contacts from "${groupName}" into Bulk Sender!`);
+                if (onSendToBulk) {
+                    onSendToBulk(cleanParticipants);
+                }
+            } else {
+                setError(data.error || "Failed to extract group participants");
+            }
+        } catch {
+            setError("Could not connect to backend");
+        } finally {
+            setSendingBulkId(null);
         }
     };
 
@@ -48,6 +84,7 @@ export function GroupExtractor({ isReady }: GroupExtractorProps) {
         if (!isReady) return;
         setExtractingId(groupId);
         setError(null);
+        setSuccessMessage(null);
         try {
             const res = await fetch(`${API_URL}/api/groups/${encodeURIComponent(groupId)}/participants`);
             const data = await res.json();
@@ -56,7 +93,7 @@ export function GroupExtractor({ isReady }: GroupExtractorProps) {
             } else {
                 setError(data.error || "Failed to extract participants");
             }
-        } catch (e) {
+        } catch {
             setError("Could not connect to backend");
         } finally {
             setExtractingId(null);
@@ -67,7 +104,7 @@ export function GroupExtractor({ isReady }: GroupExtractorProps) {
         const headers = ["Number", "Name"];
         const rows = participants.map(p => [
             p.number || "",
-            (p.name || "").replace(/,/g, "") // remove commas to prevent csv issues
+            (p.name || "").replace(/,/g, "")
         ]);
 
         const csvContent = [
@@ -85,24 +122,24 @@ export function GroupExtractor({ isReady }: GroupExtractorProps) {
         document.body.removeChild(link);
     };
 
-    const filteredGroups = groups.filter(g => g.name.toLowerCase().includes(searchQuery.toLowerCase()));
+    const filteredGroups = groups.filter(g => (g.name || "").toLowerCase().includes(searchQuery.toLowerCase()));
 
     return (
-        <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-6">
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
                 <div>
                     <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
-                        <Users className="w-6 h-6 text-[#00a884]" />
+                        <Users className="w-6 h-6 text-blue-600" />
                         Group Contacts Extractor
                     </h2>
                     <p className="text-sm text-gray-500 mt-1">
-                        Extract and download phone numbers from your WhatsApp groups
+                        Extract, export, or send numbers directly from your WhatsApp groups into Bulk Messages
                     </p>
                 </div>
                 <button
                     onClick={fetchGroups}
                     disabled={!isReady || loadingGroups}
-                    className="whitespace-nowrap flex items-center gap-2 px-4 py-2 bg-[#00a884] hover:bg-[#008f6f] text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="whitespace-nowrap flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold text-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-xs"
                 >
                     {loadingGroups ? <Loader2 className="w-4 h-4 animate-spin" /> : <FolderClosed className="w-4 h-4" />}
                     {groups.length > 0 ? "Refresh Groups" : "Fetch Groups"}
@@ -110,24 +147,31 @@ export function GroupExtractor({ isReady }: GroupExtractorProps) {
             </div>
 
             {error && (
-                <div className="mb-4 bg-red-50 text-red-600 p-3 rounded-lg text-sm border border-red-100 relative">
+                <div className="mb-4 bg-red-50 text-red-600 p-3 rounded-xl text-sm border border-red-100 relative">
                     {error}
                     <button onClick={() => setError(null)} className="absolute right-3 top-3 opacity-50 hover:opacity-100">✕</button>
                 </div>
             )}
 
+            {successMessage && (
+                <div className="mb-4 bg-green-50 text-green-700 p-3 rounded-xl text-sm border border-green-200 flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-green-600" />
+                    <span>{successMessage}</span>
+                </div>
+            )}
+
             {!isReady ? (
-                <div className="py-12 text-center text-gray-500 bg-gray-50 rounded-lg border border-gray-100">
+                <div className="py-12 text-center text-gray-500 bg-gray-50 rounded-2xl border border-gray-100">
                     <Users className="w-12 h-12 mx-auto mb-3 opacity-20" />
-                    <p>Connect your WhatsApp to view your groups</p>
+                    <p>Connect your WhatsApp session to view and extract groups</p>
                 </div>
             ) : groups.length === 0 && !loadingGroups ? (
-                <div className="py-12 text-center text-gray-500 bg-gray-50 rounded-lg border border-gray-100">
-                    <p>Click "Fetch Groups" to see your WhatsApp groups</p>
+                <div className="py-12 text-center text-gray-500 bg-gray-50 rounded-2xl border border-gray-100">
+                    <p>Click "Fetch Groups" to load all your WhatsApp groups</p>
                 </div>
             ) : loadingGroups && groups.length === 0 ? (
-                <div className="py-12 text-center text-gray-500 bg-gray-50 rounded-lg border border-gray-100 flex flex-col items-center">
-                    <Loader2 className="w-8 h-8 animate-spin text-[#00a884] mb-3" />
+                <div className="py-12 text-center text-gray-500 bg-gray-50 rounded-2xl border border-gray-100 flex flex-col items-center">
+                    <Loader2 className="w-8 h-8 animate-spin text-blue-600 mb-3" />
                     <p>Fetching your groups...</p>
                 </div>
             ) : (
@@ -136,21 +180,21 @@ export function GroupExtractor({ isReady }: GroupExtractorProps) {
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                         <input
                             type="text"
-                            placeholder="Search groups..."
+                            placeholder="Search groups by name..."
                             value={searchQuery}
                             onChange={(e) => setSearchQuery(e.target.value)}
-                            className="w-full pl-9 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#00a884]/20 focus:border-[#00a884] text-sm transition-all"
+                            className="w-full pl-9 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm transition-all"
                         />
                     </div>
 
-                    <div className="border border-gray-200 rounded-lg overflow-hidden">
-                        <div className="max-h-[400px] overflow-y-auto">
+                    <div className="border border-gray-200 rounded-xl overflow-hidden shadow-xs">
+                        <div className="max-h-[420px] overflow-y-auto">
                             <table className="w-full text-sm text-left">
-                                <thead className="text-xs text-gray-500 uppercase bg-gray-50 sticky top-0 z-10 shadow-sm">
+                                <thead className="text-xs text-gray-500 uppercase bg-gray-50 sticky top-0 z-10 shadow-xs border-b border-gray-200">
                                     <tr>
-                                        <th className="px-4 py-3 font-medium">Group Name</th>
-                                        <th className="px-4 py-3 font-medium text-center">Participants</th>
-                                        <th className="px-4 py-3 font-medium text-right">Action</th>
+                                        <th className="px-4 py-3 font-semibold">Group Name</th>
+                                        <th className="px-4 py-3 font-semibold text-center">Participants</th>
+                                        <th className="px-4 py-3 font-semibold text-right">Actions</th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-gray-100">
@@ -163,30 +207,49 @@ export function GroupExtractor({ isReady }: GroupExtractorProps) {
                                     ) : (
                                         filteredGroups.map((group) => (
                                             <tr key={group.id} className="hover:bg-gray-50 transition-colors">
-                                                <td className="px-4 py-3 font-medium text-gray-800">
+                                                <td className="px-4 py-3 font-semibold text-gray-800">
                                                     {group.name}
                                                 </td>
-                                                <td className="px-4 py-3 text-center text-gray-600">
-                                                    {group.participantsCount}
+                                                <td className="px-4 py-3 text-center text-gray-600 font-mono text-xs">
+                                                    {group.participantsCount} members
                                                 </td>
                                                 <td className="px-4 py-3 text-right">
-                                                    <button
-                                                        onClick={() => extractParticipants(group.id, group.name)}
-                                                        disabled={extractingId === group.id}
-                                                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#00a884] bg-[#00a884]/10 hover:bg-[#00a884]/20 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                                                    >
-                                                        {extractingId === group.id ? (
-                                                            <>
-                                                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                                                Extracting...
-                                                            </>
-                                                        ) : (
-                                                            <>
-                                                                <FileDown className="w-3.5 h-3.5" />
-                                                                Export CSV
-                                                            </>
-                                                        )}
-                                                    </button>
+                                                    <div className="inline-flex items-center gap-2">
+                                                        <button
+                                                            onClick={() => sendGroupToBulk(group.id, group.name)}
+                                                            disabled={sendingBulkId === group.id}
+                                                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg transition-colors disabled:opacity-50"
+                                                        >
+                                                            {sendingBulkId === group.id ? (
+                                                                <>
+                                                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                                    Importing...
+                                                                </>
+                                                            ) : (
+                                                                <>
+                                                                    <Send className="w-3.5 h-3.5" />
+                                                                    Send to Bulk
+                                                                </>
+                                                            )}
+                                                        </button>
+                                                        <button
+                                                            onClick={() => extractParticipants(group.id, group.name)}
+                                                            disabled={extractingId === group.id}
+                                                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors disabled:opacity-50"
+                                                        >
+                                                            {extractingId === group.id ? (
+                                                                <>
+                                                                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                                    Exporting...
+                                                                </>
+                                                            ) : (
+                                                                <>
+                                                                    <FileDown className="w-3.5 h-3.5" />
+                                                                    Export CSV
+                                                                </>
+                                                            )}
+                                                        </button>
+                                                    </div>
                                                 </td>
                                             </tr>
                                         ))

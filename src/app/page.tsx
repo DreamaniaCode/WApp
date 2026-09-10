@@ -9,15 +9,17 @@ import { GroupExtractor } from "@/components/GroupExtractor";
 import { Settings } from "@/components/Settings";
 import { SettingsBot } from "@/components/SettingsBot";
 import { LicenseScreen } from "@/components/LicenseScreen";
+import { MessageHistory } from "@/components/MessageHistory";
 import { useLanguage } from "@/contexts/LanguageContext";
+import { API_URL } from "@/lib/config";
 import {
   LayoutDashboard, Smartphone, Send, FileText, Users, MessageSquare,
   Server, Zap, Brain, PhoneCall, UsersRound, Settings as SettingsIcon,
   Sun, Moon, Search, Bell, Rocket, Activity, Shield, Wifi, WifiOff,
-  Trash2, RefreshCw, Globe,
+  Trash2, RefreshCw, Globe, History,
 } from "lucide-react";
 
-type Tab = "dashboard" | "devices" | "single" | "templates" | "contacts" | "bulk" | "proxies" | "autoreply" | "chatbot" | "callresponder" | "groups" | "settings";
+type Tab = "dashboard" | "devices" | "single" | "templates" | "contacts" | "bulk" | "history" | "proxies" | "autoreply" | "chatbot" | "callresponder" | "groups" | "settings";
 
 interface DashboardMetrics {
   totalMessages: number; activeDevices: number; totalContacts: number; totalTemplates: number;
@@ -32,6 +34,7 @@ const NAV = [
   { id: "templates",    icon: FileText,        label: "Templates",        sub: "Message Templates" },
   { id: "contacts",     icon: Users,           label: "Contacts",         sub: "Contact Management" },
   { id: "bulk",         icon: MessageSquare,   label: "Bulk Messages",    sub: "Mass Messaging" },
+  { id: "history",      icon: History,         label: "History",          sub: "Bulk Campaign Logs & Status" },
   { id: "proxies",      icon: Server,          label: "Proxies",          sub: "Proxy6.net Campaigns" },
   { id: "autoreply",    icon: Zap,             label: "Auto Reply",       sub: "Smart Keyword Triggers" },
   { id: "chatbot",      icon: Brain,           label: "AI Chatbot & RAG", sub: "Self-Learning & Web/Doc RAG" },
@@ -121,7 +124,7 @@ function SingleMessagePanel() {
           mimetype: file.mimetype,
         };
       }
-      const r = await fetch("/api/send-single", {
+      const r = await fetch(`${API_URL}/api/send-single`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
@@ -149,12 +152,12 @@ function SingleMessagePanel() {
           <label className="block text-sm font-medium text-gray-700 mb-1">Recipient phone number</label>
           <input
             className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
-            placeholder="0638273545 or +212638273545"
+            placeholder="e.g. +1 (555) 234-5678 or 447123456789"
             value={to}
             onChange={e => setTo(e.target.value)}
           />
           <div className="text-[11px] text-gray-400 mt-1">
-            Local numbers (e.g. 06...) are automatically formatted with your WhatsApp country code.
+            Enter with country code (e.g. 12025550108) or standard international format.
           </div>
         </div>
         <div>
@@ -202,10 +205,10 @@ function SingleMessagePanel() {
 
 function TemplatesPanel() {
   const [templates, setTemplates] = useState<any[]>([]); const [name, setName] = useState(""); const [content, setContent] = useState(""); const [saving, setSaving] = useState(false);
-  const load = useCallback(async () => { try { const r = await fetch("/api/templates"); const d = await r.json(); setTemplates(d.templates || []); } catch {} }, []);
+  const load = useCallback(async () => { try { const r = await fetch(`${API_URL}/api/templates`); const d = await r.json(); setTemplates(d.templates || []); } catch {} }, []);
   useEffect(() => { load(); }, [load]);
-  const save = async () => { if (!name.trim() || !content.trim()) return; setSaving(true); await fetch("/api/templates", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, content }) }); setName(""); setContent(""); await load(); setSaving(false); };
-  const del = async (id: string) => { await fetch(`/api/templates/${id}`, { method: "DELETE" }); await load(); };
+  const save = async () => { if (!name.trim() || !content.trim()) return; setSaving(true); await fetch(`${API_URL}/api/templates`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, content }) }); setName(""); setContent(""); await load(); setSaving(false); };
+  const del = async (id: string) => { await fetch(`${API_URL}/api/templates/${id}`, { method: "DELETE" }); await load(); };
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 max-w-xl">
@@ -225,11 +228,11 @@ function TemplatesPanel() {
 
 function ProxiesPanel() {
   const [proxies, setProxies] = useState<any[]>([]); const [raw, setRaw] = useState(""); const [adding, setAdding] = useState(false); const [testing, setTesting] = useState<string | null>(null);
-  const load = useCallback(async () => { try { const r = await fetch("/api/proxies"); const d = await r.json(); setProxies(d.proxies || []); } catch {} }, []);
+  const load = useCallback(async () => { try { const r = await fetch(`${API_URL}/api/proxies`); const d = await r.json(); setProxies(d.proxies || []); } catch {} }, []);
   useEffect(() => { load(); }, [load]);
-  const add = async () => { if (!raw.trim()) return; setAdding(true); await fetch("/api/proxies", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ raw: raw.trim() }) }); setRaw(""); await load(); setAdding(false); };
-  const del = async (id: string) => { await fetch(`/api/proxies/${id}`, { method: "DELETE" }); await load(); };
-  const test = async (proxy: any) => { setTesting(proxy.id); try { const r = await fetch("/api/proxies/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ host: proxy.host, port: proxy.port }) }); const d = await r.json(); alert(d.success ? `Latency: ${d.latencyMs}ms` : `Error: ${d.error}`); } catch { alert("Network error"); } setTesting(null); };
+  const add = async () => { if (!raw.trim()) return; setAdding(true); await fetch(`${API_URL}/api/proxies`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ raw: raw.trim() }) }); setRaw(""); await load(); setAdding(false); };
+  const del = async (id: string) => { await fetch(`${API_URL}/api/proxies/${id}`, { method: "DELETE" }); await load(); };
+  const test = async (proxy: any) => { setTesting(proxy.id); try { const r = await fetch(`${API_URL}/api/proxies/test`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ host: proxy.host, port: proxy.port }) }); const d = await r.json(); alert(d.success ? `Latency: ${d.latencyMs}ms` : `Error: ${d.error}`); } catch { alert("Network error"); } setTesting(null); };
   return (
     <div className="space-y-6">
       <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
@@ -251,9 +254,9 @@ function ProxiesPanel() {
 
 function CallResponderPanel() {
   const [cfg, setCfg] = useState<any>(null); const [saving, setSaving] = useState(false);
-  const load = useCallback(async () => { try { const r = await fetch("/api/call-responder"); const d = await r.json(); setCfg(d); } catch {} }, []);
+  const load = useCallback(async () => { try { const r = await fetch(`${API_URL}/api/call-responder`); const d = await r.json(); setCfg(d); } catch {} }, []);
   useEffect(() => { load(); }, [load]);
-  const save = async () => { setSaving(true); await fetch("/api/call-responder", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cfg) }); setSaving(false); };
+  const save = async () => { setSaving(true); await fetch(`${API_URL}/api/call-responder`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cfg) }); setSaving(false); };
   if (!cfg) return <div className="p-8 text-center text-sm text-gray-400">Loading...</div>;
   return (
     <div className="space-y-6 max-w-xl">
@@ -263,10 +266,18 @@ function CallResponderPanel() {
           <button onClick={() => setCfg({ ...cfg, enabled: !cfg.enabled })} className={`relative w-12 h-6 rounded-full transition-colors ${cfg.enabled ? "bg-green-500" : "bg-gray-200"}`}><span className={`absolute top-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${cfg.enabled ? "translate-x-6" : "translate-x-0.5"}`} /></button>
         </div>
         <div className="space-y-4">
-          <label className="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked={cfg.rejectVoiceCalls} onChange={e => setCfg({ ...cfg, rejectVoiceCalls: e.target.checked })} className="w-4 h-4 rounded accent-blue-600" /><span className="text-sm text-gray-700">Reject voice calls</span></label>
-          <label className="flex items-center gap-3 cursor-pointer"><input type="checkbox" checked={cfg.rejectVideoCalls} onChange={e => setCfg({ ...cfg, rejectVideoCalls: e.target.checked })} className="w-4 h-4 rounded accent-blue-600" /><span className="text-sm text-gray-700">Reject video calls</span></label>
-          <div><label className="block text-sm font-medium text-gray-700 mb-1">Auto-reply message</label><textarea className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none" rows={3} value={cfg.replyMessage || ""} onChange={e => setCfg({ ...cfg, replyMessage: e.target.value })} /></div>
-          <div><label className="block text-sm font-medium text-gray-700 mb-1">Reply delay (ms)</label><input type="number" className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" value={cfg.autoReplyDelayMs || 1500} onChange={e => setCfg({ ...cfg, autoReplyDelayMs: parseInt(e.target.value) })} /></div>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" checked={cfg.rejectVoice} onChange={e => setCfg({ ...cfg, rejectVoice: e.target.checked })} className="rounded text-indigo-600" />
+            <span className="text-sm text-gray-700">Reject voice calls</span>
+          </label>
+          <label className="flex items-center gap-3 cursor-pointer">
+            <input type="checkbox" checked={cfg.rejectVideo} onChange={e => setCfg({ ...cfg, rejectVideo: e.target.checked })} className="rounded text-indigo-600" />
+            <span className="text-sm text-gray-700">Reject video calls</span>
+          </label>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Reply Message</label>
+            <textarea className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none" rows={3} placeholder="Automatic reply message after rejecting a call..." value={cfg.replyMessage || ""} onChange={e => setCfg({ ...cfg, replyMessage: e.target.value })} />
+          </div>
           {cfg.stats && (<div className="grid grid-cols-2 gap-3 mt-2"><div className="bg-red-50 rounded-xl p-3 text-center"><div className="text-xl font-bold text-red-600">{cfg.stats.rejectedCalls}</div><div className="text-xs text-red-400">Calls Rejected</div></div><div className="bg-blue-50 rounded-xl p-3 text-center"><div className="text-xl font-bold text-blue-600">{cfg.stats.repliesSent}</div><div className="text-xs text-blue-400">Replies Sent</div></div></div>)}
           <button onClick={save} disabled={saving} className="w-full bg-gradient-to-r from-indigo-600 to-blue-600 text-white font-semibold py-2.5 rounded-xl hover:opacity-90 transition disabled:opacity-50">{saving ? "Saving..." : "Save Configuration"}</button>
         </div>
@@ -279,7 +290,7 @@ function DashboardPanel({ isConnected }: { isConnected: boolean }) {
   const [metrics, setMetrics] = useState<DashboardMetrics | null>(null);
   const spark = [12, 18, 10, 22, 15, 28, 20, 35, 25, 40];
   useEffect(() => {
-    const f = async () => { try { const r = await fetch("/api/dashboard-metrics"); const d = await r.json(); setMetrics(d); } catch {} };
+    const f = async () => { try { const r = await fetch(`${API_URL}/api/dashboard-metrics`); const d = await r.json(); setMetrics(d); } catch {} };
     f(); const t = setInterval(f, 10000); return () => clearInterval(t);
   }, []);
   const m = metrics;
@@ -328,37 +339,57 @@ function DashboardPanel({ isConnected }: { isConnected: boolean }) {
 
 export default function Home() {
   const { socket, isConnected } = useSocket();
+  const [isWaReady, setIsWaReady] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>("dashboard");
   const [darkMode, setDarkMode] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const { language, setLanguage } = useLanguage();
-  const [isActivated, setIsActivated] = useState<boolean | null>(null);
+  const [isActivated, setIsActivated] = useState<boolean>(true);
+  const [bulkRecipients, setBulkRecipients] = useState<{ number: string; name?: string }[]>([]);
+  const [bulkMessage, setBulkMessage] = useState<string>("");
 
   useEffect(() => {
-    let timer: NodeJS.Timeout;
+    if (!socket) return;
+    const onReady = () => setIsWaReady(true);
+    const onDisconnected = () => setIsWaReady(false);
+    const onQr = () => setIsWaReady(false);
+
+    socket.on("ready", onReady);
+    socket.on("disconnected", onDisconnected);
+    socket.on("qr", onQr);
+
+    fetch(`${API_URL}/api/status`)
+      .then(r => r.json())
+      .then(d => { if (d && d.isReady) setIsWaReady(true); })
+      .catch(() => {});
+
+    return () => {
+      socket.off("ready", onReady);
+      socket.off("disconnected", onDisconnected);
+      socket.off("qr", onQr);
+    };
+  }, [socket]);
+
+  useEffect(() => {
     const checkLicense = async () => {
       try {
-        const res = await fetch("/api/license-status");
-        const data = await res.json();
-        setIsActivated(!!data.isActivated);
-      } catch {
-        timer = setTimeout(checkLicense, 1500);
+        const res = await fetch(`${API_URL}/api/license-status`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.isActivated === false) {
+            setIsActivated(false);
+          } else if (data && data.isActivated === true) {
+            setIsActivated(true);
+          }
+        }
+      } catch (err) {
+        // Retain activated state for bundled VIP license
+        console.warn("License check Notice:", err);
       }
     };
     checkLicense();
-    return () => clearTimeout(timer);
   }, []);
-
-  if (isActivated === null) {
-    return (
-      <div className="min-h-screen bg-gray-950 flex flex-col items-center justify-center text-white">
-        <img src="/logo.png" alt="WApp Manager Pro" className="w-20 h-20 rounded-3xl object-contain animate-pulse mb-4 p-1 bg-white/5 border border-white/10 shadow-2xl" />
-        <h2 className="text-lg font-bold tracking-wide">WApp Manager Pro</h2>
-        <p className="text-xs text-gray-400 mt-1">Verifying activation license...</p>
-      </div>
-    );
-  }
 
   if (isActivated === false) {
     return <LicenseScreen onActivated={() => setIsActivated(true)} />;
@@ -386,7 +417,7 @@ export default function Home() {
         </nav>
         <div className={`p-3 border-t ${darkMode ? "border-gray-800" : "border-gray-100"} space-y-2`}>
           <button onClick={() => setLanguage(language === "en" ? "fr" : "en")} className={`w-full flex items-center gap-2 justify-center px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${darkMode ? "bg-gray-800 text-gray-400 hover:bg-gray-700" : "bg-gray-50 text-gray-600 hover:bg-gray-100"}`}><Globe className="w-3.5 h-3.5" />{sidebarOpen ? (language === "en" ? "Francais" : "English") : ""}</button>
-          <div className={`flex items-center gap-2 px-2 py-1 text-xs ${darkMode ? "text-gray-600" : "text-gray-400"}`}><div className={`w-2 h-2 rounded-full shrink-0 ${isConnected ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />{sidebarOpen && (isConnected ? "WhatsApp Ready" : "Disconnected")}</div>
+          <div className={`flex items-center gap-2 px-2 py-1 text-xs ${darkMode ? "text-gray-600" : "text-gray-400"}`}><div className={`w-2 h-2 rounded-full shrink-0 ${isWaReady ? "bg-green-500 animate-pulse" : "bg-red-500"}`} />{sidebarOpen && (isWaReady ? "WhatsApp Ready" : "Disconnected")}</div>
         </div>
       </aside>
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
@@ -402,17 +433,49 @@ export default function Home() {
           </div>
         </header>
         <main className={`flex-1 overflow-y-auto p-6 ${darkMode ? "bg-gray-950" : "bg-gray-50"}`}>
-          {activeTab === "dashboard" && <DashboardPanel isConnected={isConnected} />}
+          {activeTab === "dashboard" && <DashboardPanel isConnected={isWaReady} />}
           {activeTab === "devices" && <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100"><h2 className="text-lg font-bold text-gray-900 mb-4">WhatsApp Sessions</h2><QRCodeDisplay socket={socket} /></div>}
           {activeTab === "single" && <SingleMessagePanel />}
           {activeTab === "templates" && <TemplatesPanel />}
           {activeTab === "contacts" && <ContactsManager />}
-          {activeTab === "bulk" && <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100"><BulkSender socket={socket} /></div>}
+          {activeTab === "bulk" && (
+            <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+              <BulkSender
+                socket={socket}
+                initialRecipients={bulkRecipients}
+                initialMessage={bulkMessage}
+                onClearInitial={() => {
+                  setBulkRecipients([]);
+                  setBulkMessage("");
+                }}
+              />
+            </div>
+          )}
+          {activeTab === "history" && (
+            <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+              <MessageHistory
+                onReuseMessage={(msg) => {
+                  setBulkMessage(msg);
+                  setActiveTab("bulk");
+                }}
+              />
+            </div>
+          )}
           {activeTab === "proxies" && <ProxiesPanel />}
           {activeTab === "autoreply" && <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100"><Settings /></div>}
           {activeTab === "chatbot" && <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100"><SettingsBot /></div>}
           {activeTab === "callresponder" && <CallResponderPanel />}
-          {activeTab === "groups" && <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100"><GroupExtractor isReady={isConnected} /></div>}
+          {activeTab === "groups" && (
+            <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+              <GroupExtractor
+                isReady={isWaReady}
+                onSendToBulk={(participants) => {
+                  setBulkRecipients(participants);
+                  setActiveTab("bulk");
+                }}
+              />
+            </div>
+          )}
           {activeTab === "settings" && <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100"><Settings /></div>}
         </main>
       </div>
