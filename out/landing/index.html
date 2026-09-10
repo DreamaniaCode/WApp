@@ -1527,6 +1527,392 @@ body.rtl .contact-option-btn:hover {
   font-size: 0.82rem;
   color: var(--text-muted);
 }
+
+/* =========================================================================
+   DREAMANIA READY-CONVERSION SALES CHATBOT WIDGET
+   ========================================================================= */
+.chatbot-fab {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 999;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: linear-gradient(135deg, #22C55E 0%, #16A34A 100%);
+  color: #fff;
+  border: none;
+  border-radius: 100px;
+  padding: 12px 20px;
+  font-family: var(--display-font);
+  font-weight: 800;
+  font-size: 0.88rem;
+  cursor: pointer;
+  box-shadow: 0 10px 25px rgba(34, 197, 94, 0.45), 0 0 20px rgba(34, 197, 94, 0.2);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+body.rtl .chatbot-fab {
+  right: auto;
+  left: 24px;
+}
+
+.chatbot-fab:hover {
+  transform: translateY(-3px) scale(1.02);
+  box-shadow: 0 14px 32px rgba(34, 197, 94, 0.6);
+}
+
+.fab-pulse-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 10px #fff;
+  animation: pulse 1.6s infinite;
+}
+
+.chatbot-toast-bubble {
+  position: fixed;
+  bottom: 84px;
+  right: 24px;
+  z-index: 998;
+  background: rgba(14, 22, 38, 0.95);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  color: #fff;
+  padding: 10px 16px;
+  border-radius: 16px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  box-shadow: 0 12px 30px rgba(0,0,0,0.5);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  animation: float 4s ease-in-out infinite;
+}
+
+body.rtl .chatbot-toast-bubble {
+  right: auto;
+  left: 24px;
+}
+
+/* Chat Window */
+.chatbot-window {
+  position: fixed;
+  bottom: 90px;
+  right: 24px;
+  z-index: 1000;
+  width: 375px;
+  max-width: calc(100vw - 32px);
+  height: 520px;
+  max-height: calc(100vh - 120px);
+  background: #0B111E;
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  border-radius: 24px;
+  box-shadow: 0 25px 60px rgba(0,0,0,0.8), 0 0 50px rgba(34, 197, 94, 0.15);
+  display: none;
+  flex-direction: column;
+  overflow: hidden;
+  animation: modalFadeIn 0.25s ease;
+}
+
+body.rtl .chatbot-window {
+  right: auto;
+  left: 24px;
+}
+
+.chatbot-window.active {
+  display: flex;
+}
+
+.cb-header {
+  padding: 14px 18px;
+  background: rgba(14, 22, 38, 0.95);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.cb-header-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cb-avatar {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  background: rgba(34, 197, 94, 0.2);
+  border: 1px solid rgba(34, 197, 94, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.2rem;
+}
+
+.cb-header-title {
+  font-size: 0.92rem;
+  font-weight: 800;
+  color: #fff;
+}
+
+.cb-header-status {
+  font-size: 0.72rem;
+  color: var(--mint);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.cb-header-status::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--emerald);
+}
+
+.cb-close-btn {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.cb-close-btn:hover {
+  background: #ef4444;
+  color: #fff;
+}
+
+/* Chat Messages */
+.cb-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cb-msg {
+  max-width: 88%;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  padding: 10px 14px;
+  border-radius: 16px;
+  animation: fadeIn 0.2s ease;
+}
+
+.cb-msg-bot {
+  background: #131E33;
+  border: 1px solid rgba(255,255,255,0.08);
+  color: #F1F5F9;
+  border-bottom-left-radius: 4px;
+  align-self: flex-start;
+}
+
+body.rtl .cb-msg-bot {
+  border-bottom-left-radius: 16px;
+  border-bottom-right-radius: 4px;
+  align-self: flex-start;
+}
+
+.cb-msg-user {
+  background: linear-gradient(135deg, #22C55E, #16A34A);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+  align-self: flex-end;
+}
+
+body.rtl .cb-msg-user {
+  border-bottom-right-radius: 16px;
+  border-bottom-left-radius: 4px;
+  align-self: flex-end;
+}
+
+/* Quick choices */
+.cb-quick-replies {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-top: 6px;
+}
+
+.cb-choice-btn {
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.25);
+  color: #fff;
+  padding: 9px 12px;
+  border-radius: 12px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+  transition: all 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+body.rtl .cb-choice-btn {
+  text-align: right;
+}
+
+.cb-choice-btn:hover {
+  background: rgba(34, 197, 94, 0.22);
+  border-color: var(--emerald);
+  transform: translateX(3px);
+}
+
+body.rtl .cb-choice-btn:hover {
+  transform: translateX(-3px);
+}
+
+/* Ready Conversion Card */
+.cb-conversion-card {
+  background: linear-gradient(145deg, #070B14 0%, #0E1626 100%);
+  border: 1px solid rgba(34, 197, 94, 0.4);
+  border-radius: 16px;
+  padding: 14px;
+  margin-top: 8px;
+  box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+}
+
+.cb-conv-tag {
+  display: inline-block;
+  font-size: 0.68rem;
+  font-weight: 900;
+  color: #060911;
+  background: var(--mint);
+  padding: 2px 8px;
+  border-radius: 100px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 6px;
+}
+
+.cb-conv-title {
+  font-size: 0.94rem;
+  font-weight: 800;
+  color: #fff;
+  margin-bottom: 2px;
+}
+
+.cb-conv-price {
+  font-size: 1.25rem;
+  font-weight: 900;
+  color: var(--mint);
+  margin-bottom: 6px;
+}
+
+.cb-conv-details {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 8px;
+}
+
+.cb-conv-btn-wa {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 11px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #25D366 0%, #128C7E 100%);
+  color: #fff;
+  font-weight: 800;
+  font-size: 0.85rem;
+  text-decoration: none;
+  box-shadow: 0 4px 14px rgba(37, 211, 102, 0.4);
+  transition: all 0.2s;
+  margin-bottom: 6px;
+}
+
+.cb-conv-btn-wa:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+}
+
+.cb-conv-btn-tg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px;
+  border-radius: 12px;
+  background: rgba(34, 158, 217, 0.15);
+  border: 1px solid rgba(34, 158, 217, 0.35);
+  color: #38BDF8;
+  font-weight: 700;
+  font-size: 0.8rem;
+  text-decoration: none;
+  transition: all 0.2s;
+}
+
+.cb-conv-btn-tg:hover {
+  background: rgba(34, 158, 217, 0.28);
+}
+
+/* Chat Input */
+.cb-input-bar {
+  padding: 10px 14px;
+  background: rgba(14, 22, 38, 0.95);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cb-input {
+  flex: 1;
+  background: #070B14;
+  border: 1px solid var(--border);
+  border-radius: 100px;
+  padding: 8px 14px;
+  color: #fff;
+  font-size: 0.82rem;
+  outline: none;
+}
+
+.cb-input:focus {
+  border-color: var(--emerald);
+}
+
+.cb-send-btn {
+  background: var(--emerald);
+  border: none;
+  color: #fff;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 0.8rem;
+  transition: all 0.2s;
+}
+
+.cb-send-btn:hover {
+  filter: brightness(1.1);
+  transform: scale(1.05);
+}
+
 </style>
 </head>
 <body>
@@ -2313,6 +2699,19 @@ body.rtl .contact-option-btn:hover {
       </div>
     </div>
 
+    
+    <div style="display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; margin-bottom: 1.5rem; font-size: 0.86rem;">
+      <a href="https://wa.me/212707031614?text=Hello%20DreamaniaCode,%20I%20want%20to%20activate%20WApp%20Manager%20Pro." target="_blank" rel="noopener" style="color: #25D366; text-decoration: none; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+        <span>💬</span> WhatsApp: +212 707-031614
+      </a>
+      <a href="https://t.me/dreamania" target="_blank" rel="noopener" style="color: #38BDF8; text-decoration: none; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+        <span>✈️</span> Telegram: @dreamania
+      </a>
+      <a href="mailto:dreamania.shop@gmail.com" style="color: #F59E0B; text-decoration: none; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+        <span>✉️</span> dreamania.shop@gmail.com
+      </a>
+    </div>
+
     <div class="footer-copy-text" id="footer-copy">
       © 2026 DreamaniaCode Enterprise. All rights reserved. WApp Manager Pro is an independent automation software and is not affiliated with, authorized, or endorsed by Meta Platforms, Inc. or WhatsApp LLC.
     </div>
@@ -2332,7 +2731,7 @@ body.rtl .contact-option-btn:hover {
     </p>
 
     <div class="contact-options-grid">
-      <a href="https://wa.me/212600000000?text=Hello%20DreamaniaCode,%20I%20want%20to%20activate%20WApp%20Manager%20Pro%20License%20Key." target="_blank" rel="noopener" class="contact-option-btn">
+      <a href="https://wa.me/212707031614?text=Hello%20DreamaniaCode,%20I%20want%20to%20activate%20WApp%20Manager%20Pro%20License%20Key." target="_blank" rel="noopener" class="contact-option-btn">
         <span class="contact-icon-whatsapp">💬</span>
         <div>
           <div>WhatsApp Direct Support</div>
@@ -2340,19 +2739,19 @@ body.rtl .contact-option-btn:hover {
         </div>
       </a>
 
-      <a href="https://t.me/DreamaniaCode" target="_blank" rel="noopener" class="contact-option-btn">
+      <a href="https://t.me/dreamania" target="_blank" rel="noopener" class="contact-option-btn">
         <span class="contact-icon-telegram">✈️</span>
         <div>
           <div>Telegram Official Channel</div>
-          <div style="font-size: 0.76rem; color: var(--text-dim);">@DreamaniaCode · Active 24/7</div>
+          <div style="font-size: 0.76rem; color: var(--text-dim);">@dreamania · Active 24/7</div>
         </div>
       </a>
 
-      <a href="mailto:support@dreamaniacode.com?subject=WApp%20Manager%20Pro%20License%20Inquiry" class="contact-option-btn">
+      <a href="mailto:dreamania.shop@gmail.com?subject=WApp%20Manager%20Pro%20License%20Inquiry" class="contact-option-btn">
         <span class="contact-icon-email">✉️</span>
         <div>
           <div>Email Sales Support</div>
-          <div style="font-size: 0.76rem; color: var(--text-dim);">support@dreamaniacode.com</div>
+          <div style="font-size: 0.76rem; color: var(--text-dim);">dreamania.shop@gmail.com</div>
         </div>
       </a>
     </div>
@@ -2522,6 +2921,255 @@ window.addEventListener('DOMContentLoaded', () => {
   if (userLang === 'fr') setLanguage('fr');
   else if (userLang === 'ar') setLanguage('ar');
 });
+
+</script>
+
+<!-- =======================================================================
+     DREAMANIA SALES CHATBOT (READY CONVERSION DISPATCHER)
+     ======================================================================= -->
+<div class="chatbot-toast-bubble" id="cb-toast" onclick="openChatbot()">
+  <span>💬</span>
+  <span id="cb-toast-txt">Ready to automate your WhatsApp sales? Chat now!</span>
+</div>
+
+<button class="chatbot-fab" id="cb-fab" onclick="toggleChatbot()" aria-label="Open Sales Chatbot">
+  <span class="fab-pulse-dot"></span>
+  <span>💬</span>
+  <span id="cb-fab-txt">Chat with Sales</span>
+</button>
+
+<div class="chatbot-window" id="cb-window">
+  <div class="cb-header">
+    <div class="cb-header-info">
+      <div class="cb-avatar">🤖</div>
+      <div>
+        <div class="cb-header-title">Dreamania Sales AI</div>
+        <div class="cb-header-status" id="cb-status-txt">Online · Instant Activation</div>
+      </div>
+    </div>
+    <button class="cb-close-btn" onclick="closeChatbot()">✕</button>
+  </div>
+
+  <div class="cb-messages" id="cb-messages">
+    <div class="cb-msg cb-msg-bot" id="cb-msg-welcome">
+      👋 Welcome to <strong>WApp Manager Pro</strong>! I am Dreamania's instant sales assistant. Which plan would you like to activate today?
+    </div>
+
+    <div class="cb-quick-replies" id="cb-initial-replies">
+      <button class="cb-choice-btn" onclick="selectChatbotPlan('semi')">
+        <span>⭐ 6 Months Pass ($89 · Save 50%)</span>
+        <span style="color: var(--mint);">⚡ Popular</span>
+      </button>
+      <button class="cb-choice-btn" onclick="selectChatbotPlan('year')">
+        <span>🏆 1 Year Pass ($109 · Save 70%)</span>
+        <span style="color: #F59E0B;">Best Value</span>
+      </button>
+      <button class="cb-choice-btn" onclick="selectChatbotPlan('month')">
+        <span>🔑 1 Month Pass ($29)</span>
+        <span>Monthly</span>
+      </button>
+      <button class="cb-choice-btn" onclick="selectChatbotAction('download')">
+        <span>⬇ Download Windows Free Trial</span>
+        <span>Free</span>
+      </button>
+      <button class="cb-choice-btn" onclick="selectChatbotAction('support')">
+        <span>💬 Contact Human Support (+212 707-031614)</span>
+        <span>Direct</span>
+      </button>
+    </div>
+  </div>
+
+  <form class="cb-input-bar" onsubmit="handleChatbotSend(event)">
+    <input type="text" id="cb-user-input" class="cb-input" placeholder="Type a message or question..." autocomplete="off">
+    <button type="submit" class="cb-send-btn">➤</button>
+  </form>
+</div>
+
+<script>
+
+/* --- Dreamania Ready Conversion Chatbot Logic --- */
+let chatbotOpen = false;
+
+function toggleChatbot() {
+  if (chatbotOpen) closeChatbot();
+  else openChatbot();
+}
+
+function openChatbot() {
+  chatbotOpen = true;
+  const win = document.getElementById('cb-window');
+  if (win) win.classList.add('active');
+  const toast = document.getElementById('cb-toast');
+  if (toast) toast.style.display = 'none';
+  scrollCbToBottom();
+}
+
+function closeChatbot() {
+  chatbotOpen = false;
+  const win = document.getElementById('cb-window');
+  if (win) win.classList.remove('active');
+}
+
+function scrollCbToBottom() {
+  const c = document.getElementById('cb-messages');
+  if (c) c.scrollTop = c.scrollHeight;
+}
+
+function selectChatbotPlan(planKey) {
+  const plans = {
+    semi: {
+      name: '6 Months Pass (Semi-Annual)',
+      price: '$89',
+      rate: '$15/mo',
+      savings: 'Save 50% vs monthly',
+      waText: 'Hello Dreamania! 🚀 I am ready to order WApp Manager Pro [6 Months Pass - $89]. Please send my license activation key.'
+    },
+    year: {
+      name: '1 Year Pass (Annual VIP)',
+      price: '$109',
+      rate: '$9/mo',
+      savings: 'Save 70% vs monthly (Best Value)',
+      waText: 'Hello Dreamania! 🏆 I am ready to order WApp Manager Pro [1 Year Pass - $109]. Please send my license activation key.'
+    },
+    month: {
+      name: '1 Month Pass (Flexible)',
+      price: '$29',
+      rate: '$29/mo',
+      savings: 'Zero commitment',
+      waText: 'Hello Dreamania! 🔑 I am ready to order WApp Manager Pro [1 Month Pass - $29]. Please send my license activation key.'
+    }
+  };
+
+  const p = plans[planKey];
+  if (!p) return;
+
+  appendCbMessage(p.name + ' (' + p.price + ')', 'user');
+
+  setTimeout(() => {
+    const botReply = 'Excellent choice! I have prepared your ready conversion order for the ' + p.name + ' with 100% features unlocked.';
+    appendCbMessage(botReply, 'bot');
+
+    const cardHtml = `
+      <div class="cb-conversion-card">
+        <div class="cb-conv-tag">READY CONVERSION</div>
+        <div class="cb-conv-title">WApp Manager Pro v2026.5.0</div>
+        <div class="cb-conv-price">${p.price} <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: 500;">/ ${p.rate}</span></div>
+        <div class="cb-conv-details">
+          ✓ ${p.savings}<br>
+          ✓ Unlimited Bulk Messages + Anti-Ban<br>
+          ✓ 1-Click WhatsApp Group Extractor<br>
+          ✓ 24/7 AI Chatbot & RAG Engine<br>
+          ✓ Instant Activation Key
+        </div>
+        <a href="https://wa.me/212707031614?text=${encodeURIComponent(p.waText)}" target="_blank" rel="noopener" class="cb-conv-btn-wa">
+          💬 Send Order to WhatsApp (+212 707-031614)
+        </a>
+        <a href="https://t.me/dreamania" target="_blank" rel="noopener" class="cb-conv-btn-tg">
+          ✈️ Send Order to Telegram (@dreamania)
+        </a>
+      </div>
+    `;
+    const container = document.getElementById('cb-messages');
+    const div = document.createElement('div');
+    div.innerHTML = cardHtml;
+    container.appendChild(div);
+    scrollCbToBottom();
+  }, 350);
+}
+
+function selectChatbotAction(action) {
+  if (action === 'download') {
+    appendCbMessage('Download Windows Installer', 'user');
+    setTimeout(() => {
+      appendCbMessage('Here is your direct download link for Windows 10 & 11 (64-bit):', 'bot');
+      const dlBtn = `
+        <div style="margin-top: 6px;">
+          <a href="https://www.up-4ever.net/n8cn6uqaqi1r" target="_blank" rel="noopener" class="cb-conv-btn-wa" style="background: linear-gradient(135deg, #3B82F6, #1D4ED8);">
+            ⬇ Download WApp Manager Pro Setup (~180 MB)
+          </a>
+        </div>
+      `;
+      const container = document.getElementById('cb-messages');
+      const div = document.createElement('div');
+      div.innerHTML = dlBtn;
+      container.appendChild(div);
+      scrollCbToBottom();
+    }, 350);
+  } else if (action === 'support') {
+    appendCbMessage('Contact Human Support', 'user');
+    setTimeout(() => {
+      appendCbMessage('Our official Dreamania team is online right now! Connect directly:', 'bot');
+      const suppHtml = `
+        <div style="display: flex; flex-direction: column; gap: 6px; margin-top: 6px;">
+          <a href="https://wa.me/212707031614?text=Hello%20Dreamania,%20I%20need%20support%20for%20WApp%20Manager%20Pro." target="_blank" rel="noopener" class="cb-conv-btn-wa">
+            💬 WhatsApp: +212 707-031614
+          </a>
+          <a href="https://t.me/dreamania" target="_blank" rel="noopener" class="cb-conv-btn-tg">
+            ✈️ Telegram: @dreamania
+          </a>
+          <a href="mailto:dreamania.shop@gmail.com" class="cb-conv-btn-tg" style="color: #F59E0B; border-color: rgba(245,158,11,0.3);">
+            ✉️ Email: dreamania.shop@gmail.com
+          </a>
+        </div>
+      `;
+      const container = document.getElementById('cb-messages');
+      const div = document.createElement('div');
+      div.innerHTML = suppHtml;
+      container.appendChild(div);
+      scrollCbToBottom();
+    }, 350);
+  }
+}
+
+function appendCbMessage(text, sender) {
+  const container = document.getElementById('cb-messages');
+  const msg = document.createElement('div');
+  msg.className = 'cb-msg cb-msg-' + sender;
+  msg.textContent = text;
+  container.appendChild(msg);
+  scrollCbToBottom();
+}
+
+function handleChatbotSend(e) {
+  e.preventDefault();
+  const input = document.getElementById('cb-user-input');
+  const query = (input.value || '').trim();
+  if (!query) return;
+
+  appendCbMessage(query, 'user');
+  input.value = '';
+
+  setTimeout(() => {
+    const waLeadText = 'Hello Dreamania! 📩 Inquiry from website: ' + query;
+    const botAnswer = 'I have prepared your ready inquiry. Send it directly to our team:';
+    appendCbMessage(botAnswer, 'bot');
+
+    const leadCard = `
+      <div class="cb-conversion-card">
+        <div class="cb-conv-tag">READY LEAD INQUIRY</div>
+        <div style="font-size: 0.82rem; color: #fff; margin-bottom: 8px; font-style: italic;">"${query}"</div>
+        <a href="https://wa.me/212707031614?text=${encodeURIComponent(waLeadText)}" target="_blank" rel="noopener" class="cb-conv-btn-wa">
+          💬 Send to WhatsApp (+212 707-031614)
+        </a>
+        <a href="https://t.me/dreamania" target="_blank" rel="noopener" class="cb-conv-btn-tg">
+          ✈️ Send to Telegram (@dreamania)
+        </a>
+      </div>
+    `;
+    const container = document.getElementById('cb-messages');
+    const div = document.createElement('div');
+    div.innerHTML = leadCard;
+    container.appendChild(div);
+    scrollCbToBottom();
+  }, 400);
+}
+
+window.toggleChatbot = toggleChatbot;
+window.openChatbot = openChatbot;
+window.closeChatbot = closeChatbot;
+window.selectChatbotPlan = selectChatbotPlan;
+window.selectChatbotAction = selectChatbotAction;
+window.handleChatbotSend = handleChatbotSend;
 
 </script>
 </body>

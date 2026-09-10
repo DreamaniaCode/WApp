@@ -179,7 +179,7 @@ export function LicenseScreen({ onActivated }: LicenseScreenProps) {
                     <p className="text-xs text-slate-500 font-medium tracking-wide">
                         Don't have a code?{" "}
                         <a
-                            href="https://wa.me/212755837268"
+                            href="https://wa.me/212707031614?text=Hello%20DreamaniaCode,%20I%20need%20a%20license%20key%20for%20WApp%20Manager%20Pro."
                             target="_blank"
                             rel="noopener noreferrer"
                             className="text-emerald-400 hover:text-emerald-300 transition-colors font-bold inline-flex items-center gap-1"
