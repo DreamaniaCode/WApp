@@ -2,8 +2,8 @@
 
 import { useState, useEffect, useRef } from "react";
 import Papa from "papaparse";
-import { formatPhoneNumber } from "@/lib/numberFormatter";
-import { UserPlus, Users, Trash2, Download, Upload } from "lucide-react";
+import { formatPhoneNumber, isLandlineNumber } from "@/lib/numberFormatter";
+import { UserPlus, Users, Trash2, Download, Upload, Smartphone } from "lucide-react";
 
 export function ContactsManager() {
     const [contacts, setContacts] = useState<{ name: string; number: string }[]>([]);
@@ -40,6 +40,11 @@ export function ContactsManager() {
         const newContacts = [...contacts];
         newContacts.splice(index, 1);
         setContacts(newContacts);
+    };
+
+    const filterOnlyMobiles = () => {
+        const mobiles = contacts.filter(c => !isLandlineNumber(c.number));
+        setContacts(mobiles);
     };
 
     const downloadCSV = () => {
@@ -88,7 +93,16 @@ export function ContactsManager() {
         <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 max-w-2xl w-full mx-auto">
             <h2 className="text-xl font-bold mb-4 flex items-center justify-between">
                 <span className="flex items-center gap-2"><Users className="w-5 h-5 text-purple-600" /> Manage Contacts</span>
-                <div className="flex gap-2">
+                <div className="flex items-center gap-2">
+                    {contacts.length > 0 && (
+                        <button
+                            onClick={filterOnlyMobiles}
+                            title="Remove landlines (05...)"
+                            className="text-xs text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2 py-1 rounded-lg flex items-center gap-1 font-semibold transition"
+                        >
+                            <Smartphone className="w-3.5 h-3.5 text-emerald-600" /> Mobiles Only
+                        </button>
+                    )}
                     <input type="file" ref={fileInputRef} className="hidden" accept=".csv" onChange={handleImportCSV} />
                     <button onClick={() => fileInputRef.current?.click()} className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1">
                         <Upload className="w-4 h-4" /> Import

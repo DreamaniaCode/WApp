@@ -311,7 +311,7 @@ function DashboardPanel({ isConnected }: { isConnected: boolean }) {
                   <span className="text-sm font-medium text-white/80">DreamaniaCode Enterprise</span>
                 </div>
                 <h1 className="text-3xl font-extrabold tracking-tight text-white mb-0.5">WApp Manager Leads Pro</h1>
-                <p className="text-white/80 text-sm font-medium">WhatsApp Automation &amp; B2B Leads v2026.7.0 — Ultimate Enterprise Edition</p>
+                <p className="text-white/80 text-sm font-medium">WhatsApp Automation &amp; B2B Leads v2026.8.0 — Ultimate Enterprise Edition</p>
               </div>
             </div>
             <div className="flex flex-col gap-2 items-end">
@@ -607,7 +607,7 @@ export default function Home() {
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <header className={`h-14 flex items-center gap-3 px-4 border-b shrink-0 ${darkMode ? "bg-gray-900 border-gray-800" : "bg-white border-gray-200"}`}>
           <button onClick={() => setSidebarOpen(!sidebarOpen)} className={`p-1.5 rounded-lg transition ${darkMode ? "text-gray-400 hover:bg-gray-800" : "text-gray-500 hover:bg-gray-100"}`}><div className="space-y-1"><div className={`w-4 h-0.5 rounded ${darkMode ? "bg-gray-400" : "bg-gray-600"}`} /><div className={`w-4 h-0.5 rounded ${darkMode ? "bg-gray-400" : "bg-gray-600"}`} /><div className={`w-4 h-0.5 rounded ${darkMode ? "bg-gray-400" : "bg-gray-600"}`} /></div></button>
-          <div className="flex items-center gap-1.5"><span className={`text-sm font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>{currentNav?.label}</span><span className="text-xs font-mono px-2 py-0.5 rounded-full bg-gradient-to-r from-blue-600 to-purple-600 text-white font-semibold">v2026.7.0</span></div>
+          <div className="flex items-center gap-1.5"><span className={`text-sm font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>{currentNav?.label}</span><span className="text-xs font-mono px-2 py-0.5 rounded-full bg-gradient-to-r from-blue-600 to-purple-600 text-white font-semibold">v2026.8.0</span></div>
           <div className={`flex-1 max-w-xs flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm ${darkMode ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-500"}`}><Search className="w-4 h-4 shrink-0" /><input className="bg-transparent flex-1 outline-none text-sm" placeholder="Search features..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} /></div>
           <div className="flex items-center gap-2 ml-auto">
             {!isElectronEnv && (

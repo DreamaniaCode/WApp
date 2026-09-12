@@ -195,6 +195,94 @@ function normalizeScrapedPhone(rawPhone, locationHint = "", defaultCountry = "21
 }
 
 /**
+ * Checks whether a normalized phone number is a fixed/landline number ("numéro fixe").
+ * Recognizes Moroccan landlines (05... / 2125... / 5...) and international landline prefixes.
+ */
+function isLandlineNumber(phone, defaultCountry = "212") {
+    if (!phone) return false;
+    const clean = String(phone).replace(/\D/g, '');
+    const country = String(defaultCountry || integrationsSettings.phone?.defaultCountryCode || "212").replace(/\D/g, '');
+
+    // 1. Morocco (+212): All landlines start with 2125 (12 digits) or local 05 (10 digits) or 5 (9 digits)
+    if (clean.startsWith("2125") && clean.length === 12) return true;
+    if (clean.startsWith("2128") && clean.length === 12) return true; // Special service / toll
+    if (clean.startsWith("05") && clean.length === 10) return true;
+    if (clean.startsWith("5") && clean.length === 9) return true;
+
+    // 2. France (+33): 01-05
+    if (clean.startsWith("33") && clean.length === 11 && /^33[1-5]/.test(clean)) return true;
+    if (clean.startsWith("0") && clean.length === 10 && /^0[1-5]/.test(clean)) return true;
+
+    // 3. Spain (+34): 8, 9
+    if (clean.startsWith("34") && clean.length === 11 && /^34[89]/.test(clean)) return true;
+
+    // 4. UK (+44): 01, 02
+    if (clean.startsWith("44") && clean.length >= 11 && /^44[12]/.test(clean)) return true;
+
+    // 5. Algeria (+213): 02, 03, 04
+    if (clean.startsWith("213") && clean.length === 12 && /^213[234]/.test(clean)) return true;
+
+    // 6. Tunisia (+216): 7
+    if (clean.startsWith("216") && clean.length === 11 && /^2167/.test(clean)) return true;
+
+    // 7. UAE (+971): 2, 3, 4, 6, 7, 9
+    if (clean.startsWith("971") && clean.length >= 11 && /^971[234679]/.test(clean)) return true;
+
+    // 8. Saudi (+966): 1
+    if (clean.startsWith("966") && clean.length >= 11 && /^9661/.test(clean)) return true;
+
+    return false;
+}
+
+/**
+ * Checks whether a normalized phone number is a smartphone / mobile number.
+ */
+function isMobileNumber(phone, defaultCountry = "212") {
+    if (!phone) return false;
+    if (isLandlineNumber(phone, defaultCountry)) return false;
+
+    const clean = String(phone).replace(/\D/g, '');
+
+    // 1. Morocco (+212): Mobile numbers start with 2126 or 2127 (12 digits)
+    if ((clean.startsWith("2126") || clean.startsWith("2127")) && clean.length === 12) return true;
+    if ((clean.startsWith("06") || clean.startsWith("07")) && clean.length === 10) return true;
+    if ((clean.startsWith("6") || clean.startsWith("7")) && clean.length === 9) return true;
+
+    // 2. France (+33): 06, 07
+    if (clean.startsWith("33") && clean.length === 11 && /^33[67]/.test(clean)) return true;
+
+    // 3. Spain (+34): 6, 7
+    if (clean.startsWith("34") && clean.length === 11 && /^34[67]/.test(clean)) return true;
+
+    // 4. UK (+44): 07
+    if (clean.startsWith("44") && clean.length >= 11 && /^447/.test(clean)) return true;
+
+    // 5. Algeria (+213): 05, 06, 07
+    if (clean.startsWith("213") && clean.length === 12 && /^213[567]/.test(clean)) return true;
+
+    // 6. Tunisia (+216): 2, 4, 5, 9
+    if (clean.startsWith("216") && clean.length === 11 && /^216[2459]/.test(clean)) return true;
+
+    // 7. UAE (+971): 05...
+    if (clean.startsWith("971") && clean.length >= 11 && /^9715/.test(clean)) return true;
+
+    // 8. Saudi (+966): 05...
+    if (clean.startsWith("966") && clean.length >= 11 && /^9665/.test(clean)) return true;
+
+    return !isLandlineNumber(phone, defaultCountry);
+}
+
+/**
+ * Returns 'mobile' | 'landline' | 'unknown'
+ */
+function getPhoneType(phone, defaultCountry = "212") {
+    if (!phone) return "unknown";
+    if (isLandlineNumber(phone, defaultCountry)) return "landline";
+    if (isMobileNumber(phone, defaultCountry)) return "mobile";
+    return "unknown";
+}
+
+/**
  * Universal AI Caller supporting OpenAI, Google Gemini, Anthropic Claude, DeepSeek, Groq, Ollama, and Custom LLM.
  */
 async function callAiChatbot(userMessage, customConfig = {}) {
@@ -1359,6 +1447,160 @@ app.post("/api/activate", async (req, res) => {
     request.write(payload);
     request.end();
 });
+
+// ─── WhatsApp Number Verification & Testing API ─────────────────────────────
+app.post("/api/whatsapp/check-numbers", async (req, res) => {
+    try {
+        const { numbers = [], defaultCountry } = req.body;
+        if (!Array.isArray(numbers) || numbers.length === 0) {
+            return res.status(400).json({ error: "Please provide an array of numbers to verify" });
+        }
+
+        const country = defaultCountry || integrationsSettings.phone?.defaultCountryCode || "212";
+
+        // Auto-heal ready state if page is ready
+        if (!isReady && isAuthenticated && activeClient && activeClient.pupPage && !activeClient.pupPage.isClosed()) {
+            try {
+                const hasPane = await activeClient.pupPage.evaluate(() => {
+                    return document.querySelector('#pane-side') !== null || document.querySelector('[data-testid="chat-list"]') !== null;
+                }).catch(() => false);
+                if (hasPane) {
+                    isReady = true;
+                    await ensureWWebJSInjected(activeClient);
+                }
+            } catch (_) {}
+        }
+
+        const isClientActive = isReady && activeClient && activeClient.pupPage && !activeClient.pupPage.isClosed();
+
+        if (isClientActive) {
+            await ensureWWebJSInjected(activeClient);
+        }
+
+        const results = [];
+        const limit = Math.min(numbers.length, 500);
+
+        for (let i = 0; i < limit; i++) {
+            const raw = numbers[i];
+            const normalized = normalizeScrapedPhone(raw, "", country);
+            const type = getPhoneType(normalized, country);
+
+            if (!normalized || normalized.length < 8) {
+                results.push({
+                    original: raw,
+                    number: normalized || raw,
+                    type: "unknown",
+                    isWhatsApp: false,
+                    jid: null,
+                    error: "Invalid number"
+                });
+                continue;
+            }
+
+            if (!isClientActive) {
+                // Return classification based on offline heuristic
+                results.push({
+                    original: raw,
+                    number: normalized,
+                    type,
+                    isWhatsApp: null,
+                    jid: null,
+                    message: "WhatsApp client not connected (offline classification only)"
+                });
+                continue;
+            }
+
+            try {
+                let contactId = null;
+                if (typeof activeClient.getNumberId === 'function') {
+                    contactId = await activeClient.getNumberId(normalized);
+                }
+
+                const isWa = !!(contactId && (contactId._serialized || contactId.user));
+                results.push({
+                    original: raw,
+                    number: normalized,
+                    type,
+                    isWhatsApp: isWa,
+                    jid: contactId ? (contactId._serialized || `${normalized}@c.us`) : null
+                });
+            } catch (err) {
+                console.warn(`[Check WhatsApp] Failed to verify ${normalized}:`, err.message);
+                results.push({
+                    original: raw,
+                    number: normalized,
+                    type,
+                    isWhatsApp: false,
+                    jid: null,
+                    error: err.message
+                });
+            }
+
+            // Small delay to prevent overload
+            if (i < limit - 1 && limit > 10) {
+                await new Promise(r => setTimeout(r, 20));
+            }
+        }
+
+        const whatsappCount = results.filter(r => r.isWhatsApp === true).length;
+        const mobileCount = results.filter(r => r.type === "mobile").length;
+        const landlineCount = results.filter(r => r.type === "landline").length;
+
+        return res.json({
+            success: true,
+            connected: isClientActive,
+            total: results.length,
+            whatsappCount,
+            mobileCount,
+            landlineCount,
+            results
+        });
+    } catch (e) {
+        console.error("[/api/whatsapp/check-numbers] Error:", e);
+        return res.status(500).json({ error: e.message || "Failed to check numbers" });
+    }
+});
+
+app.get("/api/whatsapp/check-number", async (req, res) => {
+    try {
+        const rawNumber = req.query.number;
+        if (!rawNumber) return res.status(400).json({ error: "Missing number query parameter" });
+
+        const country = req.query.country || integrationsSettings.phone?.defaultCountryCode || "212";
+        const normalized = normalizeScrapedPhone(rawNumber, "", country);
+        const type = getPhoneType(normalized, country);
+
+        const isClientActive = isReady && activeClient && activeClient.pupPage && !activeClient.pupPage.isClosed();
+        if (!isClientActive) {
+            return res.json({
+                success: true,
+                connected: false,
+                original: rawNumber,
+                number: normalized,
+                type,
+                isWhatsApp: null,
+                message: "WhatsApp client not connected"
+            });
+        }
+
+        await ensureWWebJSInjected(activeClient);
+        const contactId = await activeClient.getNumberId(normalized);
+        const isWa = !!(contactId && (contactId._serialized || contactId.user));
+
+        return res.json({
+            success: true,
+            connected: true,
+            original: rawNumber,
+            number: normalized,
+            type,
+            isWhatsApp: isWa,
+            jid: contactId ? (contactId._serialized || `${normalized}@c.us`) : null
+        });
+    } catch (e) {
+        return res.status(500).json({ error: e.message });
+    }
+});
+
 // ─── Bulk send ────────────────────────────────────────────────────────────────
 app.post("/api/send-bulk", async (req, res) => {
     const { recipients = [], message, minDelay = 1000, maxDelay = 3000, attachments = [] } = req.body;
@@ -1918,7 +2160,7 @@ app.post("/api/reconnect", async (_req, res) => {
 });
 // ─── Chatbot & RAG API ────────────────────────────────────────────────────────
 app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", version: "2026.7.0", timestamp: Date.now() });
+    res.json({ status: "ok", version: "2026.8.0", timestamp: Date.now() });
 });
 app.get("/api/chatbot/stats", (_req, res) => {
     res.json({
@@ -2057,7 +2299,7 @@ app.post("/api/integrations/test-webhook", async (req, res) => {
 });
 
 // ─── External Scraper Engines ────────────────────────────────────────────────
-async function scrapeGooglePlacesApi(keyword, location, limit, apiKey) {
+async function scrapeGooglePlacesApi(keyword, location, limit, apiKey, mobileOnly = false) {
     io.emit("scrape_status", { step: "navigating", message: `Connecting to Google Places API for "${keyword} in ${location}"...`, progress: 20 });
     const query = `${keyword} in ${location}`;
     const searchUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${apiKey}`;
@@ -2073,7 +2315,8 @@ async function scrapeGooglePlacesApi(keyword, location, limit, apiKey) {
 
     io.emit("scrape_status", { step: "scrolling", message: `Discovered ${results.length} places. Fetching details...`, progress: 45 });
 
-    for (let i = 0; i < Math.min(results.length, limit); i++) {
+    for (let i = 0; i < Math.min(results.length, limit * 2); i++) {
+        if (leads.length >= limit) break;
         const place = results[i];
         io.emit("scrape_status", {
             step: "inspecting",
@@ -2081,7 +2324,7 @@ async function scrapeGooglePlacesApi(keyword, location, limit, apiKey) {
             current: leads.length,
             total: limit,
             currentBusiness: place.name,
-            progress: Math.min(Math.round(((i + 1) / Math.min(results.length, limit)) * 100), 95)
+            progress: Math.min(Math.round(((i + 1) / Math.min(results.length, limit * 2)) * 100), 95)
         });
         try {
             const detailUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${place.place_id}&fields=name,formatted_phone_number,international_phone_number,formatted_address,website,rating&key=${apiKey}`;
@@ -2093,10 +2336,15 @@ async function scrapeGooglePlacesApi(keyword, location, limit, apiKey) {
             const cleanNumber = normalizeScrapedPhone(rawPhone, location, defaultCountry);
 
             if (cleanNumber && cleanNumber.length >= 8 && !seenPhones.has(cleanNumber)) {
+                if (mobileOnly && isLandlineNumber(cleanNumber, defaultCountry)) {
+                    continue;
+                }
                 seenPhones.add(cleanNumber);
+                const phoneType = getPhoneType(cleanNumber, defaultCountry);
                 const leadObj = {
                     name: d.name || place.name,
                     number: cleanNumber,
+                    phoneType,
                     address: d.formatted_address || place.formatted_address || "",
                     website: d.website || "",
                     rating: d.rating ? String(d.rating) : (place.rating ? String(place.rating) : ""),
@@ -2112,7 +2360,7 @@ async function scrapeGooglePlacesApi(keyword, location, limit, apiKey) {
     return leads;
 }
 
-async function scrapeSerpApi(keyword, location, limit, apiKey) {
+async function scrapeSerpApi(keyword, location, limit, apiKey, mobileOnly = false) {
     io.emit("scrape_status", { step: "navigating", message: `Querying SerpAPI Google Maps for "${keyword} in ${location}"...`, progress: 25 });
     const url = `https://serpapi.com/search.json?engine=google_maps&q=${encodeURIComponent(keyword + ' ' + location)}&api_key=${apiKey}&hl=fr&gl=ma`;
     const res = await fetch(url);
@@ -2126,7 +2374,8 @@ async function scrapeSerpApi(keyword, location, limit, apiKey) {
 
     io.emit("scrape_status", { step: "scrolling", message: `Processing ${localResults.length} business cards from SerpAPI...`, progress: 50 });
 
-    for (let i = 0; i < Math.min(localResults.length, limit); i++) {
+    for (let i = 0; i < Math.min(localResults.length, limit * 2); i++) {
+        if (leads.length >= limit) break;
         const item = localResults[i];
         io.emit("scrape_status", {
             step: "inspecting",
@@ -2134,15 +2383,20 @@ async function scrapeSerpApi(keyword, location, limit, apiKey) {
             current: leads.length,
             total: limit,
             currentBusiness: item.title,
-            progress: Math.min(Math.round(((i + 1) / Math.min(localResults.length, limit)) * 100), 95)
+            progress: Math.min(Math.round(((i + 1) / Math.min(localResults.length, limit * 2)) * 100), 95)
         });
         const rawPhone = item.phone || "";
         const cleanNumber = normalizeScrapedPhone(rawPhone, location, defaultCountry);
         if (cleanNumber && cleanNumber.length >= 8 && !seenPhones.has(cleanNumber)) {
+            if (mobileOnly && isLandlineNumber(cleanNumber, defaultCountry)) {
+                continue;
+            }
             seenPhones.add(cleanNumber);
+            const phoneType = getPhoneType(cleanNumber, defaultCountry);
             const leadObj = {
                 name: item.title || "Business Lead",
                 number: cleanNumber,
+                phoneType,
                 address: item.address || "",
                 website: item.website || "",
                 rating: item.rating ? String(item.rating) : "",
@@ -2157,7 +2411,7 @@ async function scrapeSerpApi(keyword, location, limit, apiKey) {
 
 // ─── Scraper API ──────────────────────────────────────────────────────────────
 app.post("/api/scrape-leads", async (req, res) => {
-    const { keyword, location, maxResults = 25 } = req.body;
+    const { keyword, location, maxResults = 25, mobileOnly = false } = req.body;
     if (!keyword || !location) {
         return res.status(400).json({ error: "Keyword and location required" });
     }
@@ -2167,7 +2421,7 @@ app.post("/api/scrape-leads", async (req, res) => {
 
     io.emit("scrape_status", {
         step: "init",
-        message: `Starting research for "${keyword}" in "${location}" (Target: ${limit} leads)...`,
+        message: `Starting research for "${keyword}" in "${location}" (Target: ${limit} ${mobileOnly ? 'mobile ' : ''}leads)...`,
         progress: 5,
         current: 0,
         total: limit,
@@ -2177,7 +2431,7 @@ app.post("/api/scrape-leads", async (req, res) => {
     // 1. Google Places API Mode
     if (scraperMode === "google_places" && integrationsSettings.scraper?.googlePlacesApiKey) {
         try {
-            const leads = await scrapeGooglePlacesApi(keyword, location, limit, integrationsSettings.scraper.googlePlacesApiKey);
+            const leads = await scrapeGooglePlacesApi(keyword, location, limit, integrationsSettings.scraper.googlePlacesApiKey, mobileOnly);
             io.emit("scrape_status", {
                 step: "completed",
                 message: `Research complete! Successfully extracted ${leads.length} leads.`,
@@ -2203,7 +2457,7 @@ app.post("/api/scrape-leads", async (req, res) => {
     // 2. SerpAPI Mode
     if (scraperMode === "serpapi" && integrationsSettings.scraper?.serpApiKey) {
         try {
-            const leads = await scrapeSerpApi(keyword, location, limit, integrationsSettings.scraper.serpApiKey);
+            const leads = await scrapeSerpApi(keyword, location, limit, integrationsSettings.scraper.serpApiKey, mobileOnly);
             io.emit("scrape_status", {
                 step: "completed",
                 message: `Research complete! Successfully extracted ${leads.length} leads.`,
@@ -2423,10 +2677,25 @@ app.post("/api/scrape-leads", async (req, res) => {
                 }
 
                 if (cleanNumber && cleanNumber.length >= 8 && !seenPhones.has(cleanNumber)) {
+                    if (mobileOnly && isLandlineNumber(cleanNumber, defaultCountry)) {
+                        console.log(`[Google Maps Scraper] Skipping landline: ${cleanNumber} (${item.name})`);
+                        io.emit("scrape_status", {
+                            step: "inspecting",
+                            message: `Excluded landline: ${cleanNumber} (Smartphone filter active)`,
+                            current: leads.length,
+                            total: limit,
+                            currentBusiness: item.name,
+                            progress: Math.min(Math.round((leads.length / limit) * 100), 98)
+                        });
+                        continue;
+                    }
+
                     seenPhones.add(cleanNumber);
+                    const phoneType = getPhoneType(cleanNumber, defaultCountry);
                     const leadObj = {
                         name: item.name,
                         number: cleanNumber,
+                        phoneType,
                         address: details.address.replace(/\n/g, ' ').replace(/^\s*/, '').trim(),
                         website: details.website || "",
                         rating: details.rating ? details.rating.trim() : "",

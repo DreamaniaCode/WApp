@@ -3,11 +3,12 @@
 import { useState, useRef, useEffect } from "react";
 import {
     Send, Upload, Clock, AlertCircle, FileText, X, FileSpreadsheet, Plus, Download,
-    CheckCircle2, XCircle, Square, RotateCw, Filter, Search, Users, Loader2, CheckSquare, Sparkles
+    CheckCircle2, XCircle, Square, RotateCw, Filter, Search, Users, Loader2, CheckSquare, Sparkles,
+    Smartphone, CheckCheck
 } from "lucide-react";
 import Papa from "papaparse";
 import { MessagePreview } from "./MessagePreview";
-import { formatPhoneNumber } from "@/lib/numberFormatter";
+import { formatPhoneNumber, isLandlineNumber } from "@/lib/numberFormatter";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { API_URL } from "@/lib/config";
 
@@ -307,6 +308,99 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
         });
     };
 
+    const [isCheckingWhatsApp, setIsCheckingWhatsApp] = useState(false);
+
+    // Remove landlines (e.g. 05...) and keep only smartphone/mobile numbers (06/07...)
+    const filterOnlyMobiles = () => {
+        if (availableVars.length > 0) {
+            // In CSV mode
+            const initialCount = recipients.length;
+            const filtered = recipients.filter(r => !isLandlineNumber(r.number));
+            const removed = initialCount - filtered.length;
+            setRecipients(filtered);
+            setStatus({
+                type: "success",
+                msg: `Filtered out ${removed} landline numbers (05...). Kept ${filtered.length} mobile smartphone numbers!`
+            });
+            return;
+        }
+
+        if (!textInput.trim()) return;
+        const lines = textInput.split(/[\n,]+/);
+        const cleaned = lines
+            .map(l => l.trim())
+            .filter(l => l.length > 5)
+            .map(num => formatPhoneNumber(num));
+
+        const unique = Array.from(new Set(cleaned));
+        const mobiles = unique.filter(num => !isLandlineNumber(num));
+        const removed = unique.length - mobiles.length;
+
+        setTextInput(mobiles.join("\n"));
+        setRecipients(mobiles.map(number => ({ number })));
+        setStatus({
+            type: "success",
+            msg: `Filtered out ${removed} landlines (05...). Kept ${mobiles.length} mobile smartphone numbers!`
+        });
+    };
+
+    // Test recipients on WhatsApp Web
+    const testRecipientsOnWhatsApp = async () => {
+        const numbersToTest = recipients.map(r => r.number).filter(n => n && n.length >= 6);
+        if (numbersToTest.length === 0) {
+            setStatus({ type: "error", msg: "No recipient numbers to test." });
+            return;
+        }
+
+        setIsCheckingWhatsApp(true);
+        setStatus({ type: "success", msg: `Testing ${numbersToTest.length} numbers live on WhatsApp Web...` });
+
+        try {
+            const res = await fetch(`${API_URL}/api/whatsapp/check-numbers`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ numbers: numbersToTest })
+            });
+
+            const data = await res.json();
+            if (res.ok && data.success) {
+                if (data.connected === false) {
+                    setStatus({
+                        type: "error",
+                        msg: "WhatsApp Web is not connected. Please scan the QR code in 'Connect WhatsApp' tab to test live accounts."
+                    });
+                    return;
+                }
+
+                const activeSet = new Set<string>();
+                (data.results || []).forEach((r: any) => {
+                    if (r.isWhatsApp) activeSet.add(r.number);
+                });
+
+                const inactiveCount = numbersToTest.length - activeSet.size;
+
+                // Filter recipients to active WhatsApp accounts only
+                const activeRecipients = recipients.filter(r => activeSet.has(r.number));
+                setRecipients(activeRecipients);
+
+                if (availableVars.length === 0) {
+                    setTextInput(activeRecipients.map(r => r.number).join("\n"));
+                }
+
+                setStatus({
+                    type: "success",
+                    msg: `WhatsApp Check Complete: ${activeSet.size} active WhatsApp accounts verified. Removed ${inactiveCount} inactive numbers/landlines.`
+                });
+            } else {
+                setStatus({ type: "error", msg: data.error || "Failed to verify WhatsApp numbers" });
+            }
+        } catch (err: any) {
+            setStatus({ type: "error", msg: "Error checking WhatsApp numbers: " + err.message });
+        } finally {
+            setIsCheckingWhatsApp(false);
+        }
+    };
+
     const handleCSVUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
@@ -602,10 +696,32 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
                                     <button
                                         type="button"
                                         onClick={cleanAndFormatNumbers}
-                                        className="text-xs flex items-center gap-1 text-amber-700 hover:text-amber-800 font-semibold bg-amber-50 hover:bg-amber-100 px-2.5 py-1.5 rounded-lg border border-amber-200 transition"
+                                        className="text-xs flex items-center gap-1 text-amber-700 hover:text-amber-800 font-semibold bg-amber-50 hover:bg-amber-100 px-2.5 py-1.5 rounded-lg border border-amber-200 transition shadow-2xs"
                                         title="Clean & normalize all numbers (converts 05/06/07 to country code, strips +, spaces, and redundant zeros)"
                                     >
                                         <Sparkles className="w-3.5 h-3.5 text-amber-600" /> Clean & Format
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={filterOnlyMobiles}
+                                        className="text-xs flex items-center gap-1 text-emerald-700 hover:text-emerald-800 font-semibold bg-emerald-50 hover:bg-emerald-100 px-2.5 py-1.5 rounded-lg border border-emerald-200 transition shadow-2xs"
+                                        title="Exclude fixed/landline numbers (05...) and keep only smartphones (06/07...)"
+                                    >
+                                        <Smartphone className="w-3.5 h-3.5 text-emerald-600" /> Mobiles Only
+                                    </button>
+                                    <button
+                                        type="button"
+                                        disabled={isCheckingWhatsApp}
+                                        onClick={testRecipientsOnWhatsApp}
+                                        className="text-xs flex items-center gap-1 text-teal-700 hover:text-teal-800 font-semibold bg-teal-50 hover:bg-teal-100 px-2.5 py-1.5 rounded-lg border border-teal-200 transition shadow-2xs disabled:opacity-50"
+                                        title="Verify live on WhatsApp and remove numbers not registered on WhatsApp"
+                                    >
+                                        {isCheckingWhatsApp ? (
+                                            <Loader2 className="w-3.5 h-3.5 animate-spin text-teal-600" />
+                                        ) : (
+                                            <CheckCheck className="w-3.5 h-3.5 text-teal-600" />
+                                        )}
+                                        {isCheckingWhatsApp ? "Checking..." : "Test WhatsApp"}
                                     </button>
                                 </div>
                             </div>

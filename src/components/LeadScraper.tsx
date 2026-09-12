@@ -2,11 +2,12 @@
 
 import React, { useState, useEffect } from "react";
 import { API_URL } from "@/lib/config";
-import { formatPhoneNumber } from "@/lib/numberFormatter";
+import { formatPhoneNumber, isLandlineNumber, isMobileNumber, getPhoneType } from "@/lib/numberFormatter";
 import {
     Search, MapPin, Download, Loader2, Building2, UserPlus,
     Send, CheckCircle2, Copy, ExternalLink, Star, CheckSquare, Square,
-    Sparkles, Globe2, Radio, Activity, Check, AlertCircle
+    Sparkles, Globe2, Radio, Activity, Check, AlertCircle, Smartphone,
+    CheckCheck, XCircle, Phone, Filter
 } from "lucide-react";
 
 export interface Lead {
@@ -16,6 +17,8 @@ export interface Lead {
     website?: string;
     rating?: string;
     source?: string;
+    phoneType?: 'mobile' | 'landline' | 'unknown';
+    whatsappStatus?: 'active' | 'inactive' | 'testing';
 }
 
 interface LeadScraperProps {
@@ -37,9 +40,11 @@ export function LeadScraper({ socket, onSendToBulk }: LeadScraperProps) {
     const [keyword, setKeyword] = useState("");
     const [location, setLocation] = useState("");
     const [maxResults, setMaxResults] = useState(25);
+    const [mobileOnly, setMobileOnly] = useState(true);
     const [leads, setLeads] = useState<Lead[]>([]);
     const [selectedIndexes, setSelectedIndexes] = useState<number[]>([]);
     const [loading, setLoading] = useState(false);
+    const [testingWhatsApp, setTestingWhatsApp] = useState(false);
     const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
     const [status, setStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
     const [scrapeStatus, setScrapeStatus] = useState<ScrapeStatus | null>(null);
@@ -60,9 +65,18 @@ export function LeadScraper({ socket, onSendToBulk }: LeadScraperProps) {
 
         const handleLeadFound = (data: { lead: Lead; current: number; totalTarget: number }) => {
             if (!data.lead || !data.lead.number) return;
+            const formatted = formatPhoneNumber(data.lead.number);
+            const pType = data.lead.phoneType || getPhoneType(formatted);
+
+            // Skip landlines if mobileOnly option is on
+            if (mobileOnly && (pType === "landline" || isLandlineNumber(formatted))) {
+                return;
+            }
+
             const normalizedLead: Lead = {
                 ...data.lead,
-                number: formatPhoneNumber(data.lead.number)
+                number: formatted,
+                phoneType: pType
             };
 
             setLeads(prev => {
@@ -80,7 +94,7 @@ export function LeadScraper({ socket, onSendToBulk }: LeadScraperProps) {
             socket.off("scrape_status", handleStatus);
             socket.off("scrape_lead_found", handleLeadFound);
         };
-    }, [socket]);
+    }, [socket, mobileOnly]);
 
     const handleSearch = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -96,7 +110,7 @@ export function LeadScraper({ socket, onSendToBulk }: LeadScraperProps) {
         setSelectedIndexes([]);
         setScrapeStatus({
             step: "init",
-            message: `Initializing research for "${keyword}" in "${location}"...`,
+            message: `Initializing research for "${keyword}" in "${location}"${mobileOnly ? ' (Mobile numbers only)' : ''}...`,
             progress: 5,
             current: 0,
             total: maxResults
@@ -109,17 +123,27 @@ export function LeadScraper({ socket, onSendToBulk }: LeadScraperProps) {
                 body: JSON.stringify({
                     keyword: keyword.trim(),
                     location: location.trim(),
-                    maxResults: Number(maxResults) || 25
+                    maxResults: Number(maxResults) || 25,
+                    mobileOnly
                 })
             });
 
             const data = await res.json();
 
             if (res.ok && data.success) {
-                const fetchedLeads: Lead[] = (data.leads || []).map((l: any) => ({
-                    ...l,
-                    number: formatPhoneNumber(l.number)
-                }));
+                let fetchedLeads: Lead[] = (data.leads || []).map((l: any) => {
+                    const formatted = formatPhoneNumber(l.number);
+                    return {
+                        ...l,
+                        number: formatted,
+                        phoneType: l.phoneType || getPhoneType(formatted)
+                    };
+                });
+
+                if (mobileOnly) {
+                    fetchedLeads = fetchedLeads.filter(l => !isLandlineNumber(l.number));
+                }
+
                 setLeads(fetchedLeads);
                 setSelectedIndexes(fetchedLeads.map((_, i) => i));
 
@@ -129,9 +153,10 @@ export function LeadScraper({ socket, onSendToBulk }: LeadScraperProps) {
                         message: "No leads with phone numbers found. Try broadening your keyword or location."
                     });
                 } else {
+                    const mobileCount = fetchedLeads.filter(l => !isLandlineNumber(l.number)).length;
                     setStatus({
                         type: 'success',
-                        message: `Successfully extracted ${fetchedLeads.length} business leads with verified phone numbers!`
+                        message: `Successfully extracted ${fetchedLeads.length} business leads (${mobileCount} mobile smartphones)!`
                     });
                 }
             } else {
@@ -142,6 +167,86 @@ export function LeadScraper({ socket, onSendToBulk }: LeadScraperProps) {
         } finally {
             setLoading(false);
         }
+    };
+
+    // Filter out landline (fixe) numbers from existing leads
+    const filterMobilesOnly = () => {
+        const initialCount = leads.length;
+        const filtered = leads.filter(l => !isLandlineNumber(l.number));
+        const removed = initialCount - filtered.length;
+        setLeads(filtered);
+        setSelectedIndexes(filtered.map((_, i) => i));
+        setStatus({
+            type: 'success',
+            message: `Removed ${removed} landline numbers (05...). Kept ${filtered.length} smartphone/mobile numbers!`
+        });
+    };
+
+    // Test numbers directly on WhatsApp Web via backend API
+    const testWhatsAppNumbers = async () => {
+        if (leads.length === 0) return;
+        setTestingWhatsApp(true);
+        setStatus({
+            type: 'success',
+            message: `Testing ${leads.length} numbers live on WhatsApp Web...`
+        });
+
+        try {
+            const numbersToTest = leads.map(l => l.number);
+            const res = await fetch(`${API_URL}/api/whatsapp/check-numbers`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ numbers: numbersToTest })
+            });
+
+            const data = await res.json();
+            if (res.ok && data.success) {
+                if (data.connected === false) {
+                    setStatus({
+                        type: 'error',
+                        message: "WhatsApp Web is not connected. Scan the QR Code in 'Connect WhatsApp' tab to run live tests."
+                    });
+                    return;
+                }
+
+                const statusMap = new Map<string, { isWhatsApp: boolean; type: string }>();
+                (data.results || []).forEach((r: any) => {
+                    statusMap.set(r.number, { isWhatsApp: r.isWhatsApp, type: r.type });
+                });
+
+                setLeads(prev => prev.map(l => {
+                    const check = statusMap.get(l.number);
+                    return {
+                        ...l,
+                        phoneType: (check?.type as any) || l.phoneType,
+                        whatsappStatus: check?.isWhatsApp ? 'active' : 'inactive'
+                    };
+                }));
+
+                setStatus({
+                    type: 'success',
+                    message: `WhatsApp test complete: ${data.whatsappCount} active on WhatsApp out of ${data.total} tested!`
+                });
+            } else {
+                setStatus({ type: 'error', message: data.error || "Failed to check WhatsApp status." });
+            }
+        } catch (err: any) {
+            setStatus({ type: 'error', message: "Error contacting WhatsApp verification: " + err.message });
+        } finally {
+            setTestingWhatsApp(false);
+        }
+    };
+
+    // Keep only numbers that tested positive on WhatsApp
+    const keepWhatsAppOnly = () => {
+        const activeLeads = leads.filter(l => l.whatsappStatus === 'active');
+        const removed = leads.length - activeLeads.length;
+        setLeads(activeLeads);
+        setSelectedIndexes(activeLeads.map((_, i) => i));
+        setStatus({
+            type: 'success',
+            message: `Kept ${activeLeads.length} verified WhatsApp contacts (excluded ${removed} inactive / landlines).`
+        });
     };
 
     const toggleSelectAll = () => {
@@ -322,10 +427,25 @@ export function LeadScraper({ socket, onSendToBulk }: LeadScraperProps) {
                         </div>
                     </div>
 
-                    <div className="flex items-center justify-between pt-2">
-                        <div className="text-xs text-gray-500 flex items-center gap-1.5">
-                            <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                            <span>Extracts business name, phone number, address, and website details</span>
+                    <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+                        <div className="flex flex-wrap items-center gap-3">
+                            <label className="inline-flex items-center gap-2 cursor-pointer bg-white px-3 py-1.5 border border-gray-200 rounded-xl hover:border-emerald-400 transition shadow-2xs">
+                                <input
+                                    type="checkbox"
+                                    checked={mobileOnly}
+                                    onChange={(e) => setMobileOnly(e.target.checked)}
+                                    className="w-4 h-4 text-emerald-600 rounded focus:ring-emerald-500 cursor-pointer"
+                                />
+                                <span className="text-xs font-semibold text-gray-700 flex items-center gap-1.5">
+                                    <Smartphone className="w-3.5 h-3.5 text-emerald-600" />
+                                    Smartphones Only (Skip Landlines 05...)
+                                </span>
+                            </label>
+                            <span className="text-xs text-gray-400 hidden sm:inline">|</span>
+                            <div className="text-xs text-gray-500 flex items-center gap-1.5">
+                                <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                                <span>Extracts business name, phone number, address, and website details</span>
+                            </div>
                         </div>
                         <button
                             type="submit"
@@ -435,9 +555,46 @@ export function LeadScraper({ socket, onSendToBulk }: LeadScraperProps) {
                         )}
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                         {leads.length > 0 && (
                             <>
+                                {/* Mobile only filter button */}
+                                <button
+                                    onClick={filterMobilesOnly}
+                                    title="Filter out landline (fixe) numbers"
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-xl transition shadow-2xs"
+                                >
+                                    <Smartphone className="w-3.5 h-3.5 text-emerald-600" />
+                                    Mobiles Only
+                                </button>
+
+                                {/* WhatsApp live verification button */}
+                                <button
+                                    onClick={testWhatsAppNumbers}
+                                    disabled={testingWhatsApp}
+                                    title="Verify whether these numbers are registered on WhatsApp"
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-teal-700 bg-teal-50 hover:bg-teal-100 border border-teal-200 rounded-xl transition shadow-2xs disabled:opacity-50"
+                                >
+                                    {testingWhatsApp ? (
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin text-teal-600" />
+                                    ) : (
+                                        <CheckCheck className="w-3.5 h-3.5 text-teal-600" />
+                                    )}
+                                    {testingWhatsApp ? "Testing WhatsApp..." : "Test WhatsApp"}
+                                </button>
+
+                                {/* Keep WhatsApp Only button (shows if test was conducted) */}
+                                {leads.some(l => l.whatsappStatus !== undefined) && (
+                                    <button
+                                        onClick={keepWhatsAppOnly}
+                                        title="Keep only numbers verified on WhatsApp"
+                                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-emerald-800 bg-emerald-100 hover:bg-emerald-200 border border-emerald-300 rounded-xl transition shadow-2xs"
+                                    >
+                                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700" />
+                                        Keep WhatsApp Active ({leads.filter(l => l.whatsappStatus === 'active').length})
+                                    </button>
+                                )}
+
                                 <button
                                     onClick={saveToContactsManager}
                                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 rounded-xl transition shadow-2xs"
@@ -520,7 +677,28 @@ export function LeadScraper({ socket, onSendToBulk }: LeadScraperProps) {
                                                 </div>
                                             </td>
                                             <td className="px-4 py-3 font-mono font-semibold text-emerald-700">
-                                                {lead.number}
+                                                <div className="flex flex-col gap-1 items-start">
+                                                    <span>{lead.number}</span>
+                                                    <div className="flex items-center gap-1">
+                                                        {lead.whatsappStatus === 'active' ? (
+                                                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                                                <CheckCircle2 className="w-2.5 h-2.5 text-emerald-700" /> WhatsApp Actif
+                                                            </span>
+                                                        ) : lead.whatsappStatus === 'inactive' ? (
+                                                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-700 border border-rose-200">
+                                                                <XCircle className="w-2.5 h-2.5 text-rose-600" /> Non-WhatsApp
+                                                            </span>
+                                                        ) : isLandlineNumber(lead.number) ? (
+                                                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
+                                                                ☎️ Fixe
+                                                            </span>
+                                                        ) : (
+                                                            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-200">
+                                                                📱 Mobile
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
                                             </td>
                                             <td className="px-4 py-3 text-xs text-gray-500 max-w-[220px] truncate" title={lead.address}>
                                                 {lead.address || "—"}
