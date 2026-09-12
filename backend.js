@@ -80,6 +80,257 @@ const DATA_DIR = process.env.WAPP_DATA_PATH || process.cwd();
 const LICENSE_PATH = path_1.default.join(DATA_DIR, "license.json");
 const botEngine = new ChatbotRagEngine(DATA_DIR);
 
+// ─── API Integrations & Phone Settings ───────────────────────────────────────
+const INTEGRATIONS_PATH = path_1.default.join(DATA_DIR, "integrations_settings.json");
+const DEFAULT_INTEGRATIONS = {
+    ai: {
+        enabled: false,
+        provider: "openai", // "openai", "gemini", "claude", "deepseek", "groq", "ollama", "custom"
+        apiKey: "",
+        model: "gpt-4o-mini",
+        endpointUrl: "",
+        systemPrompt: "You are a courteous, professional customer support assistant on WhatsApp. Answer concisely and clearly in the same language as the user (Arabic/Darija, French, or English).",
+        useRagContext: true,
+        temperature: 0.7,
+        maxTokens: 350
+    },
+    scraper: {
+        mode: "browser", // "browser", "google_places", "serpapi", "custom_webhook"
+        googlePlacesApiKey: "",
+        serpApiKey: "",
+        scraperApiKey: "",
+        customWebhookUrl: ""
+    },
+    webhooks: {
+        leadsWebhookUrl: "",
+        leadsWebhookEnabled: false,
+        inboundMessageWebhookUrl: "",
+        inboundMessageWebhookEnabled: false
+    },
+    phone: {
+        defaultCountryCode: "212",
+        autoFormatOnImport: true,
+        pureDigitsForWhatsApp: true
+    }
+};
+
+let integrationsSettings = { ...DEFAULT_INTEGRATIONS };
+
+function loadIntegrationsSettings() {
+    try {
+        if (fs_1.default.existsSync(INTEGRATIONS_PATH)) {
+            const raw = JSON.parse(fs_1.default.readFileSync(INTEGRATIONS_PATH, 'utf8'));
+            integrationsSettings = {
+                ai: { ...DEFAULT_INTEGRATIONS.ai, ...(raw.ai || {}) },
+                scraper: { ...DEFAULT_INTEGRATIONS.scraper, ...(raw.scraper || {}) },
+                webhooks: { ...DEFAULT_INTEGRATIONS.webhooks, ...(raw.webhooks || {}) },
+                phone: { ...DEFAULT_INTEGRATIONS.phone, ...(raw.phone || {}) }
+            };
+        } else {
+            fs_1.default.writeFileSync(INTEGRATIONS_PATH, JSON.stringify(DEFAULT_INTEGRATIONS, null, 2));
+        }
+    } catch (e) {
+        console.warn("[Integrations] Could not load settings:", e.message);
+    }
+}
+
+function saveIntegrationsSettings() {
+    try {
+        fs_1.default.writeFileSync(INTEGRATIONS_PATH, JSON.stringify(integrationsSettings, null, 2));
+    } catch (e) {
+        console.error("[Integrations] Could not save settings:", e.message);
+    }
+}
+loadIntegrationsSettings();
+
+/**
+ * Normalizes scraped telephone numbers into valid WhatsApp-compatible format.
+ * Eliminates invalid patterns like +0... or 21206... and guarantees valid country code prefix.
+ */
+function normalizeScrapedPhone(rawPhone, locationHint = "", defaultCountry = "212") {
+    if (!rawPhone) return "";
+    let clean = String(rawPhone).trim();
+    if (!clean) return "";
+
+    const country = String(defaultCountry || integrationsSettings.phone?.defaultCountryCode || "212").replace(/\D/g, '');
+
+    // Convert 00 prefix to +
+    if (clean.startsWith('00')) {
+        clean = '+' + clean.substring(2);
+    }
+
+    // Keep only digits and plus
+    clean = clean.replace(/[^\d+]/g, '');
+
+    if (clean.startsWith('+')) {
+        let afterPlus = clean.substring(1).replace(/\D/g, '');
+        // Fix broken +0... pattern (e.g. +0524420559 or +0639320092)
+        if (afterPlus.startsWith('0') && afterPlus.length === 10) {
+            clean = `${country}${afterPlus.substring(1)}`;
+        }
+        // Fix redundant zero after country code (e.g. +21206... -> 2126...)
+        else if (afterPlus.startsWith(`${country}0`) && afterPlus.length >= country.length + 9) {
+            clean = `${country}${afterPlus.substring(country.length + 1)}`;
+        } else {
+            clean = afterPlus;
+        }
+        return clean;
+    }
+
+    let digits = clean.replace(/\D/g, '');
+    // Redundant zero after country code (e.g. 2120639320092 -> 212639320092)
+    if (digits.startsWith(`${country}0`) && digits.length >= country.length + 9) {
+        digits = `${country}${digits.substring(country.length + 1)}`;
+    }
+    // Local 10-digit number with leading zero (e.g. 0524420559 -> 212524420559, 0639320092 -> 212639320092)
+    else if (digits.length === 10 && digits.startsWith('0')) {
+        digits = `${country}${digits.substring(1)}`;
+    }
+    // Local 9-digit number starting with 5, 6, 7, 8 (e.g. 524420559 -> 212524420559)
+    else if (digits.length === 9 && /^[5678]/.test(digits)) {
+        digits = `${country}${digits}`;
+    }
+
+    return digits;
+}
+
+/**
+ * Universal AI Caller supporting OpenAI, Google Gemini, Anthropic Claude, DeepSeek, Groq, Ollama, and Custom LLM.
+ */
+async function callAiChatbot(userMessage, customConfig = {}) {
+    const aiConfig = { ...integrationsSettings.ai, ...customConfig };
+    const { provider, apiKey, model, endpointUrl, systemPrompt, useRagContext, temperature, maxTokens } = aiConfig;
+
+    if (!apiKey && provider !== 'ollama') {
+        throw new Error(`API Key is required for provider "${provider}"`);
+    }
+
+    // 1. Gather RAG context if enabled
+    let ragContext = "";
+    if (useRagContext && typeof botEngine !== "undefined") {
+        try {
+            const bestMatch = botEngine.findBestAnswer(userMessage);
+            if (bestMatch && bestMatch.answer) {
+                ragContext += `Knowledge Base Reference (${bestMatch.sourceType}): ${bestMatch.answer}\n`;
+            }
+            if (Array.isArray(botEngine.chunks) && botEngine.chunks.length > 0) {
+                const chunksWithScores = botEngine.chunks
+                    .map(c => ({ text: c.text, score: botEngine.calculateSimilarity ? botEngine.calculateSimilarity(userMessage, c.text) : 0 }))
+                    .filter(c => c.score > 0.2)
+                    .sort((a, b) => b.score - a.score)
+                    .slice(0, 3);
+                if (chunksWithScores.length > 0) {
+                    ragContext += "Company Documentation Chunks:\n" + chunksWithScores.map(c => `- ${c.text}`).join("\n") + "\n";
+                }
+            }
+        } catch (ragErr) {
+            console.warn("[AI Chatbot] RAG retrieval error:", ragErr.message);
+        }
+    }
+
+    const fullSystemPrompt = `${systemPrompt || "You are a helpful customer service assistant on WhatsApp."}${ragContext ? "\n\nBUSINESS CONTEXT:\n" + ragContext : ""}\n\nIMPORTANT: Provide concise, accurate responses tailored for WhatsApp. Always respond in the same language the customer uses.`;
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+
+    try {
+        // Google Gemini API
+        if (provider === "gemini") {
+            const geminiModel = model || "gemini-1.5-flash";
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${apiKey}`;
+            const res = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    system_instruction: { parts: [{ text: fullSystemPrompt }] },
+                    contents: [{ parts: [{ text: userMessage }] }],
+                    generationConfig: {
+                        temperature: Number(temperature) || 0.7,
+                        maxOutputTokens: Number(maxTokens) || 350
+                    }
+                }),
+                signal: controller.signal
+            });
+            const data = await res.json();
+            clearTimeout(timeout);
+            if (!res.ok) throw new Error(data.error?.message || `Gemini API error ${res.status}`);
+            const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+            return text ? text.trim() : null;
+        }
+
+        // Anthropic Claude API
+        if (provider === "claude") {
+            const claudeModel = model || "claude-3-5-sonnet-20241022";
+            const res = await fetch("https://api.anthropic.com/v1/messages", {
+                method: "POST",
+                headers: {
+                    "x-api-key": apiKey,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json"
+                },
+                body: JSON.stringify({
+                    model: claudeModel,
+                    system: fullSystemPrompt,
+                    messages: [{ role: "user", content: userMessage }],
+                    max_tokens: Number(maxTokens) || 350,
+                    temperature: Number(temperature) || 0.7
+                }),
+                signal: controller.signal
+            });
+            const data = await res.json();
+            clearTimeout(timeout);
+            if (!res.ok) throw new Error(data.error?.message || `Claude API error ${res.status}`);
+            const text = data.content?.[0]?.text;
+            return text ? text.trim() : null;
+        }
+
+        // OpenAI, DeepSeek, Groq, Ollama, Custom OpenAI-Compatible
+        let baseUrl = "https://api.openai.com/v1";
+        let defaultModel = "gpt-4o-mini";
+
+        if (provider === "deepseek") {
+            baseUrl = "https://api.deepseek.com/v1";
+            defaultModel = "deepseek-chat";
+        } else if (provider === "groq") {
+            baseUrl = "https://api.groq.com/openai/v1";
+            defaultModel = "llama-3.3-70b-versatile";
+        } else if (provider === "ollama") {
+            baseUrl = (endpointUrl || "http://localhost:11434/v1").replace(/\/+$/, '');
+            defaultModel = model || "llama3.2";
+        } else if (provider === "custom") {
+            baseUrl = (endpointUrl || "").replace(/\/+$/, '');
+            defaultModel = model || "default";
+        }
+
+        const endpoint = `${baseUrl}/chat/completions`;
+        const headers = { "Content-Type": "application/json" };
+        if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+        const res = await fetch(endpoint, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+                model: model || defaultModel,
+                messages: [
+                    { role: "system", content: fullSystemPrompt },
+                    { role: "user", content: userMessage }
+                ],
+                temperature: Number(temperature) || 0.7,
+                max_tokens: Number(maxTokens) || 350
+            }),
+            signal: controller.signal
+        });
+        const data = await res.json();
+        clearTimeout(timeout);
+        if (!res.ok) throw new Error(data.error?.message || `AI API returned status ${res.status}`);
+        const text = data.choices?.[0]?.message?.content;
+        return text ? text.trim() : null;
+    } catch (err) {
+        clearTimeout(timeout);
+        throw err;
+    }
+}
+
 function killStaleBrowserProcesses() {
     return new Promise((resolve) => {
         if (process.platform === 'win32') {
@@ -811,18 +1062,57 @@ function registerClientEvents(client) {
             }
         }
 
-        // 3. If no rule matched and autoReply is enabled, check Self-Learning / RAG Engine
+        // 3. If no rule matched and autoReply is enabled, check Self-Learning / RAG Engine or External AI
         if (!replied && botEngine.settings.autoReply) {
             try {
                 const match = botEngine.findBestAnswer(msg.body);
-                if (match && match.answer) {
+                const threshold = (botEngine.settings.similarityThreshold || 0.45) * 100;
+
+                // Priority A: High confidence match in local RAG knowledge base
+                if (match && match.answer && match.score >= threshold) {
                     console.log(`[ChatbotRag] Auto-replying via ${match.sourceType} (${match.score}% match): "${match.answer.substring(0, 40)}..."`);
                     await msg.reply(match.answer);
                     replied = true;
                 }
+                // Priority B: External AI LLM (OpenAI, Gemini, Claude, DeepSeek, Groq, Ollama)
+                else if (integrationsSettings.ai && integrationsSettings.ai.enabled) {
+                    console.log(`[AI Chatbot] Generating AI reply via ${integrationsSettings.ai.provider} for incoming message...`);
+                    const aiReply = await callAiChatbot(msg.body);
+                    if (aiReply) {
+                        await msg.reply(aiReply);
+                        replied = true;
+                        console.log(`[AI Chatbot] Sent AI response: "${aiReply.substring(0, 40)}..."`);
+                        if (botEngine.settings.autoLearn) {
+                            botEngine.addLearnedPair(msg.body, aiReply);
+                        }
+                    }
+                }
+                // Priority C: Fallback to lower-confidence local knowledge if available
+                else if (match && match.answer) {
+                    console.log(`[ChatbotRag] Fallback auto-reply via ${match.sourceType} (${match.score}% match): "${match.answer.substring(0, 40)}..."`);
+                    await msg.reply(match.answer);
+                    replied = true;
+                }
             } catch (err) {
-                console.error("[ChatbotRag] Error during auto-reply:", err);
+                console.error("[ChatbotRag/AI] Error during auto-reply:", err.message);
             }
+        }
+
+        // 4. Inbound Message Webhook Dispatch (Zapier, Make, CRM, Slack)
+        if (integrationsSettings.webhooks?.inboundMessageWebhookEnabled && integrationsSettings.webhooks?.inboundMessageWebhookUrl) {
+            fetch(integrationsSettings.webhooks.inboundMessageWebhookUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    event: "whatsapp_message_received",
+                    from: msg.from,
+                    body: msg.body,
+                    timestamp: (msg.timestamp || Math.floor(Date.now() / 1000)) * 1000,
+                    hasMedia: msg.hasMedia || false,
+                    replied
+                }),
+                signal: AbortSignal.timeout(6000)
+            }).catch(wErr => console.warn("[Webhook] Inbound webhook error:", wErr.message));
         }
     });
     client.on("message_create", async (msg) => {
@@ -1628,7 +1918,7 @@ app.post("/api/reconnect", async (_req, res) => {
 });
 // ─── Chatbot & RAG API ────────────────────────────────────────────────────────
 app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", version: "2026.6.0", timestamp: Date.now() });
+    res.json({ status: "ok", version: "2026.7.0", timestamp: Date.now() });
 });
 app.get("/api/chatbot/stats", (_req, res) => {
     res.json({
@@ -1714,17 +2004,230 @@ app.post("/api/chatbot/test-query", (req, res) => {
     const match = botEngine.findBestAnswer(query);
     res.json({ success: true, query, match: match || null });
 });
+
+// ─── API Integrations Routes ──────────────────────────────────────────────────
+app.get("/api/integrations/settings", (_req, res) => {
+    res.json({ success: true, settings: integrationsSettings });
+});
+
+app.post("/api/integrations/settings", (req, res) => {
+    try {
+        const { ai, scraper, webhooks, phone } = req.body;
+        if (ai) integrationsSettings.ai = { ...integrationsSettings.ai, ...ai };
+        if (scraper) integrationsSettings.scraper = { ...integrationsSettings.scraper, ...scraper };
+        if (webhooks) integrationsSettings.webhooks = { ...integrationsSettings.webhooks, ...webhooks };
+        if (phone) integrationsSettings.phone = { ...integrationsSettings.phone, ...phone };
+        saveIntegrationsSettings();
+        res.json({ success: true, settings: integrationsSettings });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/integrations/test-ai", async (req, res) => {
+    try {
+        const { message, config } = req.body;
+        if (!message) return res.status(400).json({ error: "Test message is required" });
+        const reply = await callAiChatbot(message, config || {});
+        res.json({ success: true, reply });
+    } catch (e) {
+        res.status(500).json({ error: e.message || "Failed to generate AI response" });
+    }
+});
+
+app.post("/api/integrations/test-webhook", async (req, res) => {
+    try {
+        const { url, payload } = req.body;
+        if (!url) return res.status(400).json({ error: "Webhook URL is required" });
+        const pingRes = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload || {
+                event: "test_ping",
+                timestamp: new Date().toISOString(),
+                source: "WApp Manager Leads Pro",
+                message: "Test webhook payload received successfully!"
+            }),
+            signal: AbortSignal.timeout(10000)
+        });
+        res.json({ success: true, status: pingRes.status, statusText: pingRes.statusText });
+    } catch (e) {
+        res.status(500).json({ error: e.message || "Webhook test connection failed" });
+    }
+});
+
+// ─── External Scraper Engines ────────────────────────────────────────────────
+async function scrapeGooglePlacesApi(keyword, location, limit, apiKey) {
+    io.emit("scrape_status", { step: "navigating", message: `Connecting to Google Places API for "${keyword} in ${location}"...`, progress: 20 });
+    const query = `${keyword} in ${location}`;
+    const searchUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${apiKey}`;
+    const searchRes = await fetch(searchUrl);
+    const searchData = await searchRes.json();
+    if (searchData.status !== "OK" && searchData.status !== "ZERO_RESULTS") {
+        throw new Error(searchData.error_message || `Google Places API returned status: ${searchData.status}`);
+    }
+    const results = searchData.results || [];
+    const leads = [];
+    const seenPhones = new Set();
+    const defaultCountry = integrationsSettings.phone?.defaultCountryCode || "212";
+
+    io.emit("scrape_status", { step: "scrolling", message: `Discovered ${results.length} places. Fetching details...`, progress: 45 });
+
+    for (let i = 0; i < Math.min(results.length, limit); i++) {
+        const place = results[i];
+        io.emit("scrape_status", {
+            step: "inspecting",
+            message: `Extracting contact for "${place.name}"...`,
+            current: leads.length,
+            total: limit,
+            currentBusiness: place.name,
+            progress: Math.min(Math.round(((i + 1) / Math.min(results.length, limit)) * 100), 95)
+        });
+        try {
+            const detailUrl = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${place.place_id}&fields=name,formatted_phone_number,international_phone_number,formatted_address,website,rating&key=${apiKey}`;
+            const detailRes = await fetch(detailUrl);
+            const detailData = await detailRes.json();
+            const d = detailData.result || {};
+
+            const rawPhone = d.international_phone_number || d.formatted_phone_number || "";
+            const cleanNumber = normalizeScrapedPhone(rawPhone, location, defaultCountry);
+
+            if (cleanNumber && cleanNumber.length >= 8 && !seenPhones.has(cleanNumber)) {
+                seenPhones.add(cleanNumber);
+                const leadObj = {
+                    name: d.name || place.name,
+                    number: cleanNumber,
+                    address: d.formatted_address || place.formatted_address || "",
+                    website: d.website || "",
+                    rating: d.rating ? String(d.rating) : (place.rating ? String(place.rating) : ""),
+                    source: "Google Places API"
+                };
+                leads.push(leadObj);
+                io.emit("scrape_lead_found", { lead: leadObj, current: leads.length, totalTarget: limit });
+            }
+        } catch (placeErr) {
+            console.warn(`[Google Places] Error on place ${place.name}:`, placeErr.message);
+        }
+    }
+    return leads;
+}
+
+async function scrapeSerpApi(keyword, location, limit, apiKey) {
+    io.emit("scrape_status", { step: "navigating", message: `Querying SerpAPI Google Maps for "${keyword} in ${location}"...`, progress: 25 });
+    const url = `https://serpapi.com/search.json?engine=google_maps&q=${encodeURIComponent(keyword + ' ' + location)}&api_key=${apiKey}&hl=fr&gl=ma`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    const localResults = data.local_results || [];
+    const leads = [];
+    const seenPhones = new Set();
+    const defaultCountry = integrationsSettings.phone?.defaultCountryCode || "212";
+
+    io.emit("scrape_status", { step: "scrolling", message: `Processing ${localResults.length} business cards from SerpAPI...`, progress: 50 });
+
+    for (let i = 0; i < Math.min(localResults.length, limit); i++) {
+        const item = localResults[i];
+        io.emit("scrape_status", {
+            step: "inspecting",
+            message: `Extracting contact for "${item.title}"...`,
+            current: leads.length,
+            total: limit,
+            currentBusiness: item.title,
+            progress: Math.min(Math.round(((i + 1) / Math.min(localResults.length, limit)) * 100), 95)
+        });
+        const rawPhone = item.phone || "";
+        const cleanNumber = normalizeScrapedPhone(rawPhone, location, defaultCountry);
+        if (cleanNumber && cleanNumber.length >= 8 && !seenPhones.has(cleanNumber)) {
+            seenPhones.add(cleanNumber);
+            const leadObj = {
+                name: item.title || "Business Lead",
+                number: cleanNumber,
+                address: item.address || "",
+                website: item.website || "",
+                rating: item.rating ? String(item.rating) : "",
+                source: "SerpAPI"
+            };
+            leads.push(leadObj);
+            io.emit("scrape_lead_found", { lead: leadObj, current: leads.length, totalTarget: limit });
+        }
+    }
+    return leads;
+}
+
 // ─── Scraper API ──────────────────────────────────────────────────────────────
 app.post("/api/scrape-leads", async (req, res) => {
     const { keyword, location, maxResults = 25 } = req.body;
     if (!keyword || !location) {
-        // @ts-ignore
         return res.status(400).json({ error: "Keyword and location required" });
     }
 
-    const browserExecutable = chromePath || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
     const limit = Math.min(Math.max(parseInt(maxResults, 10) || 20, 5), 100);
+    const scraperMode = integrationsSettings.scraper?.mode || "browser";
 
+    io.emit("scrape_status", {
+        step: "init",
+        message: `Starting research for "${keyword}" in "${location}" (Target: ${limit} leads)...`,
+        progress: 5,
+        current: 0,
+        total: limit,
+        mode: scraperMode
+    });
+
+    // 1. Google Places API Mode
+    if (scraperMode === "google_places" && integrationsSettings.scraper?.googlePlacesApiKey) {
+        try {
+            const leads = await scrapeGooglePlacesApi(keyword, location, limit, integrationsSettings.scraper.googlePlacesApiKey);
+            io.emit("scrape_status", {
+                step: "completed",
+                message: `Research complete! Successfully extracted ${leads.length} leads.`,
+                progress: 100,
+                current: leads.length,
+                total: limit
+            });
+            if (integrationsSettings.webhooks?.leadsWebhookEnabled && integrationsSettings.webhooks?.leadsWebhookUrl) {
+                fetch(integrationsSettings.webhooks.leadsWebhookUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ event: "leads_scraped", keyword, location, count: leads.length, leads, timestamp: new Date().toISOString() }),
+                    signal: AbortSignal.timeout(10000)
+                }).catch(wErr => console.warn('[Webhook] Leads dispatch error:', wErr.message));
+            }
+            return res.json({ success: true, count: leads.length, leads });
+        } catch (gpErr) {
+            console.warn("[Google Places API] Failed, falling back to Browser scraper:", gpErr.message);
+            io.emit("scrape_status", { step: "navigating", message: `Google Places API notice: ${gpErr.message}. Falling back to Browser Scraper...`, progress: 15 });
+        }
+    }
+
+    // 2. SerpAPI Mode
+    if (scraperMode === "serpapi" && integrationsSettings.scraper?.serpApiKey) {
+        try {
+            const leads = await scrapeSerpApi(keyword, location, limit, integrationsSettings.scraper.serpApiKey);
+            io.emit("scrape_status", {
+                step: "completed",
+                message: `Research complete! Successfully extracted ${leads.length} leads.`,
+                progress: 100,
+                current: leads.length,
+                total: limit
+            });
+            if (integrationsSettings.webhooks?.leadsWebhookEnabled && integrationsSettings.webhooks?.leadsWebhookUrl) {
+                fetch(integrationsSettings.webhooks.leadsWebhookUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ event: "leads_scraped", keyword, location, count: leads.length, leads, timestamp: new Date().toISOString() }),
+                    signal: AbortSignal.timeout(10000)
+                }).catch(wErr => console.warn('[Webhook] Leads dispatch error:', wErr.message));
+            }
+            return res.json({ success: true, count: leads.length, leads });
+        } catch (serpErr) {
+            console.warn("[SerpAPI] Failed, falling back to Browser scraper:", serpErr.message);
+            io.emit("scrape_status", { step: "navigating", message: `SerpAPI notice: ${serpErr.message}. Falling back to Browser Scraper...`, progress: 15 });
+        }
+    }
+
+    // 3. Default Browser Scraper (Puppeteer Headless Chrome - 100% Free)
+    const browserExecutable = chromePath || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
     let browser = null;
     try {
         browser = await puppeteer_1.default.launch({
@@ -1749,6 +2252,7 @@ app.post("/api/scrape-leads", async (req, res) => {
         const query = encodeURIComponent(`${keyword} in ${location}`);
         const searchUrl = `https://www.google.com/maps/search/${query}`;
         console.log(`[Google Maps Scraper] Navigating to: ${searchUrl}`);
+        io.emit("scrape_status", { step: "navigating", message: `Opening Google Maps for "${keyword} in ${location}"...`, progress: 15, current: 0, total: limit });
 
         await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 35000 });
         
@@ -1768,103 +2272,118 @@ app.post("/api/scrape-leads", async (req, res) => {
                 });
                 if (acceptBtn) acceptBtn.click();
             });
-            await new Promise(resolve => setTimeout(resolve, 1000));
         } catch (_) {}
 
-        // Scroll the results feed to load enough listings
-        const scrollIterations = Math.ceil(limit / 5);
-        for (let i = 0; i < scrollIterations; i++) {
-            try {
-                await page.evaluate(() => {
-                    const scrollableDiv = document.querySelector('div[role="feed"]');
-                    if (scrollableDiv) {
-                        scrollableDiv.scrollBy(0, 1500);
-                    }
-                });
-            } catch (_) {}
-            await new Promise(r => setTimeout(r, 1200));
+        // Scroll the feed to load matching results
+        io.emit("scrape_status", { step: "scrolling", message: "Scanning Google Maps listings...", progress: 30, current: 0, total: limit });
+        const scrollSelector = 'div[role="feed"]';
+        let previousHeight = 0;
+        let scrollAttempts = 0;
+        const maxScrollAttempts = Math.max(Math.ceil(limit / 5), 4);
+
+        while (scrollAttempts < maxScrollAttempts) {
+            scrollAttempts++;
+            await page.evaluate((sel) => {
+                const feed = document.querySelector(sel);
+                if (feed) {
+                    feed.scrollTop = feed.scrollHeight;
+                } else {
+                    window.scrollBy(0, 1000);
+                }
+            }, scrollSelector);
+
+            await new Promise(resolve => setTimeout(resolve, 2000));
+
+            const currentResultsCount = await page.evaluate(() => {
+                return document.querySelectorAll('a.hfpxzc, div[role="article"]').length;
+            });
+
+            io.emit("scrape_status", {
+                step: "scrolling",
+                message: `Discovered ${currentResultsCount} listings on Google Maps...`,
+                progress: Math.min(30 + Math.round((scrollAttempts / maxScrollAttempts) * 20), 50),
+                current: 0,
+                total: limit
+            });
+
+            if (currentResultsCount >= limit * 1.5) break;
+
+            const newHeight = await page.evaluate((sel) => {
+                const feed = document.querySelector(sel);
+                return feed ? feed.scrollHeight : document.body.scrollHeight;
+            }, scrollSelector);
+
+            if (newHeight === previousHeight && scrollAttempts > 3) break;
+            previousHeight = newHeight;
         }
 
-        // Collect all place links with resilience to navigation context
-        let placeItems = [];
-        for (let attempt = 0; attempt < 3; attempt++) {
-            try {
-                placeItems = await page.evaluate(() => {
-                    const links = Array.from(document.querySelectorAll('a.hfpxzc, a[href*="/maps/place/"]'));
-                    const items = [];
-                    const seenUrls = new Set();
+        // Extract place links and preliminary details from feed
+        const placeItems = await page.evaluate(() => {
+            const results = [];
+            const links = Array.from(document.querySelectorAll('a.hfpxzc'));
 
-                    for (const a of links) {
-                        const href = a.href || a.getAttribute('href');
-                        if (!href || seenUrls.has(href)) continue;
-                        seenUrls.add(href);
+            for (const link of links) {
+                const href = link.getAttribute('href');
+                const ariaLabel = link.getAttribute('aria-label') || '';
+                const container = link.closest('div[role="article"], div.Nv2PK') || link.parentElement;
+                const containerText = container ? container.innerText : '';
 
-                        let name = a.getAttribute('aria-label') || '';
-                        name = name.replace(/^Visiter le site Web de\s+/i, '')
-                            .replace(/^Visitez le site Web de\s+/i, '')
-                            .replace(/^Visit website for\s+/i, '')
-                            .replace(/^Website for\s+/i, '')
-                            .split('·')[0].trim();
-
-                        const container = a.closest('div.Nv2PK') || a.parentElement;
-                        const containerText = container ? container.innerText : '';
-
-                        items.push({
-                            name: name || "Lead",
-                            href,
-                            containerText
-                        });
-                    }
-                    return items;
-                });
-                if (placeItems.length > 0) break;
-            } catch (evalErr) {
-                console.warn(`[Google Maps Scraper] Retrying link extraction attempt ${attempt + 1}...`);
-                await new Promise(r => setTimeout(r, 2000));
+                if (href && ariaLabel) {
+                    results.push({
+                        name: ariaLabel,
+                        url: href,
+                        containerText
+                    });
+                }
             }
-        }
 
-        console.log(`[Google Maps Scraper] Discovered ${placeItems.length} candidate places for "${keyword} in ${location}"`);
+            return results;
+        });
+
+        console.log(`[Google Maps Scraper] Discovered ${placeItems.length} candidate places. Extracting details...`);
+        io.emit("scrape_status", {
+            step: "scrolling",
+            message: `Discovered ${placeItems.length} candidate businesses. Starting detailed phone extraction...`,
+            progress: 50,
+            current: 0,
+            total: limit
+        });
 
         const leads = [];
         const seenPhones = new Set();
-        const targets = placeItems.slice(0, Math.min(limit * 2, placeItems.length));
-
-        // Reusable worker page for inspecting place details
+        const defaultCountry = integrationsSettings.phone?.defaultCountryCode || "212";
         const workerPage = await browser.newPage();
-        await workerPage.setCookie(consentCookie);
+        await workerPage.setViewport({ width: 1280, height: 800 });
 
-        for (let i = 0; i < targets.length && leads.length < limit; i++) {
-            const item = targets[i];
+        for (let i = 0; i < placeItems.length; i++) {
+            if (leads.length >= limit) break;
+
+            const item = placeItems[i];
+            const currentProgress = Math.min(50 + Math.round(((i + 1) / placeItems.length) * 45), 95);
+
+            io.emit("scrape_status", {
+                step: "inspecting",
+                message: `Extracting contact details for "${item.name}"...`,
+                current: leads.length,
+                total: limit,
+                currentBusiness: item.name,
+                progress: currentProgress
+            });
+
             try {
-                await workerPage.goto(item.href, { waitUntil: 'networkidle2', timeout: 15000 });
-                await new Promise(r => setTimeout(r, 1500));
+                await workerPage.goto(item.url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+                await workerPage.waitForSelector('div[role="main"]', { timeout: 7000 }).catch(() => {});
 
+                // Extract precise business details from detail panel
                 const details = await workerPage.evaluate(() => {
-                    let phone = "";
-
-                    // 1. Direct phone button with data-item-id="phone:tel:..."
-                    const phoneBtn = document.querySelector('button[data-item-id^="phone:tel:"], [data-item-id*="phone:tel:"]');
+                    // Phone
+                    let phone = '';
+                    const phoneBtn = document.querySelector('button[data-item-id*="phone:"], [data-tooltip*="téléphone" i], [data-tooltip*="phone" i], [aria-label*="phone" i], [aria-label*="téléphone" i]');
                     if (phoneBtn) {
-                        const itemId = phoneBtn.getAttribute('data-item-id') || '';
-                        phone = itemId.replace(/^phone:tel:/, '');
+                        phone = phoneBtn.getAttribute('aria-label') || phoneBtn.innerText || '';
+                        phone = phone.replace(/^[^\d+]+/, '').trim();
                     }
 
-                    // 2. Aria-label or tooltip containing phone
-                    if (!phone) {
-                        const allBtns = Array.from(document.querySelectorAll('button, a'));
-                        const btn = allBtns.find(b => {
-                            const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-                            const tt = (b.getAttribute('data-tooltip') || '').toLowerCase();
-                            return aria.includes('phone') || aria.includes('téléphone') || tt.includes('phone') || tt.includes('téléphone');
-                        });
-                        if (btn) {
-                            const phoneMatch = (btn.getAttribute('aria-label') || btn.innerText || '').match(/(?:\+?\d{1,3}[\s.-]?)?\(?\d{2,4}\)?[\s.-]?\d{2,4}[\s.-]?\d{2,4}/);
-                            if (phoneMatch) phone = phoneMatch[0];
-                        }
-                    }
-
-                    // 3. Fallback to main pane regex
                     if (!phone) {
                         const mainPane = document.querySelector('div[role="main"]') || document.body;
                         const phoneRegex = /(?:\+(?:[0-9]\s*){1,3})?[0-9](?:[\s.-]*[0-9]){8,13}/g;
@@ -1890,19 +2409,16 @@ app.post("/api/scrape-leads", async (req, res) => {
                     return { phone, website, address, rating };
                 });
 
-                // Clean phone number
+                // Clean phone number with country normalization (strips redundant zero, eliminates +0...)
                 let cleanNumber = "";
                 if (details.phone) {
-                    cleanNumber = details.phone.replace(/[^\d+]/g, '').trim();
-                    if (!cleanNumber.startsWith('+') && cleanNumber.length >= 10) {
-                        cleanNumber = `+${cleanNumber}`;
-                    }
+                    cleanNumber = normalizeScrapedPhone(details.phone, location, defaultCountry);
                 } else if (item.containerText) {
-                    // Fallback to number inside the search card
+                    // Fallback to number inside search card
                     const phoneRegex = /(?:\+(?:[0-9]\s*){1,3})?[0-9](?:[\s.-]*[0-9]){8,13}/g;
                     const cardMatches = item.containerText.match(phoneRegex) || [];
                     if (cardMatches.length > 0) {
-                        cleanNumber = cardMatches[0].replace(/[^\d+]/g, '').trim();
+                        cleanNumber = normalizeScrapedPhone(cardMatches[0], location, defaultCountry);
                     }
                 }
 
@@ -1926,6 +2442,15 @@ app.post("/api/scrape-leads", async (req, res) => {
                         totalTarget: limit
                     });
 
+                    io.emit("scrape_status", {
+                        step: "found",
+                        message: `Verified phone: ${leadObj.number} (${leadObj.name})`,
+                        current: leads.length,
+                        total: limit,
+                        currentBusiness: leadObj.name,
+                        progress: Math.min(Math.round((leads.length / limit) * 100), 98)
+                    });
+
                     console.log(`[Google Maps Scraper] [${leads.length}/${limit}] Found: ${leadObj.name} (${leadObj.number})`);
                 }
             } catch (itemErr) {
@@ -1938,6 +2463,30 @@ app.post("/api/scrape-leads", async (req, res) => {
         browser = null;
 
         console.log(`[Google Maps Scraper] Successfully scraped ${leads.length} leads with verified phone numbers.`);
+        io.emit("scrape_status", {
+            step: "completed",
+            message: `Research complete! Successfully found ${leads.length} leads with verified phone numbers.`,
+            progress: 100,
+            current: leads.length,
+            total: limit
+        });
+
+        if (integrationsSettings.webhooks?.leadsWebhookEnabled && integrationsSettings.webhooks?.leadsWebhookUrl) {
+            fetch(integrationsSettings.webhooks.leadsWebhookUrl, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    event: "leads_scraped",
+                    keyword,
+                    location,
+                    count: leads.length,
+                    leads,
+                    timestamp: new Date().toISOString()
+                }),
+                signal: AbortSignal.timeout(10000)
+            }).catch(wErr => console.warn('[Webhook] Leads dispatch error:', wErr.message));
+        }
+
         res.json({ success: true, count: leads.length, leads });
     }
     catch (e) {
@@ -1945,6 +2494,11 @@ app.post("/api/scrape-leads", async (req, res) => {
             try { await browser.close(); } catch (_) {}
         }
         console.error("Scraping error:", e);
+        io.emit("scrape_status", {
+            step: "error",
+            message: `Scraping error: ${e.message}`,
+            progress: 0
+        });
         // @ts-ignore
         res.status(500).json({ error: "Failed to scrape leads from Google Maps.", details: e?.message });
     }

@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import {
     Send, Upload, Clock, AlertCircle, FileText, X, FileSpreadsheet, Plus, Download,
-    CheckCircle2, XCircle, Square, RotateCw, Filter, Search, Users, Loader2, CheckSquare
+    CheckCircle2, XCircle, Square, RotateCw, Filter, Search, Users, Loader2, CheckSquare, Sparkles
 } from "lucide-react";
 import Papa from "papaparse";
 import { MessagePreview } from "./MessagePreview";
@@ -72,9 +72,13 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
     // Check for initial recipients passed via props or localStorage
     useEffect(() => {
         if (initialRecipients && initialRecipients.length > 0) {
-            setRecipients(initialRecipients);
-            setTextInput(initialRecipients.map(r => r.number).join("\n"));
-            setStatus({ type: "success", msg: `Loaded ${initialRecipients.length} recipients into campaign!` });
+            const formatted = initialRecipients.map(r => ({
+                ...r,
+                number: formatPhoneNumber(r.number)
+            }));
+            setRecipients(formatted);
+            setTextInput(formatted.map(r => r.number).join("\n"));
+            setStatus({ type: "success", msg: `Loaded & normalized ${formatted.length} recipients for WhatsApp!` });
             if (onClearInitial) onClearInitial();
         } else {
             const cached = localStorage.getItem("bulk_imported_recipients");
@@ -82,9 +86,13 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
                 try {
                     const parsed = JSON.parse(cached);
                     if (Array.isArray(parsed) && parsed.length > 0) {
-                        setRecipients(parsed);
-                        setTextInput(parsed.map((r: any) => r.number).join("\n"));
-                        setStatus({ type: "success", msg: `Imported ${parsed.length} contacts from group!` });
+                        const formatted = parsed.map((r: any) => ({
+                            ...r,
+                            number: formatPhoneNumber(r.number)
+                        }));
+                        setRecipients(formatted);
+                        setTextInput(formatted.map(r => r.number).join("\n"));
+                        setStatus({ type: "success", msg: `Imported & normalized ${formatted.length} contacts from group!` });
                         localStorage.removeItem("bulk_imported_recipients");
                     }
                 } catch (_) {}
@@ -280,6 +288,23 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
         if (availableVars.length === 0) {
             setRecipients(newRecipients);
         }
+    };
+
+    const cleanAndFormatNumbers = () => {
+        if (!textInput.trim()) return;
+        const lines = textInput.split(/[\n,]+/);
+        const cleaned = lines
+            .map(l => l.trim())
+            .filter(l => l.length > 5)
+            .map(num => formatPhoneNumber(num));
+
+        const unique = Array.from(new Set(cleaned));
+        setTextInput(unique.join("\n"));
+        setRecipients(unique.map(number => ({ number })));
+        setStatus({
+            type: "success",
+            msg: `Cleaned & normalized ${unique.length} phone numbers to pure WhatsApp format!`
+        });
     };
 
     const handleCSVUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -573,6 +598,14 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
                                         title="Download CSV template"
                                     >
                                         <Download className="w-3 h-3" /> Template
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={cleanAndFormatNumbers}
+                                        className="text-xs flex items-center gap-1 text-amber-700 hover:text-amber-800 font-semibold bg-amber-50 hover:bg-amber-100 px-2.5 py-1.5 rounded-lg border border-amber-200 transition"
+                                        title="Clean & normalize all numbers (converts 05/06/07 to country code, strips +, spaces, and redundant zeros)"
+                                    >
+                                        <Sparkles className="w-3.5 h-3.5 text-amber-600" /> Clean & Format
                                     </button>
                                 </div>
                             </div>

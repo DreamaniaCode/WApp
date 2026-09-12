@@ -1,11 +1,12 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { API_URL } from "@/lib/config";
+import { formatPhoneNumber } from "@/lib/numberFormatter";
 import {
     Search, MapPin, Download, Loader2, Building2, UserPlus,
     Send, CheckCircle2, Copy, ExternalLink, Star, CheckSquare, Square,
-    Sparkles
+    Sparkles, Globe2, Radio, Activity, Check, AlertCircle
 } from "lucide-react";
 
 export interface Lead {
@@ -18,10 +19,21 @@ export interface Lead {
 }
 
 interface LeadScraperProps {
+    socket?: any;
     onSendToBulk?: (recipients: { number: string; name?: string }[]) => void;
 }
 
-export function LeadScraper({ onSendToBulk }: LeadScraperProps) {
+interface ScrapeStatus {
+    step: "init" | "navigating" | "scrolling" | "inspecting" | "found" | "completed" | "error" | string;
+    message: string;
+    progress: number;
+    current?: number;
+    total?: number;
+    currentBusiness?: string;
+    mode?: string;
+}
+
+export function LeadScraper({ socket, onSendToBulk }: LeadScraperProps) {
     const [keyword, setKeyword] = useState("");
     const [location, setLocation] = useState("");
     const [maxResults, setMaxResults] = useState(25);
@@ -30,6 +42,45 @@ export function LeadScraper({ onSendToBulk }: LeadScraperProps) {
     const [loading, setLoading] = useState(false);
     const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
     const [status, setStatus] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
+    const [scrapeStatus, setScrapeStatus] = useState<ScrapeStatus | null>(null);
+
+    // Listen for real-time scraping progress and lead discovery over WebSocket
+    useEffect(() => {
+        if (!socket) return;
+
+        const handleStatus = (data: ScrapeStatus) => {
+            setScrapeStatus(data);
+            if (data.step === "completed") {
+                setLoading(false);
+            } else if (data.step === "error") {
+                setLoading(false);
+                setStatus({ type: 'error', message: data.message });
+            }
+        };
+
+        const handleLeadFound = (data: { lead: Lead; current: number; totalTarget: number }) => {
+            if (!data.lead || !data.lead.number) return;
+            const normalizedLead: Lead = {
+                ...data.lead,
+                number: formatPhoneNumber(data.lead.number)
+            };
+
+            setLeads(prev => {
+                if (prev.some(l => l.number === normalizedLead.number)) return prev;
+                const updated = [...prev, normalizedLead];
+                setSelectedIndexes(updated.map((_, i) => i));
+                return updated;
+            });
+        };
+
+        socket.on("scrape_status", handleStatus);
+        socket.on("scrape_lead_found", handleLeadFound);
+
+        return () => {
+            socket.off("scrape_status", handleStatus);
+            socket.off("scrape_lead_found", handleLeadFound);
+        };
+    }, [socket]);
 
     const handleSearch = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -43,6 +94,13 @@ export function LeadScraper({ onSendToBulk }: LeadScraperProps) {
         setStatus(null);
         setLeads([]);
         setSelectedIndexes([]);
+        setScrapeStatus({
+            step: "init",
+            message: `Initializing research for "${keyword}" in "${location}"...`,
+            progress: 5,
+            current: 0,
+            total: maxResults
+        });
 
         try {
             const res = await fetch(`${API_URL}/api/scrape-leads`, {
@@ -58,9 +116,11 @@ export function LeadScraper({ onSendToBulk }: LeadScraperProps) {
             const data = await res.json();
 
             if (res.ok && data.success) {
-                const fetchedLeads: Lead[] = data.leads || [];
+                const fetchedLeads: Lead[] = (data.leads || []).map((l: any) => ({
+                    ...l,
+                    number: formatPhoneNumber(l.number)
+                }));
                 setLeads(fetchedLeads);
-                // Select all by default
                 setSelectedIndexes(fetchedLeads.map((_, i) => i));
 
                 if (fetchedLeads.length === 0) {
@@ -296,10 +356,59 @@ export function LeadScraper({ onSendToBulk }: LeadScraperProps) {
                         : 'bg-red-50 text-red-800 border-red-200'
                 }`}>
                     <div className="flex items-center gap-2">
-                        {status.type === 'success' ? <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" /> : null}
+                        {status.type === 'success' ? <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" /> : <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />}
                         <span>{status.message}</span>
                     </div>
                     <button onClick={() => setStatus(null)} className="text-xs opacity-60 hover:opacity-100 font-bold px-1">✕</button>
+                </div>
+            )}
+
+            {/* Live Research Status Widget */}
+            {(loading || (scrapeStatus && scrapeStatus.step !== "completed")) && scrapeStatus && (
+                <div className="bg-gradient-to-r from-emerald-50 via-teal-50 to-cyan-50 p-4 rounded-2xl border border-emerald-200/80 shadow-xs">
+                    <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2.5">
+                            <span className="relative flex h-3 w-3">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                            </span>
+                            <span className="text-xs font-bold uppercase tracking-wider text-emerald-900 flex items-center gap-1.5">
+                                <Radio className="w-3.5 h-3.5 text-emerald-600 animate-pulse" />
+                                Research Status:
+                                <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 text-[10px] font-semibold">
+                                    {scrapeStatus.step.toUpperCase()}
+                                </span>
+                            </span>
+                        </div>
+                        <div className="flex items-center gap-3">
+                            {scrapeStatus.currentBusiness && (
+                                <span className="text-xs text-emerald-700 font-medium truncate max-w-[200px] hidden sm:inline" title={scrapeStatus.currentBusiness}>
+                                    Target: <strong>{scrapeStatus.currentBusiness}</strong>
+                                </span>
+                            )}
+                            <span className="text-xs font-mono font-bold text-emerald-800">
+                                {scrapeStatus.progress}%
+                            </span>
+                        </div>
+                    </div>
+
+                    {/* Animated Progress Bar */}
+                    <div className="w-full bg-emerald-200/60 rounded-full h-2.5 overflow-hidden mb-2">
+                        <div
+                            className="bg-gradient-to-r from-emerald-600 via-teal-500 to-cyan-600 h-2.5 rounded-full transition-all duration-300"
+                            style={{ width: `${Math.min(Math.max(scrapeStatus.progress || 5, 5), 100)}%` }}
+                        />
+                    </div>
+
+                    <div className="flex items-center justify-between text-xs text-emerald-800">
+                        <div className="flex items-center gap-1.5 truncate max-w-md">
+                            {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-600 shrink-0" /> : <Activity className="w-3.5 h-3.5 text-emerald-600 shrink-0" />}
+                            <span className="truncate">{scrapeStatus.message}</span>
+                        </div>
+                        <span className="font-semibold text-emerald-900 shrink-0 ml-2">
+                            {leads.length} / {maxResults} Leads Discovered
+                        </span>
+                    </div>
                 </div>
             )}
 
@@ -319,6 +428,11 @@ export function LeadScraper({ onSendToBulk }: LeadScraperProps) {
                             )}
                             <span>{selectedIndexes.length} / {leads.length} Selected</span>
                         </button>
+                        {loading && leads.length > 0 && (
+                            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 animate-pulse">
+                                <Loader2 className="w-3 h-3 animate-spin" /> Live Streaming...
+                            </span>
+                        )}
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -351,12 +465,14 @@ export function LeadScraper({ onSendToBulk }: LeadScraperProps) {
                 </div>
 
                 <div className="max-h-[420px] overflow-y-auto">
-                    {loading ? (
+                    {loading && leads.length === 0 ? (
                         <div className="py-16 flex flex-col items-center justify-center text-gray-400 space-y-3">
                             <Loader2 className="w-9 h-9 animate-spin text-emerald-600" />
-                            <p className="text-sm font-medium text-gray-700">Connecting to Google Maps & extracting leads...</p>
+                            <p className="text-sm font-medium text-gray-700">
+                                {scrapeStatus ? scrapeStatus.message : "Connecting to Google Maps & extracting leads..."}
+                            </p>
                             <p className="text-xs text-gray-400 max-w-sm text-center">
-                                Fetching place listings, phone numbers, and addresses. This may take 15 to 30 seconds.
+                                Fetching place listings, phone numbers, and addresses in real time.
                             </p>
                         </div>
                     ) : leads.length === 0 ? (
