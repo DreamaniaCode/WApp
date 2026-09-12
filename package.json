@@ -1,9 +1,9 @@
 {
-  "name": "wapp-manager-pro",
-  "version": "2026.5.0",
-  "productName": "WApp Manager Pro",
+  "name": "wapp-manager-leads-pro",
+  "version": "2026.6.0",
+  "productName": "WApp Manager Leads Pro",
   "author": "DreamaniaCode",
-  "description": "WApp Manager Pro by DreamaniaCode",
+  "description": "WApp Manager Leads Pro by DreamaniaCode",
   "private": true,
   "main": "main.js",
   "scripts": {
@@ -21,8 +21,8 @@
       "**/node_modules/@prisma/**",
       "**/node_modules/.prisma/**"
     ],
-    "appId": "com.dreamaniacode.wappmanager",
-    "productName": "WApp Manager Pro",
+    "appId": "com.dreamaniacode.wappmanagerleadspro",
+    "productName": "WApp Manager Leads Pro",
     "copyright": "Copyright © 2026 DreamaniaCode",
     "win": {
       "target": "nsis",
@@ -42,8 +42,8 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
-      "shortcutName": "WApp Manager Pro",
-      "artifactName": "WApp Manager Pro Setup ${version}.${ext}",
+      "shortcutName": "WApp Manager Leads Pro",
+      "artifactName": "WApp Manager Leads Pro Setup ${version}.${ext}",
       "installerIcon": "public/icon.ico",
       "uninstallerIcon": "public/icon.ico",
       "installerHeaderIcon": "public/icon.ico",

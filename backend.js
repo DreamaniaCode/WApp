@@ -1296,6 +1296,7 @@ app.get("/api/groups", async (_req, res) => {
         return res.status(503).json({ error: "WhatsApp client not ready. Please connect your phone first." });
     }
     try {
+        await ensureWWebJSInjected(activeClient);
         let groups = [];
 
         // 1. Direct in-memory extraction from window.Store for speed and 100% reliability
@@ -1392,10 +1393,11 @@ app.get("/api/groups/:id/participants", async (req, res) => {
         return res.status(503).json({ error: "WhatsApp client not ready" });
     }
     try {
+        await ensureWWebJSInjected(activeClient);
         const groupId = req.params.id;
         let results = [];
 
-        // 1. In-browser evaluation with LID -> Phone Number resolution
+        // 1. In-browser evaluation with comprehensive LID -> Phone Number resolution
         if (activeClient.pupPage && !activeClient.pupPage.isClosed()) {
             try {
                 results = await activeClient.pupPage.evaluate(async (gId) => {
@@ -1403,6 +1405,36 @@ app.get("/api/groups/:id/participants", async (req, res) => {
                     if (!window.Store) return list;
 
                     const chatWid = window.Store.WidFactory ? window.Store.WidFactory.createWid(gId) : gId;
+
+                    // Trigger server-side group metadata query/update if available
+                    if (window.Store.GroupQueryAndUpdate) {
+                        try { await window.Store.GroupQueryAndUpdate(chatWid); } catch (_) {}
+                        try { await window.Store.GroupQueryAndUpdate({ id: chatWid }); } catch (_) {}
+                        try { await window.Store.GroupQueryAndUpdate({ id: gId }); } catch (_) {}
+                    }
+                    if (window.Store.GroupMetadata && typeof window.Store.GroupMetadata.update === 'function') {
+                        try { await window.Store.GroupMetadata.update(chatWid); } catch (_) {}
+                    }
+
+                    // Build reverse lookup map from all known contacts (LID -> Phone Number)
+                    const lidToPnMap = new Map();
+                    if (window.Store.Contact && typeof window.Store.Contact.getModelsArray === 'function') {
+                        try {
+                            const allContacts = window.Store.Contact.getModelsArray();
+                            for (const c of allContacts) {
+                                const cPn = (c.phoneNumber && (c.phoneNumber.user || (typeof c.phoneNumber === 'string' ? c.phoneNumber : ''))) ||
+                                            (c.pnId && (c.pnId.user || (typeof c.pnId === 'string' ? c.pnId : ''))) ||
+                                            (c.id && c.id.server === 'c.us' ? c.id.user : '');
+                                const cLid = (c.lid && (c.lid._serialized || (typeof c.lid === 'string' ? c.lid : ''))) ||
+                                             (c.id && c.id.server === 'lid' ? c.id._serialized : '');
+                                if (cPn && cLid) {
+                                    lidToPnMap.set(cLid, cPn);
+                                    if (cLid.includes('@')) lidToPnMap.set(cLid.split('@')[0], cPn);
+                                }
+                            }
+                        } catch (_) {}
+                    }
+
                     let groupMeta = null;
 
                     // Try GroupMetadata store
@@ -1437,40 +1469,82 @@ app.get("/api/groups/:id/participants", async (req, res) => {
                             let number = "";
                             let name = "Participant";
 
-                            // Check contact directly
-                            if (p.contact && p.contact.phoneNumber) {
-                                number = p.contact.phoneNumber;
-                            }
-
-                            // User ID if standard @c.us
                             const pIdStr = p.id?._serialized || (typeof p.id === 'string' ? p.id : '');
-                            if (!number && pIdStr.endsWith('@c.us')) {
-                                number = p.id.user || pIdStr.split('@')[0];
+                            const pUser = p.id?.user || (pIdStr.includes('@') ? pIdStr.split('@')[0] : pIdStr);
+
+                            // 1. Direct phone number on participant object
+                            if (p.phoneNumber) {
+                                number = p.phoneNumber.user || (typeof p.phoneNumber === 'string' ? p.phoneNumber : '');
                             }
 
-                            // Query Contact store
+                            // 2. Direct contact model on participant
+                            if (!number && p.contact) {
+                                if (p.contact.phoneNumber) {
+                                    number = p.contact.phoneNumber.user || (typeof p.contact.phoneNumber === 'string' ? p.contact.phoneNumber : '');
+                                } else if (p.contact.pnId) {
+                                    number = p.contact.pnId.user || (typeof p.contact.pnId === 'string' ? p.contact.pnId : '');
+                                } else if (p.contact.id?.server === 'c.us') {
+                                    number = p.contact.id.user;
+                                }
+                                name = p.contact.name || p.contact.pushname || p.contact.formattedName || name;
+                            }
+
+                            // 3. User ID if standard @c.us
+                            if (!number && (p.id?.server === 'c.us' || pIdStr.endsWith('@c.us'))) {
+                                number = pUser;
+                            }
+
+                            // 4. Query Contact store
                             if (!number && window.Store.Contact) {
-                                const contact = typeof window.Store.Contact.get === 'function' ? window.Store.Contact.get(p.id) : null;
+                                const contact = typeof window.Store.Contact.get === 'function' ? (window.Store.Contact.get(p.id) || window.Store.Contact.get(pIdStr)) : null;
                                 if (contact) {
-                                    if (contact.phoneNumber) number = contact.phoneNumber;
-                                    else if (contact.id?.user && !contact.id._serialized.endsWith('@lid')) {
+                                    if (contact.phoneNumber) {
+                                        number = contact.phoneNumber.user || (typeof contact.phoneNumber === 'string' ? contact.phoneNumber : '');
+                                    } else if (contact.pnId) {
+                                        number = contact.pnId.user || (typeof contact.pnId === 'string' ? contact.pnId : '');
+                                    } else if (contact.id?.user && contact.id.server === 'c.us') {
                                         number = contact.id.user;
                                     }
                                     name = contact.name || contact.pushname || contact.formattedName || name;
                                 }
                             }
 
-                            if (!number && !pIdStr.endsWith('@lid')) {
-                                number = p.id?.user || pIdStr.split('@')[0];
+                            // 5. Query LidUtils
+                            if (!number && window.Store.LidUtils && typeof window.Store.LidUtils.getPhoneNumber === 'function') {
+                                try {
+                                    const wid = window.Store.LidUtils.getPhoneNumber(p.id || pIdStr);
+                                    if (wid) {
+                                        number = wid.user || (typeof wid === 'string' ? wid.split('@')[0] : '');
+                                    }
+                                } catch (_) {}
+                            }
+
+                            // 6. Reverse lookup in lidToPnMap
+                            if (!number && lidToPnMap.has(pIdStr)) {
+                                number = lidToPnMap.get(pIdStr);
+                            }
+                            if (!number && lidToPnMap.has(pUser)) {
+                                number = lidToPnMap.get(pUser);
+                            }
+
+                            // 7. Fallback for non-LID pure digit user ids
+                            if (!number && /^\d{7,16}$/.test(pUser) && !pIdStr.endsWith('@lid')) {
+                                number = pUser;
+                            }
+
+                            // Name resolution fallback
+                            if (name === "Participant") {
+                                name = p.name || p.pushname || p.notifyName || p.formattedTitle || name;
                             }
 
                             if (number) {
-                                const clean = number.replace(/[^\d+]/g, '');
-                                const formatted = clean.startsWith('+') ? clean : `+${clean}`;
-                                list.push({
-                                    number: formatted,
-                                    name: name
-                                });
+                                const clean = String(number).replace(/\D/g, '');
+                                if (clean.length >= 6) {
+                                    list.push({
+                                        number: `+${clean}`,
+                                        name: name || "Participant"
+                                    });
+                                }
                             }
                         } catch (_) {}
                     }
@@ -1485,16 +1559,34 @@ app.get("/api/groups/:id/participants", async (req, res) => {
         if (!results || results.length === 0) {
             try {
                 const chat = await activeClient.getChatById(groupId);
-                const participants = chat.participants || [];
+                const participants = (chat && chat.participants) || [];
                 for (const p of participants) {
-                    const contactId = p.id ? p.id._serialized : null;
+                    const contactId = p.id ? (p.id._serialized || p.id) : null;
                     if (!contactId) continue;
-                    const numberStr = p.id.user || contactId.split('@')[0];
-                    if (numberStr && !contactId.endsWith('@lid')) {
-                        results.push({
-                            number: numberStr.startsWith('+') ? numberStr : `+${numberStr}`,
-                            name: "Participant"
-                        });
+                    let numberStr = "";
+                    let pName = "Participant";
+
+                    if (contactId.endsWith('@c.us') || p.id?.server === 'c.us') {
+                        numberStr = p.id.user || contactId.split('@')[0];
+                    } else {
+                        // LID participant: fetch contact details via getContactById
+                        try {
+                            const contact = await activeClient.getContactById(contactId);
+                            if (contact) {
+                                numberStr = contact.number || (contact.id && contact.id.user && !contact.id._serialized?.endsWith('@lid') ? contact.id.user : '');
+                                pName = contact.name || contact.pushname || contact.shortName || pName;
+                            }
+                        } catch (_) {}
+                    }
+
+                    if (numberStr) {
+                        const clean = String(numberStr).replace(/\D/g, '');
+                        if (clean.length >= 6) {
+                            results.push({
+                                number: `+${clean}`,
+                                name: pName || "Participant"
+                            });
+                        }
                     }
                 }
             } catch (chatErr) {
@@ -1502,7 +1594,9 @@ app.get("/api/groups/:id/participants", async (req, res) => {
             }
         }
 
-        res.json({ success: true, count: results.length, participants: results });
+        // Deduplicate by number
+        const unique = Array.from(new Map(results.map(r => [r.number, r])).values());
+        res.json({ success: true, count: unique.length, participants: unique });
     }
     catch (e) {
         console.error("Error fetching group participants:", e?.message || e);
@@ -1534,7 +1628,7 @@ app.post("/api/reconnect", async (_req, res) => {
 });
 // ─── Chatbot & RAG API ────────────────────────────────────────────────────────
 app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok", version: "2026.5.0", timestamp: Date.now() });
+    res.json({ status: "ok", version: "2026.6.0", timestamp: Date.now() });
 });
 app.get("/api/chatbot/stats", (_req, res) => {
     res.json({
@@ -1622,99 +1716,237 @@ app.post("/api/chatbot/test-query", (req, res) => {
 });
 // ─── Scraper API ──────────────────────────────────────────────────────────────
 app.post("/api/scrape-leads", async (req, res) => {
-    const { keyword, location } = req.body;
+    const { keyword, location, maxResults = 25 } = req.body;
     if (!keyword || !location) {
         // @ts-ignore
         return res.status(400).json({ error: "Keyword and location required" });
     }
+
+    const browserExecutable = chromePath || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+    const limit = Math.min(Math.max(parseInt(maxResults, 10) || 20, 5), 100);
+
+    let browser = null;
     try {
-        const browser = await puppeteer_1.default.launch({
-            executablePath: chromePath,
+        browser = await puppeteer_1.default.launch({
+            executablePath: browserExecutable,
             headless: true,
-            args: PUPPETEER_ARGS
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--window-size=1280,800'
+            ]
         });
+
         const page = await browser.newPage();
-        // Simulate a search on Google Maps directly
+        await page.setViewport({ width: 1280, height: 800 });
+
         // Bypass Google Cookie Consent popup
-        await page.setCookie({ name: 'CONSENT', value: 'YES+cb.20230101-00-p0.en+FX+777', domain: '.google.com' });
+        const consentCookie = { name: 'CONSENT', value: 'YES+cb.20230101-00-p0.en+FX+777', domain: '.google.com' };
+        await page.setCookie(consentCookie);
+
         const query = encodeURIComponent(`${keyword} in ${location}`);
-        await page.goto(`https://www.google.com/maps/search/${query}`, { waitUntil: 'networkidle2' });
-        // Wait for business listings to load
-        await new Promise(resolve => setTimeout(resolve, 8000));
-        // Inject DOM Parser to extract Name & Number pairs
-        // @ts-ignore
-        const extractedLeads = await page.evaluate(async () => {
-            const results = [];
-            // Scroll to load more results
-            const scrollableDiv = document.querySelector('div[role="feed"]');
-            if (scrollableDiv) {
-                for (let i = 0; i < 6; i++) {
-                    scrollableDiv.scrollBy(0, 1500);
-                    await new Promise(r => setTimeout(r, 1500));
-                }
+        const searchUrl = `https://www.google.com/maps/search/${query}`;
+        console.log(`[Google Maps Scraper] Navigating to: ${searchUrl}`);
+
+        await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 35000 });
+        
+        // Wait for results container or navigation redirect to settle
+        try {
+            await page.waitForSelector('div[role="feed"], a.hfpxzc, a[href*="/maps/place/"]', { timeout: 15000 });
+        } catch (_) {}
+        await new Promise(resolve => setTimeout(resolve, 3000));
+
+        // Auto-dismiss any Google consent dialog
+        try {
+            await page.evaluate(() => {
+                const buttons = Array.from(document.querySelectorAll('button, form button'));
+                const acceptBtn = buttons.find(b => {
+                    const txt = (b.innerText || b.getAttribute('aria-label') || '').toLowerCase();
+                    return txt.includes('tout accepter') || txt.includes('accept all') || txt.includes('i agree') || txt.includes('accepter tout');
+                });
+                if (acceptBtn) acceptBtn.click();
+            });
+            await new Promise(resolve => setTimeout(resolve, 1000));
+        } catch (_) {}
+
+        // Scroll the results feed to load enough listings
+        const scrollIterations = Math.ceil(limit / 5);
+        for (let i = 0; i < scrollIterations; i++) {
+            try {
+                await page.evaluate(() => {
+                    const scrollableDiv = document.querySelector('div[role="feed"]');
+                    if (scrollableDiv) {
+                        scrollableDiv.scrollBy(0, 1500);
+                    }
+                });
+            } catch (_) {}
+            await new Promise(r => setTimeout(r, 1200));
+        }
+
+        // Collect all place links with resilience to navigation context
+        let placeItems = [];
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                placeItems = await page.evaluate(() => {
+                    const links = Array.from(document.querySelectorAll('a.hfpxzc, a[href*="/maps/place/"]'));
+                    const items = [];
+                    const seenUrls = new Set();
+
+                    for (const a of links) {
+                        const href = a.href || a.getAttribute('href');
+                        if (!href || seenUrls.has(href)) continue;
+                        seenUrls.add(href);
+
+                        let name = a.getAttribute('aria-label') || '';
+                        name = name.replace(/^Visiter le site Web de\s+/i, '')
+                            .replace(/^Visitez le site Web de\s+/i, '')
+                            .replace(/^Visit website for\s+/i, '')
+                            .replace(/^Website for\s+/i, '')
+                            .split('·')[0].trim();
+
+                        const container = a.closest('div.Nv2PK') || a.parentElement;
+                        const containerText = container ? container.innerText : '';
+
+                        items.push({
+                            name: name || "Lead",
+                            href,
+                            containerText
+                        });
+                    }
+                    return items;
+                });
+                if (placeItems.length > 0) break;
+            } catch (evalErr) {
+                console.warn(`[Google Maps Scraper] Retrying link extraction attempt ${attempt + 1}...`);
+                await new Promise(r => setTimeout(r, 2000));
             }
-            const allElements = document.querySelectorAll('a, div[role="article"]');
-            allElements.forEach((el) => {
-                let name = el.getAttribute('aria-label');
-                if (!name)
-                    return;
-                // Clean up Google Maps aria-labels French/English prefixes
-                name = name.replace(/^Visiter le site Web de\s+/i, '')
-                    .replace(/^Visitez le site Web de\s+/i, '')
-                    .replace(/^Visit website for\s+/i, '')
-                    .replace(/^Website for\s+/i, '');
-                name = name.split('·')[0].replace(/^Annonce/i, '').replace(/,/g, '').trim();
-                if (!name)
-                    name = "Lead";
-                let parent = el.parentElement;
-                while (parent && parent.innerText && parent.innerText.length < 500) {
-                    const text = parent.innerText;
-                    const phoneRegex = /(?:\+(?:[0-9]\s*){1,3})?[0-9](?:[\s.-]*[0-9]){8,13}/g;
-                    const matches = text.match(phoneRegex);
-                    if (matches) {
-                        const numbers = matches.filter((n) => {
+        }
+
+        console.log(`[Google Maps Scraper] Discovered ${placeItems.length} candidate places for "${keyword} in ${location}"`);
+
+        const leads = [];
+        const seenPhones = new Set();
+        const targets = placeItems.slice(0, Math.min(limit * 2, placeItems.length));
+
+        // Reusable worker page for inspecting place details
+        const workerPage = await browser.newPage();
+        await workerPage.setCookie(consentCookie);
+
+        for (let i = 0; i < targets.length && leads.length < limit; i++) {
+            const item = targets[i];
+            try {
+                await workerPage.goto(item.href, { waitUntil: 'networkidle2', timeout: 15000 });
+                await new Promise(r => setTimeout(r, 1500));
+
+                const details = await workerPage.evaluate(() => {
+                    let phone = "";
+
+                    // 1. Direct phone button with data-item-id="phone:tel:..."
+                    const phoneBtn = document.querySelector('button[data-item-id^="phone:tel:"], [data-item-id*="phone:tel:"]');
+                    if (phoneBtn) {
+                        const itemId = phoneBtn.getAttribute('data-item-id') || '';
+                        phone = itemId.replace(/^phone:tel:/, '');
+                    }
+
+                    // 2. Aria-label or tooltip containing phone
+                    if (!phone) {
+                        const allBtns = Array.from(document.querySelectorAll('button, a'));
+                        const btn = allBtns.find(b => {
+                            const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+                            const tt = (b.getAttribute('data-tooltip') || '').toLowerCase();
+                            return aria.includes('phone') || aria.includes('téléphone') || tt.includes('phone') || tt.includes('téléphone');
+                        });
+                        if (btn) {
+                            const phoneMatch = (btn.getAttribute('aria-label') || btn.innerText || '').match(/(?:\+?\d{1,3}[\s.-]?)?\(?\d{2,4}\)?[\s.-]?\d{2,4}[\s.-]?\d{2,4}/);
+                            if (phoneMatch) phone = phoneMatch[0];
+                        }
+                    }
+
+                    // 3. Fallback to main pane regex
+                    if (!phone) {
+                        const mainPane = document.querySelector('div[role="main"]') || document.body;
+                        const phoneRegex = /(?:\+(?:[0-9]\s*){1,3})?[0-9](?:[\s.-]*[0-9]){8,13}/g;
+                        const matches = (mainPane.innerText.match(phoneRegex) || []).filter(n => {
                             const digits = n.replace(/\D/g, '');
                             return digits.length >= 9 && digits.length <= 15;
                         });
-                        if (numbers.length > 0) {
-                            // Try to extract email
-                            const emailRegex = /[\w.-]+@[\w.-]+\.\w+/g;
-                            const emailMatches = text.match(emailRegex);
-                            const email = emailMatches ? emailMatches[0] : "";
-                            // Try to extract address
-                            const lines = text.split('\n').filter((l) => l.trim().length > 0);
-                            let address = "";
-                            if (lines.length > 2) {
-                                address = lines.find((l) => l.includes("·") || l.includes(",")) || lines[2];
-                            }
-                            if (address) {
-                                address = address.replace(phoneRegex, '').replace(emailRegex, '').replace(/,/g, ' ').trim();
-                            }
-                            results.push({ name: name, number: numbers[0], email, address });
-                            break;
-                        }
+                        if (matches.length > 0) phone = matches[0];
                     }
-                    parent = parent.parentElement;
+
+                    // Website
+                    const websiteEl = document.querySelector('a[data-item-id="authority"], a[aria-label*="site web" i], a[aria-label*="website" i]');
+                    const website = websiteEl ? websiteEl.getAttribute('href') : '';
+
+                    // Address
+                    const addressEl = document.querySelector('button[data-item-id="address"]');
+                    const address = addressEl ? (addressEl.innerText || addressEl.getAttribute('aria-label') || '') : '';
+
+                    // Rating
+                    const ratingEl = document.querySelector('span.MW4etd, [aria-label*="étoiles" i], [aria-label*="stars" i]');
+                    const rating = ratingEl ? (ratingEl.innerText || ratingEl.getAttribute('aria-label') || '') : '';
+
+                    return { phone, website, address, rating };
+                });
+
+                // Clean phone number
+                let cleanNumber = "";
+                if (details.phone) {
+                    cleanNumber = details.phone.replace(/[^\d+]/g, '').trim();
+                    if (!cleanNumber.startsWith('+') && cleanNumber.length >= 10) {
+                        cleanNumber = `+${cleanNumber}`;
+                    }
+                } else if (item.containerText) {
+                    // Fallback to number inside the search card
+                    const phoneRegex = /(?:\+(?:[0-9]\s*){1,3})?[0-9](?:[\s.-]*[0-9]){8,13}/g;
+                    const cardMatches = item.containerText.match(phoneRegex) || [];
+                    if (cardMatches.length > 0) {
+                        cleanNumber = cardMatches[0].replace(/[^\d+]/g, '').trim();
+                    }
                 }
-            });
-            return results;
-        });
+
+                if (cleanNumber && cleanNumber.length >= 8 && !seenPhones.has(cleanNumber)) {
+                    seenPhones.add(cleanNumber);
+                    const leadObj = {
+                        name: item.name,
+                        number: cleanNumber,
+                        address: details.address.replace(/\n/g, ' ').replace(/^\s*/, '').trim(),
+                        website: details.website || "",
+                        rating: details.rating ? details.rating.trim() : "",
+                        source: "Google Maps"
+                    };
+
+                    leads.push(leadObj);
+
+                    // Real-time notification over socket
+                    io.emit("scrape_lead_found", {
+                        lead: leadObj,
+                        current: leads.length,
+                        totalTarget: limit
+                    });
+
+                    console.log(`[Google Maps Scraper] [${leads.length}/${limit}] Found: ${leadObj.name} (${leadObj.number})`);
+                }
+            } catch (itemErr) {
+                console.warn(`[Google Maps Scraper] Error scraping ${item.name}:`, itemErr.message);
+            }
+        }
+
+        try { await workerPage.close(); } catch (_) {}
         await browser.close();
-        // Format numbers and deduplicate
-        const leads = extractedLeads.map((item) => ({
-            name: item.name,
-            number: item.number.replace(/[^\d+]/g, ''),
-            email: item.email || "",
-            address: item.address || ""
-        }));
-        // Deduplicate by number
-        const uniqueLeads = Array.from(new Map(leads.map(item => [item.number, item])).values());
-        res.json({ success: true, leads: uniqueLeads.slice(0, 100) }); // Limit to 100
+        browser = null;
+
+        console.log(`[Google Maps Scraper] Successfully scraped ${leads.length} leads with verified phone numbers.`);
+        res.json({ success: true, count: leads.length, leads });
     }
     catch (e) {
+        if (browser) {
+            try { await browser.close(); } catch (_) {}
+        }
         console.error("Scraping error:", e);
         // @ts-ignore
-        res.status(500).json({ error: "Failed to scrape leads. Make sure Chrome is installed." });
+        res.status(500).json({ error: "Failed to scrape leads from Google Maps.", details: e?.message });
     }
 });
 

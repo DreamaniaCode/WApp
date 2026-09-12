@@ -90,9 +90,9 @@ const SPLASH_HTML = `data:text/html;charset=utf-8,${encodeURIComponent(`
 <body>
   <div class="card">
     <div class="spinner"></div>
-    <h1>WApp Manager Pro</h1>
+    <h1>WApp Manager Leads Pro</h1>
     <p>Starting WhatsApp engine &amp; UI services...</p>
-    <div class="badge">Enterprise Edition v2026.5.0</div>
+    <div class="badge">Enterprise Edition v2026.6.0</div>
   </div>
 </body>
 </html>
@@ -125,7 +125,7 @@ function createWindow() {
         },
         icon: appIcon || (fs.existsSync(icoPath) ? icoPath : pngPath),
         titleBarStyle: 'default',
-        title: 'WApp Manager Pro v2026.5.0 – Ultimate Enterprise Edition Full Activated (ViP) - [ DreamaniaCode ]'
+        title: 'WApp Manager Leads Pro v2026.6.0 – Ultimate Enterprise Edition Full Activated (ViP) - [ DreamaniaCode ]'
     });
 
     // Show beautiful branded dark-theme splash card while backend boots

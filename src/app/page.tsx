@@ -6,6 +6,7 @@ import { QRCodeDisplay } from "@/components/QRCodeDisplay";
 import { BulkSender } from "@/components/BulkSender";
 import { ContactsManager } from "@/components/ContactsManager";
 import { GroupExtractor } from "@/components/GroupExtractor";
+import { LeadScraper } from "@/components/LeadScraper";
 import { Settings } from "@/components/Settings";
 import { SettingsBot } from "@/components/SettingsBot";
 import { LicenseScreen } from "@/components/LicenseScreen";
@@ -16,10 +17,10 @@ import {
   LayoutDashboard, Smartphone, Send, FileText, Users, MessageSquare,
   Server, Zap, Brain, PhoneCall, UsersRound, Settings as SettingsIcon,
   Sun, Moon, Search, Bell, Rocket, Activity, Shield, Wifi, WifiOff,
-  Trash2, RefreshCw, Globe, History, Lock, Key, LogOut,
+  Trash2, RefreshCw, Globe, History, Lock, Key, LogOut, MapPin,
 } from "lucide-react";
 
-type Tab = "dashboard" | "devices" | "single" | "templates" | "contacts" | "bulk" | "history" | "proxies" | "autoreply" | "chatbot" | "callresponder" | "groups" | "settings";
+type Tab = "dashboard" | "devices" | "single" | "templates" | "contacts" | "bulk" | "history" | "proxies" | "autoreply" | "chatbot" | "callresponder" | "groups" | "leads" | "settings";
 
 interface DashboardMetrics {
   totalMessages: number; activeDevices: number; totalContacts: number; totalTemplates: number;
@@ -40,6 +41,7 @@ const NAV = [
   { id: "chatbot",      icon: Brain,           label: "AI Chatbot & RAG", sub: "Self-Learning & Web/Doc RAG" },
   { id: "callresponder",icon: PhoneCall,       label: "Call Responder",   sub: "Automated Call Replies" },
   { id: "groups",       icon: UsersRound,      label: "Groups",           sub: "Extract Group Contacts" },
+  { id: "leads",        icon: MapPin,          label: "Google Maps Leads",sub: "B2B Lead Generation & Numbers" },
   { id: "settings",     icon: SettingsIcon,    label: "Settings",         sub: "Config & DreamaniaCode Enterprise" },
 ] as const;
 
@@ -300,14 +302,14 @@ function DashboardPanel({ isConnected }: { isConnected: boolean }) {
         <div className="relative p-8 text-white">
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-4">
-              <img src="/logo.png" alt="WApp Manager Pro" className="w-16 h-16 rounded-2xl shadow-xl border border-white/20 object-contain bg-white/10 backdrop-blur-md p-1.5 shrink-0" />
+              <img src="/logo.png" alt="WApp Manager Leads Pro" className="w-16 h-16 rounded-2xl shadow-xl border border-white/20 object-contain bg-white/10 backdrop-blur-md p-1.5 shrink-0" />
               <div>
                 <div className="flex items-center gap-2 mb-1">
                   <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" />
                   <span className="text-sm font-medium text-white/80">DreamaniaCode Enterprise</span>
                 </div>
-                <h1 className="text-3xl font-extrabold tracking-tight text-white mb-0.5">WApp Manager Pro</h1>
-                <p className="text-white/80 text-sm font-medium">WhatsApp Automation v2026.5.0 — Ultimate Enterprise Edition</p>
+                <h1 className="text-3xl font-extrabold tracking-tight text-white mb-0.5">WApp Manager Leads Pro</h1>
+                <p className="text-white/80 text-sm font-medium">WhatsApp Automation &amp; B2B Leads v2026.6.0 — Ultimate Enterprise Edition</p>
               </div>
             </div>
             <div className="flex flex-col gap-2 items-end">
@@ -581,8 +583,8 @@ export default function Home() {
     <div className={`flex h-screen overflow-hidden ${darkMode ? "bg-gray-950 text-white" : "bg-gray-50 text-gray-900"}`}>
       <aside className={`${sidebarOpen ? "w-64" : "w-16"} flex-shrink-0 flex flex-col transition-all duration-300 ${darkMode ? "bg-gray-900 border-gray-800" : "bg-white border-gray-200"} border-r`}>
         <div className={`p-4 border-b ${darkMode ? "border-gray-800" : "border-gray-100"} flex items-center gap-3`}>
-          <img src="/logo.png" alt="WApp Manager Pro" className="w-9 h-9 rounded-xl object-contain shadow-md shrink-0 bg-white/10 p-0.5" />
-          {sidebarOpen && (<div className="min-w-0"><div className="font-black text-sm truncate bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-purple-600">WApp Manager Pro</div><div className={`text-[10px] truncate ${darkMode ? "text-gray-500" : "text-gray-400"}`}>WhatsApp Automation</div></div>)}
+          <img src="/logo.png" alt="WApp Manager Leads Pro" className="w-9 h-9 rounded-xl object-contain shadow-md shrink-0 bg-white/10 p-0.5" />
+          {sidebarOpen && (<div className="min-w-0"><div className="font-black text-sm truncate bg-clip-text text-transparent bg-gradient-to-r from-blue-600 to-purple-600">WApp Manager Leads Pro</div><div className={`text-[10px] truncate ${darkMode ? "text-gray-500" : "text-gray-400"}`}>WhatsApp &amp; Leads Automation</div></div>)}
         </div>
         <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-0.5">
           {NAV.map(item => {
@@ -603,7 +605,7 @@ export default function Home() {
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <header className={`h-14 flex items-center gap-3 px-4 border-b shrink-0 ${darkMode ? "bg-gray-900 border-gray-800" : "bg-white border-gray-200"}`}>
           <button onClick={() => setSidebarOpen(!sidebarOpen)} className={`p-1.5 rounded-lg transition ${darkMode ? "text-gray-400 hover:bg-gray-800" : "text-gray-500 hover:bg-gray-100"}`}><div className="space-y-1"><div className={`w-4 h-0.5 rounded ${darkMode ? "bg-gray-400" : "bg-gray-600"}`} /><div className={`w-4 h-0.5 rounded ${darkMode ? "bg-gray-400" : "bg-gray-600"}`} /><div className={`w-4 h-0.5 rounded ${darkMode ? "bg-gray-400" : "bg-gray-600"}`} /></div></button>
-          <div className="flex items-center gap-1.5"><span className={`text-sm font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>{currentNav?.label}</span><span className="text-xs font-mono px-2 py-0.5 rounded-full bg-gradient-to-r from-blue-600 to-purple-600 text-white font-semibold">v2026.5.0</span></div>
+          <div className="flex items-center gap-1.5"><span className={`text-sm font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>{currentNav?.label}</span><span className="text-xs font-mono px-2 py-0.5 rounded-full bg-gradient-to-r from-blue-600 to-purple-600 text-white font-semibold">v2026.6.0</span></div>
           <div className={`flex-1 max-w-xs flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm ${darkMode ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-500"}`}><Search className="w-4 h-4 shrink-0" /><input className="bg-transparent flex-1 outline-none text-sm" placeholder="Search features..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} /></div>
           <div className="flex items-center gap-2 ml-auto">
             {!isElectronEnv && (
@@ -664,6 +666,16 @@ export default function Home() {
                 isReady={isWaReady}
                 onSendToBulk={(participants) => {
                   setBulkRecipients(participants);
+                  setActiveTab("bulk");
+                }}
+              />
+            </div>
+          )}
+          {activeTab === "leads" && (
+            <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+              <LeadScraper
+                onSendToBulk={(recipients) => {
+                  setBulkRecipients(recipients);
                   setActiveTab("bulk");
                 }}
               />
