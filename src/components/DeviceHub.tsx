@@ -247,7 +247,8 @@ export function DeviceHub({ socket }: DeviceHubProps) {
                         <div className={`h-1.5 w-full ${
                             device.isReady ? 'bg-green-500' :
                             device.warmingStatus === 'warming' ? 'bg-amber-500' :
-                            device.isAuthenticated ? 'bg-blue-500' : 'bg-gray-300'
+                            device.isAuthenticated ? 'bg-blue-500' :
+                            device.qrCode ? 'bg-indigo-500' : 'bg-gray-300'
                         }`} />
                         <div className="p-5 flex-1 flex flex-col">
                             <div className="flex justify-between items-start mb-4">
@@ -257,18 +258,22 @@ export function DeviceHub({ socket }: DeviceHubProps) {
                                         {device.isDefault && <Star className="w-4 h-4 text-amber-400 fill-amber-400" />}
                                     </h3>
                                     <p className="text-sm text-gray-500 font-mono mt-0.5">
-                                        {device.isReady ? device.phoneNumber : 'Connecting...'}
+                                        {device.isReady && device.phoneNumber ? `+${device.phoneNumber}` :
+                                         device.isAuthenticated ? 'Synchronizing with phone...' :
+                                         device.qrCode ? 'Scan QR with WhatsApp' : 'Starting client...'}
                                     </p>
                                 </div>
                                 <div className={`px-2.5 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${
                                     device.isReady && device.warmingStatus === 'warming' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
                                     device.isReady ? 'bg-green-50 text-green-700 border border-green-200' :
                                     device.isAuthenticated ? 'bg-blue-50 text-blue-700 border border-blue-200' :
-                                    'bg-red-50 text-red-700 border border-red-200'
+                                    device.qrCode ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' :
+                                    'bg-gray-100 text-gray-600 border border-gray-200'
                                 }`}>
                                     {device.isReady && device.warmingStatus === 'warming' ? `Warming Day ${device.warmingDay}/${device.warmingMaxDay}` :
                                      device.isReady ? 'Ready' :
-                                     device.isAuthenticated ? 'Connecting' : 'Disconnected'}
+                                     device.isAuthenticated ? 'Syncing' :
+                                     device.qrCode ? 'Scan QR' : 'Starting'}
                                 </div>
                             </div>
 
@@ -280,9 +285,9 @@ export function DeviceHub({ socket }: DeviceHubProps) {
                                         </div>
                                     </div>
                                 ) : device.isAuthenticated && !device.isReady ? (
-                                    <div className="flex flex-col items-center text-blue-600">
+                                    <div className="flex flex-col items-center text-blue-600 py-4">
                                         <Loader2 className="w-8 h-8 animate-spin mb-2" />
-                                        <span className="text-xs font-semibold">Synchronizing...</span>
+                                        <span className="text-xs font-semibold">Synchronizing chats with phone...</span>
                                     </div>
                                 ) : device.qrCode ? (
                                     <div className="bg-white p-2 rounded-xl border border-gray-100 shadow-sm cursor-pointer hover:shadow-md transition" onClick={() => {
@@ -292,9 +297,9 @@ export function DeviceHub({ socket }: DeviceHubProps) {
                                         <QRCodeSVG value={device.qrCode} size={180} />
                                     </div>
                                 ) : (
-                                    <div className="flex flex-col items-center text-gray-400">
-                                        <WifiOff className="w-8 h-8 mb-2" />
-                                        <span className="text-xs">Offline</span>
+                                    <div className="flex flex-col items-center text-blue-600 py-6">
+                                        <Loader2 className="w-8 h-8 animate-spin mb-2" />
+                                        <span className="text-xs font-semibold text-gray-600">Starting WhatsApp Client...</span>
                                     </div>
                                 )}
                             </div>

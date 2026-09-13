@@ -1169,6 +1169,89 @@ function createAndStartQRClient() {
     }
     return createDeviceClient("device-1", "WhatsApp 1");
 }
+
+/**
+ * Proactive watchdog that monitors WhatsApp Web page state in Chromium.
+ * Automatically recovers session when user scans QR, even if wwebjs library events stall.
+ */
+function startDeviceAuthWatchdog(deviceId, client) {
+    const d = devices.get(deviceId);
+    if (!d) return;
+    if (d.authStallTimer) { clearInterval(d.authStallTimer); d.authStallTimer = null; }
+
+    let checks = 0;
+    d.authStallTimer = setInterval(async () => {
+        checks++;
+        const dev = devices.get(deviceId);
+        if (!dev || dev.client !== client || dev.isReady || checks > 120) {
+            if (dev && dev.authStallTimer) { clearInterval(dev.authStallTimer); dev.authStallTimer = null; }
+            return;
+        }
+
+        try {
+            if (client.pupPage && !client.pupPage.isClosed()) {
+                const status = await client.pupPage.evaluate(() => {
+                    const hasPane = !!(
+                        document.querySelector('#pane-side') || 
+                        document.querySelector('[data-testid="chat-list"]') || 
+                        document.querySelector('[data-testid="intro-title"]') ||
+                        document.querySelector('[data-testid="conversation-panel-wrapper"]') ||
+                        document.querySelector('header [data-testid="menu-bar-menu-button"]') ||
+                        (typeof window.Store !== 'undefined' && (window.Store.Chat || window.Store.SendMessage))
+                    );
+
+                    const hasQR = !!(document.querySelector('canvas') || document.querySelector('[data-ref]'));
+
+                    let phone = "";
+                    try {
+                        if (window.Store && window.Store.Conn && window.Store.Conn.wid) {
+                            phone = window.Store.Conn.wid.user || "";
+                        }
+                    } catch (_) {}
+
+                    return { hasPane, hasQR, phone };
+                }).catch(() => null);
+
+                if (!status) return;
+
+                if (status.hasPane && !dev.isReady) {
+                    console.log(`[Watchdog] Device ${deviceId}: WhatsApp Web UI confirmed active. Emitting ready!`);
+                    if (dev.authStallTimer) { clearInterval(dev.authStallTimer); dev.authStallTimer = null; }
+                    await ensureWWebJSInjected(client);
+                    dev.isReady = true;
+                    dev.isAuthenticated = true;
+                    dev.qrCodeData = "";
+                    if (status.phone) {
+                        dev.phoneNumber = status.phone;
+                    } else {
+                        try {
+                            const info = client.info;
+                            if (info && info.wid && info.wid.user) dev.phoneNumber = info.wid.user;
+                        } catch (_) {}
+                    }
+                    updateLegacyState();
+                    saveDeviceRegistry();
+                    io.emit("device:ready", { deviceId, phoneNumber: dev.phoneNumber });
+                    io.emit("ready", true);
+                    io.emit("devices:list", serializeDevices());
+                    startDeviceHeartbeat(deviceId);
+                    return;
+                }
+
+                if (!status.hasQR && !dev.isAuthenticated) {
+                    console.log(`[Watchdog] Device ${deviceId}: QR code scanned, synchronizing...`);
+                    dev.isAuthenticated = true;
+                    dev.qrCodeData = "";
+                    updateLegacyState();
+                    io.emit("device:authenticated", { deviceId });
+                    io.emit("authenticated", true);
+                    io.emit("devices:list", serializeDevices());
+                }
+            }
+        } catch (_) {}
+    }, 1500);
+}
+
 /**
  * Register all WhatsApp event listeners onto a client for a specific device.
  * Emits both legacy events and device:-prefixed events.
@@ -1217,6 +1300,9 @@ function registerDeviceEvents(deviceId, client) {
         io.emit("devices:list", serializeDevices());
         startDeviceHeartbeat(deviceId);
     });
+    // Start proactive watchdog to detect QR scan and chat list load immediately
+    startDeviceAuthWatchdog(deviceId, client);
+
     client.on("authenticated", () => {
         console.log(`[Device ${deviceId}] Authenticated - Synchronizing session chats...`);
         const d = devices.get(deviceId);
@@ -1228,48 +1314,7 @@ function registerDeviceEvents(deviceId, client) {
         io.emit("device:authenticated", { deviceId });
         io.emit("authenticated", true); // Legacy
         io.emit("devices:list", serializeDevices());
-
-        // Responsive watchdog: Polls every 1.5s after authentication to detect when WhatsApp Web finishes chat sync
-        if (d) {
-            if (d.authStallTimer) { clearInterval(d.authStallTimer); clearTimeout(d.authStallTimer); }
-            let checkCount = 0;
-            d.authStallTimer = setInterval(async () => {
-                checkCount++;
-                const dev = devices.get(deviceId);
-                if (!dev || dev.isReady || dev.client !== client || checkCount > 40) {
-                    if (dev && dev.authStallTimer) { clearInterval(dev.authStallTimer); dev.authStallTimer = null; }
-                    return;
-                }
-                try {
-                    if (client.pupPage && !client.pupPage.isClosed()) {
-                        const uiActive = await client.pupPage.evaluate(() => {
-                            const hasPane = !!(document.querySelector('#pane-side') || document.querySelector('[data-testid="chat-list"]'));
-                            const hasStore = typeof window.Store !== 'undefined' && !!(window.Store.Chat || window.Store.SendMessage);
-                            return hasPane || hasStore;
-                        }).catch(() => false);
-
-                        if (uiActive && dev && !dev.isReady) {
-                            console.log(`[Watchdog] Device ${deviceId}: WhatsApp Web UI confirmed active. Emitting ready!`);
-                            if (dev.authStallTimer) { clearInterval(dev.authStallTimer); dev.authStallTimer = null; }
-                            await ensureWWebJSInjected(client);
-                            dev.isReady = true;
-                            dev.isAuthenticated = true;
-                            dev.qrCodeData = "";
-                            try {
-                                const info = client.info;
-                                if (info && info.wid && info.wid.user) dev.phoneNumber = info.wid.user;
-                            } catch (_) {}
-                            updateLegacyState();
-                            saveDeviceRegistry();
-                            io.emit("device:ready", { deviceId, phoneNumber: dev.phoneNumber });
-                            io.emit("ready", true);
-                            io.emit("devices:list", serializeDevices());
-                            startDeviceHeartbeat(deviceId);
-                        }
-                    }
-                } catch (_) {}
-            }, 1500);
-        }
+        startDeviceAuthWatchdog(deviceId, client);
     });
     client.on("disconnected", async (reason) => {
         console.log(`[Device ${deviceId}] Disconnected:`, reason);
@@ -1602,7 +1647,38 @@ app.get("/api/status", async (_req, res) => {
 });
 
 // ─── Device Management API ─────────────────────────────────────────────────────
-app.get("/api/devices", (_req, res) => {
+app.get("/api/devices", async (_req, res) => {
+    for (const d of devices.values()) {
+        if (!d.isReady && d.client && d.client.pupPage && !d.client.pupPage.isClosed()) {
+            try {
+                const uiActive = await d.client.pupPage.evaluate(() => {
+                    return !!(
+                        document.querySelector('#pane-side') || 
+                        document.querySelector('[data-testid="chat-list"]') || 
+                        document.querySelector('[data-testid="intro-title"]') ||
+                        (typeof window.Store !== 'undefined' && (window.Store.Chat || window.Store.SendMessage))
+                    );
+                }).catch(() => false);
+
+                if (uiActive) {
+                    console.log(`[/api/devices] Detected active WhatsApp Web UI on device ${d.id}. Marking ready!`);
+                    await ensureWWebJSInjected(d.client);
+                    d.isReady = true;
+                    d.isAuthenticated = true;
+                    d.qrCodeData = "";
+                    try {
+                        const info = d.client.info;
+                        if (info && info.wid && info.wid.user) d.phoneNumber = info.wid.user;
+                    } catch (_) {}
+                    updateLegacyState();
+                    saveDeviceRegistry();
+                    io.emit("device:ready", { deviceId: d.id, phoneNumber: d.phoneNumber });
+                    io.emit("ready", true);
+                    startDeviceHeartbeat(d.id);
+                }
+            } catch (_) {}
+        }
+    }
     res.json(serializeDevices());
 });
 
