@@ -352,7 +352,8 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const { language, setLanguage } = useLanguage();
-  const [isActivated, setIsActivated] = useState<boolean>(true);
+  const [isActivated, setIsActivated] = useState<boolean>(false);
+  const [checkingLicense, setCheckingLicense] = useState<boolean>(true);
   const [bulkRecipients, setBulkRecipients] = useState<{ number: string; name?: string }[]>([]);
   const [bulkMessage, setBulkMessage] = useState<string>("");
 
@@ -464,30 +465,37 @@ export default function Home() {
   }, [socket]);
 
   useEffect(() => {
-    const checkLicense = async () => {
+    let mounted = true;
+    const checkLicense = async (retries = 5) => {
       try {
         const res = await fetch(`${API_URL}/api/license-status`);
         if (res.ok) {
           const data = await res.json();
-          if (data && data.isActivated === false) {
-            setIsActivated(false);
-          } else if (data && data.isActivated === true) {
-            setIsActivated(true);
+          if (mounted) {
+            setIsActivated(Boolean(data && data.isActivated));
+            setCheckingLicense(false);
           }
+          return;
         }
+        throw new Error("License check status failed");
       } catch (err) {
-        // Retain activated state for bundled VIP license
-        console.warn("License check Notice:", err);
+        if (retries > 0) {
+          setTimeout(() => checkLicense(retries - 1), 1000);
+        } else if (mounted) {
+          setIsActivated(false);
+          setCheckingLicense(false);
+        }
       }
     };
     checkLicense();
+    return () => { mounted = false; };
   }, []);
 
-  if (checkingAuth) {
+  if (checkingAuth || checkingLicense) {
     return (
       <div className="min-h-screen bg-[#060911] flex flex-col items-center justify-center text-white font-sans">
         <div className="w-10 h-10 border-4 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin mb-4"></div>
-        <p className="text-xs text-gray-400 font-medium tracking-wide">Connecting to WApp Manager Pro...</p>
+        <p className="text-xs text-gray-400 font-medium tracking-wide">Connecting to WApp Manager Leads Pro...</p>
       </div>
     );
   }
@@ -595,7 +603,7 @@ export default function Home() {
     );
   }
 
-  if (isActivated === false) {
+  if (!isActivated) {
     return <LicenseScreen onActivated={() => setIsActivated(true)} />;
   }
 

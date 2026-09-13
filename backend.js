@@ -523,17 +523,6 @@ function safeClearFolder(dirPath, maxRetries = 5, delayMs = 500) {
     return false;
 }
 
-function getStoredLicense() {
-    if (fs_1.default.existsSync(LICENSE_PATH)) {
-        try {
-            return JSON.parse(fs_1.default.readFileSync(LICENSE_PATH, "utf8"));
-        }
-        catch {
-            return null;
-        }
-    }
-    return null;
-}
 
 /**
  * Ensures window.Store and window.WWebJS (with getChat, sendMessage, etc.) are
@@ -2272,96 +2261,198 @@ app.post("/api/logout", async (_req, res) => {
 });
 
 // ─── Activation & Licensing ──────────────────────────────────────────────────
-function getStoredLicense() {
-    const candidates = [
-        LICENSE_PATH,
-        path_1.default.join(process.cwd(), "license.json"),
-        path_1.default.join(__dirname, "license.json"),
-        process.env.WAPP_DATA_PATH && path_1.default.join(process.env.WAPP_DATA_PATH, "license.json")
-    ].filter(Boolean);
+const LICENSE_SALT = "DreamaniaWApp2026SecureKeySalt#";
 
-    for (const p of candidates) {
-        try {
-            if (fs_1.default.existsSync(p)) {
-                const data = JSON.parse(fs_1.default.readFileSync(p, "utf8"));
-                if (data && data.code) {
-                    if (p !== LICENSE_PATH && !fs_1.default.existsSync(LICENSE_PATH)) {
-                        try {
-                            fs_1.default.writeFileSync(LICENSE_PATH, JSON.stringify(data, null, 2));
-                        } catch (_) {}
-                    }
-                    return data;
-                }
-            }
-        } catch (_) {}
+function generateExpectedKey(machineId, plan = "LIFETIME") {
+    const raw = `${String(machineId).toUpperCase().trim()}:${String(plan).toUpperCase().trim()}:${LICENSE_SALT}`;
+    const hash = crypto_1.default.createHash("sha256").update(raw).digest("hex").toUpperCase();
+    const p = String(plan).toUpperCase().trim();
+    const prefix = p === "30D" ? "W30D" : p === "180D" ? "W180" : p === "365D" ? "W365" : "WAPP";
+    return `${prefix}-${hash.slice(0, 4)}-${hash.slice(4, 8)}-${hash.slice(8, 12)}`;
+}
+
+function verifyActivationCode(code, machineId) {
+    if (!code || typeof code !== "string") return null;
+    const clean = code.toUpperCase().trim();
+
+    // Master / Owner VIP Keys
+    if (clean === "DREAMANIA-VIP-2026" || clean === "DREAMANIA-ENTERPRISE-2026" || clean === "DREAMANIA2026!") {
+        return {
+            isValid: true,
+            type: "VIP Master Lifetime",
+            expiresAt: null
+        };
     }
+
+    // Machine-locked cryptographic plans
+    const plans = [
+        { id: "LIFETIME", days: null, label: "Lifetime Enterprise Pass" },
+        { id: "365D", days: 365, label: "1 Year Enterprise Pass" },
+        { id: "180D", days: 180, label: "6 Months Enterprise Pass" },
+        { id: "30D", days: 30, label: "1 Month Enterprise Pass" }
+    ];
+
+    for (const plan of plans) {
+        const expected = generateExpectedKey(machineId, plan.id);
+        if (clean === expected) {
+            let expiresAt = null;
+            if (plan.days) {
+                const d = new Date();
+                d.setDate(d.getDate() + plan.days);
+                expiresAt = d.toISOString();
+            }
+            return {
+                isValid: true,
+                type: plan.label,
+                expiresAt
+            };
+        }
+    }
+
     return null;
+}
+
+function getStoredLicense() {
+    try {
+        if (!fs_1.default.existsSync(LICENSE_PATH)) return null;
+        const data = JSON.parse(fs_1.default.readFileSync(LICENSE_PATH, "utf8"));
+        if (!data || !data.code) return null;
+
+        const isMaster = data.code === "DREAMANIA-VIP-2026" || data.code === "DREAMANIA-ENTERPRISE-2026" || data.code === "DREAMANIA2026!";
+        // Ensure hardware lock
+        if (!isMaster && data.machineId && data.machineId !== MACHINE_ID) {
+            console.warn(`[Licensing] Machine ID mismatch (${data.machineId} != ${MACHINE_ID}). Activation required.`);
+            return null;
+        }
+
+        // Ensure not expired
+        if (data.expiresAt && new Date(data.expiresAt).getTime() <= Date.now()) {
+            console.warn("[Licensing] Stored license has expired.");
+            return null;
+        }
+
+        // Validate code authenticity
+        const verified = verifyActivationCode(data.code, MACHINE_ID);
+        if (verified && verified.isValid) {
+            return data;
+        }
+
+        // Or valid server-activated license for this machine
+        if (data.type === "server_license" && data.machineId === MACHINE_ID) {
+            return data;
+        }
+
+        return null;
+    } catch (_) {
+        return null;
+    }
 }
 
 app.get("/api/license-status", (_req, res) => {
     const license = getStoredLicense();
+    const isActivated = Boolean(license && (!license.expiresAt || new Date(license.expiresAt).getTime() > Date.now()));
     res.json({
         machineId: MACHINE_ID,
-        license: license || null,
-        isActivated: !!(license && (!license.expiresAt || new Date(license.expiresAt) > new Date()))
+        license: isActivated ? license : null,
+        isActivated
     });
 });
+
 app.post("/api/activate", async (req, res) => {
     const { code } = req.body;
-    if (!code) {
-        // @ts-ignore
+    if (!code || typeof code !== "string" || !code.trim()) {
         return res.status(400).json({ error: "Activation code is required" });
     }
-    const payload = JSON.stringify({
-        code,
-        deviceId: MACHINE_ID,
-        deviceName: os_1.default.hostname(),
-        deviceType: "DESKTOP"
-    });
-    const options = {
-        hostname: 'syndiki-pro.vercel.app',
-        port: 443,
-        path: '/api/activation/validate',
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': payload.length
+    const cleanCode = code.trim().toUpperCase();
+
+    // 1. Instant local verification (Master key or Machine-locked key)
+    const local = verifyActivationCode(cleanCode, MACHINE_ID);
+    if (local && local.isValid) {
+        const licenseData = {
+            code: cleanCode,
+            machineId: MACHINE_ID,
+            type: local.type,
+            activatedAt: new Date().toISOString(),
+            expiresAt: local.expiresAt
+        };
+        try {
+            fs_1.default.writeFileSync(LICENSE_PATH, JSON.stringify(licenseData, null, 2));
+            console.log(`[Licensing] Successfully activated locally with ${local.type}`);
+            return res.json({ success: true, license: licenseData });
+        } catch (saveErr) {
+            return res.status(500).json({ error: "Failed to store license: " + saveErr.message });
         }
-    };
-    const request = https_1.default.request(options, (remoteRes) => {
-        let data = '';
-        remoteRes.on('data', (chunk) => { data += chunk; });
-        remoteRes.on('end', () => {
-            try {
-                const response = JSON.parse(data);
-                if (remoteRes.statusCode === 200 && response.success) {
-                    // Store license locally
-                    const licenseData = {
-                        code: response.activationCode,
-                        expiresAt: response.expiresAt,
-                        activatedAt: new Date().toISOString()
-                    };
-                    fs_1.default.writeFileSync(LICENSE_PATH, JSON.stringify(licenseData, null, 2));
-                    res.json({ success: true, license: licenseData });
-                }
-                else {
-                    // @ts-ignore
-                    res.status(remoteRes.statusCode || 400).json({ error: response.error || "Activation failed" });
-                }
-            }
-            catch (e) {
-                // @ts-ignore
-                res.status(500).json({ error: "Invalid response from activation server" });
-            }
+    }
+
+    // 2. Fallback to online activation server (syndiki-pro.vercel.app)
+    try {
+        const payload = JSON.stringify({
+            code: cleanCode,
+            deviceId: MACHINE_ID,
+            deviceName: os_1.default.hostname(),
+            deviceType: "DESKTOP"
         });
-    });
-    request.on('error', (error) => {
-        console.error("Activation request error:", error);
-        // @ts-ignore
-        res.status(500).json({ error: "Could not connect to activation server" });
-    });
-    request.write(payload);
-    request.end();
+        const options = {
+            hostname: 'syndiki-pro.vercel.app',
+            port: 443,
+            path: '/api/activation/validate',
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(payload)
+            }
+        };
+
+        const remoteReq = https_1.default.request(options, (remoteRes) => {
+            let data = '';
+            remoteRes.on('data', (chunk) => { data += chunk; });
+            remoteRes.on('end', () => {
+                try {
+                    const response = JSON.parse(data);
+                    if (remoteRes.statusCode === 200 && response.success) {
+                        const licenseData = {
+                            code: response.activationCode || cleanCode,
+                            machineId: MACHINE_ID,
+                            type: "server_license",
+                            expiresAt: response.expiresAt || null,
+                            activatedAt: new Date().toISOString()
+                        };
+                        fs_1.default.writeFileSync(LICENSE_PATH, JSON.stringify(licenseData, null, 2));
+                        console.log("[Licensing] Successfully activated via online server");
+                        return res.json({ success: true, license: licenseData });
+                    } else {
+                        return res.status(400).json({ error: response.error || "Invalid activation code. Please contact support on WhatsApp." });
+                    }
+                } catch (e) {
+                    return res.status(400).json({ error: "Invalid activation code. Please contact support on WhatsApp." });
+                }
+            });
+        });
+
+        remoteReq.on('error', (error) => {
+            console.error("[Licensing] Remote activation error:", error.message);
+            res.status(400).json({ error: "Invalid activation code or could not connect to server. Contact support on WhatsApp." });
+        });
+        remoteReq.setTimeout(8000, () => {
+            remoteReq.destroy();
+            res.status(400).json({ error: "Activation server timeout. Contact support on WhatsApp." });
+        });
+        remoteReq.write(payload);
+        remoteReq.end();
+    } catch (netErr) {
+        return res.status(400).json({ error: "Invalid activation code. Contact support on WhatsApp." });
+    }
+});
+
+app.post("/api/license/reset", (_req, res) => {
+    try {
+        if (fs_1.default.existsSync(LICENSE_PATH)) {
+            fs_1.default.unlinkSync(LICENSE_PATH);
+        }
+        res.json({ success: true, message: "License cleared. Activation required." });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // ─── WhatsApp Number Verification & Testing API ─────────────────────────────
