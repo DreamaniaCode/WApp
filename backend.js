@@ -438,16 +438,25 @@ function cleanChromiumLocks() {
     const authPath = process.env.WWEBJS_DATA_PATH || path_1.default.join(process.cwd(), ".wwebjs_auth");
     if (!fs_1.default.existsSync(authPath)) return;
 
-    // Only clean Chromium profile-level singleton locks, NEVER LevelDB database locks inside IndexedDB/LocalStorage
-    const lockTargets = [
-        authPath,
-        path_1.default.join(authPath, "session"),
-        path_1.default.join(authPath, "session", "Default")
-    ];
+    // Clean Chromium profile-level singleton locks across all device session directories
+    const lockTargets = [authPath];
+    try {
+        const entries = fs_1.default.readdirSync(authPath, { withFileTypes: true });
+        for (const entry of entries) {
+            if (entry.isDirectory()) {
+                const sessionDir = path_1.default.join(authPath, entry.name);
+                lockTargets.push(sessionDir);
+                const defaultDir = path_1.default.join(sessionDir, "Default");
+                if (fs_1.default.existsSync(defaultDir)) {
+                    lockTargets.push(defaultDir);
+                }
+            }
+        }
+    } catch (_) {}
 
     for (const dir of lockTargets) {
         if (fs_1.default.existsSync(dir)) {
-            for (const lockFile of ["SingletonLock", "SingletonCookie", "SingletonSocket"]) {
+            for (const lockFile of ["SingletonLock", "SingletonCookie", "SingletonSocket", "parent.lock"]) {
                 const target = path_1.default.join(dir, lockFile);
                 if (fs_1.default.existsSync(target)) {
                     try {
@@ -552,6 +561,8 @@ const PUPPETEER_ARGS = [
     "--disable-features=CalculateNativeWinOcclusion",
     "--disable-dev-shm-usage",
     "--disable-gpu",
+    "--unlimited-storage",
+    "--enable-aggressive-domstorage-flushing",
     `--user-agent=${WIN_CHROME_USER_AGENT}`,
 ];
 // ─── Multi-Device Registry ────────────────────────────────────────────────────
@@ -940,10 +951,37 @@ function buildClientOptions(deviceId, pairWithPhoneNumber) {
 
 function hookPageLogging(client) {
     let checkCount = 0;
-    const interval = setInterval(() => {
+    const interval = setInterval(async () => {
         checkCount++;
         if (client.pupPage && !client.pupPage.isClosed()) {
             clearInterval(interval);
+            try {
+                if (client.pupBrowser) {
+                    const context = client.pupBrowser.defaultBrowserContext();
+                    await context.overridePermissions('https://web.whatsapp.com', [
+                        'persistent-storage',
+                        'notifications',
+                        'clipboard-read',
+                        'clipboard-write'
+                    ]).catch(() => {});
+                }
+                await client.pupPage.evaluateOnNewDocument(() => {
+                    try {
+                        if (navigator.storage) {
+                            navigator.storage.persist = async () => true;
+                            navigator.storage.persisted = async () => true;
+                        }
+                    } catch (_) {}
+                }).catch(() => {});
+                await client.pupPage.evaluate(() => {
+                    try {
+                        if (navigator.storage) {
+                            navigator.storage.persist = async () => true;
+                            navigator.storage.persisted = async () => true;
+                        }
+                    } catch (_) {}
+                }).catch(() => {});
+            } catch (_) {}
             client.pupPage.on('console', msg => {
                 const text = msg.text();
                 if (text.includes('Error') || text.includes('error') || text.includes('fail') || text.includes('denied') || text.includes('WA')) {
@@ -1324,6 +1362,23 @@ function registerDeviceEvents(deviceId, client) {
         }
         if (d && d.client === client) {
             if (reason === "LOGOUT") {
+                // If device has an active UI or is synchronizing, do not immediately destroy the session
+                if (client.pupPage && !client.pupPage.isClosed()) {
+                    try {
+                        const uiActive = await client.pupPage.evaluate(() => {
+                            return !!(
+                                document.querySelector('#pane-side') || 
+                                document.querySelector('[data-testid="chat-list"]') || 
+                                document.querySelector('[data-testid="intro-title"]') ||
+                                (typeof window.Store !== 'undefined' && (window.Store.Chat || window.Store.SendMessage))
+                            );
+                        }).catch(() => false);
+                        if (uiActive) {
+                            console.log(`[Watchdog] Device ${deviceId}: ignoring transient LOGOUT (WhatsApp UI is confirmed active).`);
+                            return;
+                        }
+                    } catch (_) {}
+                }
                 console.log(`[Watchdog] Device ${deviceId}: logged out. Wiping session for fresh QR...`);
                 d.isReady = false;
                 d.isAuthenticated = false;

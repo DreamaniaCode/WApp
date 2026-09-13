@@ -340,6 +340,24 @@ function patchClient() {
         console.log('[patch-wwebjs] Patched post-auth loop retry fallback.');
     }
 
+    // Patch storage persistence and permissions
+    const targetInit = `this.pupBrowser = browser;\n        this.pupPage = page;`;
+    const safeInit = `this.pupBrowser = browser;\n        this.pupPage = page;\n\n        try {\n            const context = browser.defaultBrowserContext();\n            await context.overridePermissions('https://web.whatsapp.com', [\n                'persistent-storage',\n                'notifications',\n                'clipboard-read',\n                'clipboard-write'\n            ]);\n        } catch (_) {}\n\n        await page.evaluateOnNewDocument(() => {\n            try {\n                if (navigator.storage) {\n                    navigator.storage.persist = async () => true;\n                    navigator.storage.persisted = async () => true;\n                }\n            } catch (_) {}\n        });`;
+
+    if (content.includes(targetInit) && !content.includes('overridePermissions')) {
+        content = content.replace(targetInit, safeInit);
+        console.log('[patch-wwebjs] Patched persistent-storage permissions and navigator.storage.persist.');
+    }
+
+    // Patch spurious logout during QR/sync handshake
+    const targetNavLogout = `if(frame.url().includes('post_logout=1') || this.lastLoggedOut) {`;
+    const safeNavLogout = `const isRealLogout = frame.url().includes('post_logout=1') || (this.lastLoggedOut && this.info && this.info.wid);\n            if(isRealLogout) {`;
+
+    if (content.includes(targetNavLogout)) {
+        content = content.replace(targetNavLogout, safeNavLogout);
+        console.log('[patch-wwebjs] Patched framenavigated logout guard to prevent premature session wipe.');
+    }
+
     fs.writeFileSync(clientPath, content, 'utf8');
     return true;
 }
