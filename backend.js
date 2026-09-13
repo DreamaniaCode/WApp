@@ -362,7 +362,7 @@ async function callAiChatbot(userMessage, customConfig = {}) {
                             contents: [{ parts: [{ text: userMessage }] }],
                             generationConfig: {
                                 temperature: Number(temperature) || 0.7,
-                                maxOutputTokens: Number(maxTokens) || 350
+                                maxOutputTokens: Math.max(Number(maxTokens) || 350, 2048)
                             }
                         }),
                         signal: controller.signal
@@ -2186,8 +2186,10 @@ setInterval(async () => {
 // ─── AI Message Generator API ─────────────────────────────────────────────────
 app.post("/api/ai/generate-message", async (req, res) => {
     try {
-        if (!integrationsSettings.ai || !integrationsSettings.ai.enabled || !integrationsSettings.ai.apiKey) {
-            return res.status(400).json({ error: "AI provider not configured. Go to Settings > Integrations to set up an AI provider." });
+        const ai = integrationsSettings.ai || {};
+        const isConfigured = ai.provider === "ollama" || (ai.apiKey && ai.apiKey.trim().length > 0);
+        if (!isConfigured) {
+            return res.status(400).json({ error: "AI provider not configured. Go to Settings > Integrations to enter your API key." });
         }
         const { type, context, cartData } = req.body;
         const tone = context?.tone || "friendly";
@@ -2214,7 +2216,7 @@ IMPORTANT: Return ONLY valid JSON with this exact structure:
 Do NOT wrap in markdown code blocks. Return raw JSON only.`;
 
         const userMsg = `Generate a ${typeLabel} WhatsApp message in ${langLabel} with a ${tone} tone.`;
-        const aiResponse = await callAiChatbot(userMsg, systemPrompt);
+        const aiResponse = await callAiChatbot(userMsg, { systemPrompt, maxTokens: 2048, useRagContext: false });
 
         if (!aiResponse) {
             return res.status(500).json({ error: "AI provider returned empty response" });
@@ -2228,7 +2230,16 @@ Do NOT wrap in markdown code blocks. Return raw JSON only.`;
             if (cleaned.startsWith("```")) {
                 cleaned = cleaned.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "");
             }
-            parsed = JSON.parse(cleaned);
+            try {
+                parsed = JSON.parse(cleaned);
+            } catch {
+                const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+                if (jsonMatch) {
+                    parsed = JSON.parse(jsonMatch[0]);
+                } else {
+                    parsed = { message: cleaned, alternatives: [] };
+                }
+            }
         } catch (_) {
             // Fallback: treat entire response as the message
             parsed = { message: aiResponse.trim(), alternatives: [] };
