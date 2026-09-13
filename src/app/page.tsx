@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useSocket } from "@/lib/socket";
-import { QRCodeDisplay } from "@/components/QRCodeDisplay";
+import { DeviceHub } from "@/components/DeviceHub";
+import { CartRecovery } from "@/components/CartRecovery";
 import { BulkSender } from "@/components/BulkSender";
 import { ContactsManager } from "@/components/ContactsManager";
 import { GroupExtractor } from "@/components/GroupExtractor";
@@ -19,9 +20,10 @@ import {
   Server, Zap, Brain, PhoneCall, UsersRound, Settings as SettingsIcon,
   Sun, Moon, Search, Bell, Rocket, Activity, Shield, Wifi, WifiOff,
   Trash2, RefreshCw, Globe, History, Lock, Key, LogOut, MapPin, Cpu,
+  ShoppingCart
 } from "lucide-react";
 
-type Tab = "dashboard" | "devices" | "single" | "templates" | "contacts" | "bulk" | "history" | "proxies" | "autoreply" | "chatbot" | "callresponder" | "groups" | "leads" | "integrations" | "settings";
+type Tab = "dashboard" | "devices" | "single" | "templates" | "contacts" | "bulk" | "history" | "cart_recovery" | "proxies" | "autoreply" | "chatbot" | "callresponder" | "groups" | "leads" | "integrations" | "settings";
 
 interface DashboardMetrics {
   totalMessages: number; activeDevices: number; totalContacts: number; totalTemplates: number;
@@ -31,11 +33,12 @@ interface DashboardMetrics {
 
 const NAV = [
   { id: "dashboard",    icon: LayoutDashboard, label: "Dashboard",        sub: "Overview & Analytics" },
-  { id: "devices",      icon: Smartphone,      label: "Devices",          sub: "WhatsApp Sessions" },
+  { id: "devices",      icon: Smartphone,      label: "Devices",          sub: "Multi-Number WhatsApp Hub" },
   { id: "single",       icon: Send,            label: "Single Message",   sub: "Test Messages" },
   { id: "templates",    icon: FileText,        label: "Templates",        sub: "Message Templates" },
   { id: "contacts",     icon: Users,           label: "Contacts",         sub: "Contact Management" },
   { id: "bulk",         icon: MessageSquare,   label: "Bulk Messages",    sub: "Mass Messaging" },
+  { id: "cart_recovery",icon: ShoppingCart,    label: "Cart Recovery",    sub: "Abandoned E-Commerce Carts" },
   { id: "history",      icon: History,         label: "History",          sub: "Bulk Campaign Logs & Status" },
   { id: "proxies",      icon: Server,          label: "Proxies",          sub: "Proxy6.net Campaigns" },
   { id: "autoreply",    icon: Zap,             label: "Auto Reply",       sub: "Smart Keyword Triggers" },
@@ -425,21 +428,38 @@ export default function Home() {
     if (!socket) return;
     const onReady = () => setIsWaReady(true);
     const onDisconnected = () => setIsWaReady(false);
-    const onQr = () => setIsWaReady(false);
+    const onQr = () => {};
+
+    const onDevicesList = (devList: any[]) => {
+      if (Array.isArray(devList)) {
+        const anyReady = devList.some(d => d.isReady);
+        setIsWaReady(anyReady);
+      }
+    };
 
     socket.on("ready", onReady);
     socket.on("disconnected", onDisconnected);
     socket.on("qr", onQr);
+    socket.on("devices:list", onDevicesList);
+    socket.on("device:ready", () => setIsWaReady(true));
 
     fetch(`${API_URL}/api/status`)
       .then(r => r.json())
-      .then(d => { if (d && d.isReady) setIsWaReady(true); })
+      .then(d => {
+        if (d && d.isReady) setIsWaReady(true);
+        if (d && Array.isArray(d.devices)) {
+          const anyReady = d.devices.some((dev: any) => dev.isReady);
+          if (anyReady) setIsWaReady(true);
+        }
+      })
       .catch(() => {});
 
     return () => {
       socket.off("ready", onReady);
       socket.off("disconnected", onDisconnected);
       socket.off("qr", onQr);
+      socket.off("devices:list", onDevicesList);
+      socket.off("device:ready");
     };
   }, [socket]);
 
@@ -631,7 +651,7 @@ export default function Home() {
         </header>
         <main className={`flex-1 overflow-y-auto p-6 ${darkMode ? "bg-gray-950" : "bg-gray-50"}`}>
           {activeTab === "dashboard" && <DashboardPanel isConnected={isWaReady} />}
-          {activeTab === "devices" && <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100"><h2 className="text-lg font-bold text-gray-900 mb-4">WhatsApp Sessions</h2><QRCodeDisplay socket={socket} /></div>}
+          {activeTab === "devices" && <DeviceHub socket={socket} />}
           {activeTab === "single" && <SingleMessagePanel />}
           {activeTab === "templates" && <TemplatesPanel />}
           {activeTab === "contacts" && <ContactsManager />}
@@ -648,6 +668,7 @@ export default function Home() {
               />
             </div>
           )}
+          {activeTab === "cart_recovery" && <CartRecovery socket={socket} />}
           {activeTab === "history" && (
             <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
               <MessageHistory

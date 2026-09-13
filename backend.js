@@ -554,16 +554,146 @@ const PUPPETEER_ARGS = [
     "--disable-gpu",
     `--user-agent=${WIN_CHROME_USER_AGENT}`,
 ];
-// ─── State ────────────────────────────────────────────────────────────────────
-let qrCodeData = "";
+// ─── Multi-Device Registry ────────────────────────────────────────────────────
+/**
+ * Each connected WhatsApp number is a DeviceSession stored in the devices Map.
+ * @typedef {{
+ *   id: string, label: string, phoneNumber: string,
+ *   client: any, isReady: boolean, isAuthenticated: boolean, qrCodeData: string,
+ *   isDefault: boolean, createdAt: string,
+ *   heartbeatInterval: any, authStallTimer: any, reconnectTimer: any, isReconnecting: boolean,
+ *   warmingStatus: 'off'|'warming'|'warmed'|'paused',
+ *   warmingStartDate: string|null, warmingDay: number, warmingMaxDay: number,
+ *   messagesSentToday: number, dailyLimit: number, lastDailyReset: string
+ * }} DeviceSession
+ */
+const MAX_DEVICES = 5;
+const DEVICES_PATH = path_1.default.join(DATA_DIR, "devices.json");
+const WARMING_PATH = path_1.default.join(DATA_DIR, "warming_state.json");
+/** @type {Map<string, DeviceSession>} */
+const devices = new Map();
+let defaultDeviceId = null;
+
+// Warming schedule (14-day default)
+const WARMING_SCHEDULE = [
+    { day: 1, maxMessages: 5 },
+    { day: 2, maxMessages: 8 },
+    { day: 3, maxMessages: 12 },
+    { day: 4, maxMessages: 18 },
+    { day: 5, maxMessages: 25 },
+    { day: 6, maxMessages: 30 },
+    { day: 7, maxMessages: 40 },
+    { day: 8, maxMessages: 50 },
+    { day: 9, maxMessages: 55 },
+    { day: 10, maxMessages: 60 },
+    { day: 11, maxMessages: 70 },
+    { day: 12, maxMessages: 80 },
+    { day: 13, maxMessages: 90 },
+    { day: 14, maxMessages: 100 },
+];
+
+function getWarmingLimit(day) {
+    const entry = [...WARMING_SCHEDULE].reverse().find(e => e.day <= day);
+    return entry ? entry.maxMessages : 100;
+}
+
+/** Get the default (primary) device session, or the first ready device, or any device */
+function getDefaultDevice() {
+    if (defaultDeviceId && devices.has(defaultDeviceId)) return devices.get(defaultDeviceId);
+    for (const d of devices.values()) { if (d.isReady) return d; }
+    for (const d of devices.values()) { return d; }
+    return null;
+}
+
+/** Get all ready devices */
+function getReadyDevices() {
+    return [...devices.values()].filter(d => d.isReady && d.client);
+}
+
+/** Serialize device list for API / socket (excludes client object) */
+function serializeDevices() {
+    return [...devices.values()].map(d => ({
+        id: d.id, label: d.label, phoneNumber: d.phoneNumber,
+        isReady: d.isReady, isAuthenticated: d.isAuthenticated,
+        qrCode: d.qrCodeData || "", isDefault: d.isDefault,
+        warmingStatus: d.warmingStatus, warmingDay: d.warmingDay, warmingMaxDay: d.warmingMaxDay,
+        messagesSentToday: d.messagesSentToday, dailyLimit: d.dailyLimit,
+        createdAt: d.createdAt
+    }));
+}
+
+// ─── Backwards Compatibility Getters ─────────────────────────────────────────
+// These ensure existing code (campaign, chatbot, auto-reply) works unchanged.
+Object.defineProperty(global, '__wapp_compat', { value: true });
+
+/** @returns {any} The default device's wwebjs Client */
+function get_activeClient() {
+    const d = getDefaultDevice();
+    return d ? d.client : null;
+}
+/** @returns {boolean} True if ANY device is ready */
+function get_isReady() {
+    for (const d of devices.values()) { if (d.isReady) return true; }
+    return false;
+}
+/** @returns {boolean} True if ANY device is authenticated */
+function get_isAuthenticated() {
+    for (const d of devices.values()) { if (d.isAuthenticated) return true; }
+    return false;
+}
+/** @returns {string} The default device's QR code */
+function get_qrCodeData() {
+    const d = getDefaultDevice();
+    return d ? d.qrCodeData : "";
+}
+
+// Legacy variable aliases — used throughout existing code
+let activeClient = null;   // Will be kept in sync via updateLegacyState()
 let isReady = false;
 let isAuthenticated = false;
-// Track current active client so we can destroy it when switching modes
-let activeClient = null;
+let qrCodeData = "";
 let reconnectTimer = null;
 let isReconnecting = false;
 let heartbeatInterval = null;
 let authStallTimer = null;
+
+function updateLegacyState() {
+    const d = getDefaultDevice();
+    activeClient = d ? d.client : null;
+    isReady = get_isReady();
+    isAuthenticated = get_isAuthenticated();
+    qrCodeData = get_qrCodeData();
+}
+
+// ─── Device Persistence ─────────────────────────────────────────────────────
+function saveDeviceRegistry() {
+    try {
+        const data = [...devices.values()].map(d => ({
+            id: d.id, label: d.label, phoneNumber: d.phoneNumber,
+            isDefault: d.isDefault, createdAt: d.createdAt,
+            warmingStatus: d.warmingStatus, warmingStartDate: d.warmingStartDate,
+            warmingDay: d.warmingDay, warmingMaxDay: d.warmingMaxDay,
+            messagesSentToday: d.messagesSentToday, dailyLimit: d.dailyLimit,
+            lastDailyReset: d.lastDailyReset
+        }));
+        fs_1.default.writeFileSync(DEVICES_PATH, JSON.stringify({ defaultDeviceId, devices: data }, null, 2));
+    } catch (e) {
+        console.error("[Devices] Failed to save registry:", e.message);
+    }
+}
+
+function loadDeviceRegistry() {
+    if (!fs_1.default.existsSync(DEVICES_PATH)) return [];
+    try {
+        const raw = JSON.parse(fs_1.default.readFileSync(DEVICES_PATH, "utf8"));
+        if (raw.defaultDeviceId) defaultDeviceId = raw.defaultDeviceId;
+        return Array.isArray(raw.devices) ? raw.devices : [];
+    } catch (e) {
+        console.warn("[Devices] Failed to load registry:", e.message);
+        return [];
+    }
+}
+
 // Campaign state
 let isBulkRunning = false;
 let currentBulkResults = [];
@@ -777,16 +907,13 @@ loadProxies();
 // ─── Client factory ───────────────────────────────────────────────────────────
 /**
  * Build shared Client options (auth + puppeteer).
- * Pass `pairWithPhoneNumber` to enable phone-pairing mode.
- *
- * SPEED: webVersionCache caches the WhatsApp Web HTML locally so subsequent
- * starts skip the remote download (saves 3–8 seconds per launch).
+ * @param {string} deviceId - Unique device identifier for session isolation
+ * @param {string} [pairWithPhoneNumber] - Pass to enable phone-pairing mode.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildClientOptions(pairWithPhoneNumber) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildClientOptions(deviceId, pairWithPhoneNumber) {
     const opts = {
         authStrategy: new whatsapp_web_js_1.LocalAuth({
+            clientId: deviceId || "default",
             dataPath: process.env.WWEBJS_DATA_PATH || "./.wwebjs_auth",
         }),
         webVersionCache: {
@@ -835,76 +962,96 @@ function hookPageLogging(client) {
  * Destroy the active client cleanly, reset shared state.
  * @param skipLogout - Set true when switching modes (logout is slow, ~3s). Only use full logout on reset.
  */
-/**
- * Destroy the active client cleanly, reset shared state.
- * @param skipLogout - Set true when switching modes (logout is slow, ~3s). Only use full logout on reset.
- */
 async function destroyActiveClient(skipLogout = false) {
-    if (heartbeatInterval) {
-        clearInterval(heartbeatInterval);
-        heartbeatInterval = null;
+    // Legacy: destroy the default/active device
+    const d = getDefaultDevice();
+    if (d) {
+        await destroyDeviceClient(d.id, skipLogout);
+    } else {
+        activeClient = null;
+        isReady = false;
+        isAuthenticated = false;
+        qrCodeData = "";
     }
-    if (authStallTimer) {
-        clearTimeout(authStallTimer);
-        authStallTimer = null;
-    }
-    const c = activeClient;
-    activeClient = null;
-    isReady = false;
-    isAuthenticated = false;
-    qrCodeData = "";
-    if (!c)
-        return;
+}
+
+/**
+ * Destroy a specific device's client cleanly.
+ * @param {string} deviceId
+ * @param {boolean} skipLogout
+ */
+async function destroyDeviceClient(deviceId, skipLogout = false) {
+    const d = devices.get(deviceId);
+    if (!d) return;
+    if (d.heartbeatInterval) { clearInterval(d.heartbeatInterval); d.heartbeatInterval = null; }
+    if (d.authStallTimer) { clearTimeout(d.authStallTimer); clearInterval(d.authStallTimer); d.authStallTimer = null; }
+    if (d.reconnectTimer) { clearTimeout(d.reconnectTimer); d.reconnectTimer = null; }
+    const c = d.client;
+    d.client = null;
+    d.isReady = false;
+    d.isAuthenticated = false;
+    d.qrCodeData = "";
+    updateLegacyState();
+    if (!c) return;
     if (!skipLogout) {
         try {
             await Promise.race([
                 c.logout(),
                 new Promise((_, reject) => setTimeout(() => reject(new Error("Logout timeout")), 2000))
             ]);
-        }
-        catch { /* ignore */ }
+        } catch { /* ignore */ }
     }
     try {
         await Promise.race([
             c.destroy(),
             new Promise((_, reject) => setTimeout(() => reject(new Error("Destroy timeout")), 2500))
         ]);
-    }
-    catch (e) {
-        console.warn("[Watchdog] Notice on client destroy:", e.message);
+    } catch (e) {
+        console.warn(`[Watchdog] Notice on device ${deviceId} destroy:`, e.message);
     }
     await new Promise(r => setTimeout(r, 800));
 }
 
-function scheduleAutoReconnect(delayMs = 5000) {
-    if (isReconnecting) return;
-    isReconnecting = true;
-    if (reconnectTimer) clearTimeout(reconnectTimer);
-    console.log(`[Watchdog] Scheduling auto-reconnect in ${delayMs / 1000}s...`);
-    io.emit("reconnecting", { delayMs });
-    reconnectTimer = setTimeout(async () => {
+function scheduleDeviceReconnect(deviceId, delayMs = 5000) {
+    const d = devices.get(deviceId);
+    if (!d || d.isReconnecting) return;
+    d.isReconnecting = true;
+    if (d.reconnectTimer) clearTimeout(d.reconnectTimer);
+    console.log(`[Watchdog] Device ${deviceId}: scheduling reconnect in ${delayMs / 1000}s...`);
+    io.emit("device:reconnecting", { deviceId, delayMs });
+    io.emit("reconnecting", { delayMs }); // Legacy
+    d.reconnectTimer = setTimeout(async () => {
         try {
-            console.log(`[Watchdog] Attempting automatic reconnection...`);
-            await destroyActiveClient(true);
+            console.log(`[Watchdog] Device ${deviceId}: attempting automatic reconnection...`);
+            await destroyDeviceClient(deviceId, true);
             cleanChromiumLocks();
             await new Promise(r => setTimeout(r, 1000));
-            createAndStartQRClient();
+            createDeviceClient(deviceId, d.label);
         } catch (err) {
-            console.error("[Watchdog] Auto-reconnect failed:", err);
+            console.error(`[Watchdog] Device ${deviceId}: auto-reconnect failed:`, err);
         } finally {
-            isReconnecting = false;
+            if (devices.has(deviceId)) devices.get(deviceId).isReconnecting = false;
         }
     }, delayMs);
 }
 
-function startWatchdogHeartbeat() {
-    if (heartbeatInterval) clearInterval(heartbeatInterval);
+// Legacy wrapper
+function scheduleAutoReconnect(delayMs = 5000) {
+    const d = getDefaultDevice();
+    if (d) scheduleDeviceReconnect(d.id, delayMs);
+}
+
+function startDeviceHeartbeat(deviceId) {
+    const d = devices.get(deviceId);
+    if (!d) return;
+    if (d.heartbeatInterval) clearInterval(d.heartbeatInterval);
     let consecutiveFailures = 0;
-    heartbeatInterval = setInterval(async () => {
-        if (!activeClient || !isReady) return;
+    d.heartbeatInterval = setInterval(async () => {
+        const dev = devices.get(deviceId);
+        if (!dev || !dev.client || !dev.isReady) return;
         try {
             const state = await Promise.race([
-                activeClient.getState(),
+                dev.client.getState(),
                 new Promise((_, reject) => setTimeout(() => reject(new Error("Heartbeat timeout")), 10000))
             ]);
             if (state === "CONNECTED" || state === "PAIRING" || state === "OPENING") {
@@ -913,199 +1060,317 @@ function startWatchdogHeartbeat() {
             }
             if (state === "UNPAIRED") {
                 consecutiveFailures++;
-                console.warn(`[Watchdog] Unpaired state detected (${consecutiveFailures}/3)`);
+                console.warn(`[Watchdog] Device ${deviceId}: unpaired state (${consecutiveFailures}/3)`);
                 if (consecutiveFailures >= 3) {
-                    console.warn(`[Watchdog] Confirmed UNPAIRED. Auto-reconnecting...`);
-                    scheduleAutoReconnect(3000);
+                    console.warn(`[Watchdog] Device ${deviceId}: confirmed UNPAIRED. Auto-reconnecting...`);
+                    scheduleDeviceReconnect(deviceId, 3000);
                 }
             } else {
-                console.log(`[Watchdog] Heartbeat state: ${state || 'transient/syncing'}`);
+                console.log(`[Watchdog] Device ${deviceId}: heartbeat state: ${state || 'transient/syncing'}`);
             }
         } catch (err) {
-            console.warn(`[Watchdog] Heartbeat check issue:`, err.message);
+            console.warn(`[Watchdog] Device ${deviceId}: heartbeat issue:`, err.message);
         }
     }, 30000);
 }
 
+// Legacy wrapper
+function startWatchdogHeartbeat() {
+    const d = getDefaultDevice();
+    if (d) startDeviceHeartbeat(d.id);
+}
+
 /**
- * Create, register event listeners, and initialize a QR-mode client.
- * This is the normal startup path.
+ * Create, register event listeners, and initialize a client for a specific device.
+ * @param {string} deviceId - Unique device identifier
+ * @param {string} label - User-friendly label
+ * @returns {any} The wwebjs Client instance
  */
-function createAndStartQRClient() {
+function createDeviceClient(deviceId, label) {
     cleanChromiumLocks();
-    const client = new whatsapp_web_js_1.Client(buildClientOptions());
-    activeClient = client;
-    registerClientEvents(client);
+    const client = new whatsapp_web_js_1.Client(buildClientOptions(deviceId));
+
+    // Create or update device session
+    let d = devices.get(deviceId);
+    if (!d) {
+        d = {
+            id: deviceId, label: label || `Device ${devices.size + 1}`,
+            phoneNumber: "", client: null, isReady: false, isAuthenticated: false, qrCodeData: "",
+            isDefault: devices.size === 0, createdAt: new Date().toISOString(),
+            heartbeatInterval: null, authStallTimer: null, reconnectTimer: null, isReconnecting: false,
+            warmingStatus: "off", warmingStartDate: null, warmingDay: 0, warmingMaxDay: 14,
+            messagesSentToday: 0, dailyLimit: 100, lastDailyReset: new Date().toISOString().split('T')[0]
+        };
+        devices.set(deviceId, d);
+        if (d.isDefault) defaultDeviceId = deviceId;
+    }
+    d.client = client;
+
+    registerDeviceEvents(deviceId, client);
     hookPageLogging(client);
     client.initialize().catch(err => {
-        console.warn("[Watchdog] WhatsApp initialize notice:", err?.stack || err);
-        if (activeClient === client) {
-            scheduleAutoReconnect(3000);
+        console.warn(`[Watchdog] Device ${deviceId}: initialize notice:`, err?.stack || err);
+        const dev = devices.get(deviceId);
+        if (dev && dev.client === client) {
+            scheduleDeviceReconnect(deviceId, 3000);
         }
     });
+    updateLegacyState();
+    saveDeviceRegistry();
+    io.emit("devices:list", serializeDevices());
     return client;
 }
+
 /**
- * Register all WhatsApp event listeners onto a client.
- * All socket.io broadcasts happen here.
+ * Legacy wrapper: create the default (or first) device.
  */
-function registerClientEvents(client) {
+function createAndStartQRClient() {
+    const saved = loadDeviceRegistry();
+    if (saved && saved.length > 0) {
+        for (const s of saved) {
+            if (!devices.has(s.id)) {
+                devices.set(s.id, {
+                    id: s.id,
+                    label: s.label,
+                    phoneNumber: s.phoneNumber || "",
+                    client: null,
+                    isReady: false,
+                    isAuthenticated: false,
+                    qrCodeData: "",
+                    isDefault: !!s.isDefault,
+                    createdAt: s.createdAt || new Date().toISOString(),
+                    heartbeatInterval: null,
+                    authStallTimer: null,
+                    reconnectTimer: null,
+                    isReconnecting: false,
+                    warmingStatus: s.warmingStatus || "off",
+                    warmingStartDate: s.warmingStartDate || null,
+                    warmingDay: s.warmingDay || 0,
+                    warmingMaxDay: s.warmingMaxDay || 14,
+                    messagesSentToday: s.messagesSentToday || 0,
+                    dailyLimit: s.dailyLimit || 100,
+                    lastDailyReset: s.lastDailyReset || new Date().toISOString().split('T')[0]
+                });
+            }
+        }
+        const target = getDefaultDevice() || devices.values().next().value;
+        if (target) {
+            return createDeviceClient(target.id, target.label);
+        }
+    }
+    // If no devices exist, create a default one
+    if (devices.size === 0) {
+        return createDeviceClient("device-1", "WhatsApp 1");
+    }
+    // Otherwise restart the default device
+    const d = getDefaultDevice();
+    if (d) {
+        return createDeviceClient(d.id, d.label);
+    }
+    return createDeviceClient("device-1", "WhatsApp 1");
+}
+/**
+ * Register all WhatsApp event listeners onto a client for a specific device.
+ * Emits both legacy events and device:-prefixed events.
+ * @param {string} deviceId
+ * @param {any} client - wwebjs Client
+ */
+function registerDeviceEvents(deviceId, client) {
     client.on("error", (err) => {
-        console.warn("[Watchdog] WhatsApp client emitted error:", err?.message || String(err));
+        console.warn(`[Watchdog] Device ${deviceId}: error:`, err?.message || String(err));
     });
     client.on("qr", (qr) => {
-        console.log("QR RECEIVED");
-        qrCodeData = qr;
-        isAuthenticated = false; // Must be false when QR arrives!
-        isReady = false;
-        if (authStallTimer) {
-            clearInterval(authStallTimer);
-            authStallTimer = null;
+        console.log(`[Device ${deviceId}] QR RECEIVED`);
+        const d = devices.get(deviceId);
+        if (d) {
+            d.qrCodeData = qr;
+            d.isAuthenticated = false;
+            d.isReady = false;
+            if (d.authStallTimer) { clearInterval(d.authStallTimer); d.authStallTimer = null; }
+            updateLegacyState();
         }
-        io.emit("qr", qr);
+        io.emit("device:qr", { deviceId, qr });
+        io.emit("qr", qr); // Legacy
+        io.emit("devices:list", serializeDevices());
     });
     client.on("ready", async () => {
-        console.log("Client is ready!");
-        if (authStallTimer) {
-            clearInterval(authStallTimer);
-            authStallTimer = null;
-        }
-        await ensureWWebJSInjected(client);
-        isReady = true;
-        isAuthenticated = true;
-        qrCodeData = ""; // clear QR once ready
-        io.emit("ready", true);
-        startWatchdogHeartbeat();
-    });
-    client.on("authenticated", () => {
-        console.log("Authenticated - Synchronizing session chats...");
-        isAuthenticated = true;
-        qrCodeData = "";
-        io.emit("authenticated", true);
-
-        // Responsive watchdog: Polls every 1.5s after authentication to detect when WhatsApp Web finishes chat sync
-        if (authStallTimer) {
-            clearInterval(authStallTimer);
-            clearTimeout(authStallTimer);
-        }
-        let checkCount = 0;
-        authStallTimer = setInterval(async () => {
-            checkCount++;
-            if (isReady || activeClient !== client || checkCount > 40) {
-                if (authStallTimer) clearInterval(authStallTimer);
-                authStallTimer = null;
-                return;
-            }
+        console.log(`[Device ${deviceId}] Client is ready!`);
+        const d = devices.get(deviceId);
+        if (d) {
+            if (d.authStallTimer) { clearInterval(d.authStallTimer); d.authStallTimer = null; }
+            await ensureWWebJSInjected(client);
+            d.isReady = true;
+            d.isAuthenticated = true;
+            d.qrCodeData = "";
+            // Try to extract phone number
             try {
-                if (client.pupPage && !client.pupPage.isClosed()) {
-                    const uiActive = await client.pupPage.evaluate(() => {
-                        const hasPane = !!(document.querySelector('#pane-side') || document.querySelector('[data-testid="chat-list"]'));
-                        const hasStore = typeof window.Store !== 'undefined' && !!(window.Store.Chat || window.Store.SendMessage);
-                        return hasPane || hasStore;
-                    }).catch(() => false);
-
-                    if (uiActive && !isReady) {
-                        console.log("[Watchdog] WhatsApp Web UI confirmed active. Ensuring WWebJS injection & emitting ready!");
-                        if (authStallTimer) clearInterval(authStallTimer);
-                        authStallTimer = null;
-                        await ensureWWebJSInjected(client);
-                        isReady = true;
-                        isAuthenticated = true;
-                        qrCodeData = "";
-                        io.emit("ready", true);
-                        startWatchdogHeartbeat();
-                    }
+                const info = client.info;
+                if (info && info.wid && info.wid.user) {
+                    d.phoneNumber = info.wid.user;
                 }
             } catch (_) {}
-        }, 1500);
+            updateLegacyState();
+            saveDeviceRegistry();
+        }
+        io.emit("device:ready", { deviceId, phoneNumber: d ? d.phoneNumber : "" });
+        io.emit("ready", true); // Legacy
+        io.emit("devices:list", serializeDevices());
+        startDeviceHeartbeat(deviceId);
+    });
+    client.on("authenticated", () => {
+        console.log(`[Device ${deviceId}] Authenticated - Synchronizing session chats...`);
+        const d = devices.get(deviceId);
+        if (d) {
+            d.isAuthenticated = true;
+            d.qrCodeData = "";
+            updateLegacyState();
+        }
+        io.emit("device:authenticated", { deviceId });
+        io.emit("authenticated", true); // Legacy
+        io.emit("devices:list", serializeDevices());
+
+        // Responsive watchdog: Polls every 1.5s after authentication to detect when WhatsApp Web finishes chat sync
+        if (d) {
+            if (d.authStallTimer) { clearInterval(d.authStallTimer); clearTimeout(d.authStallTimer); }
+            let checkCount = 0;
+            d.authStallTimer = setInterval(async () => {
+                checkCount++;
+                const dev = devices.get(deviceId);
+                if (!dev || dev.isReady || dev.client !== client || checkCount > 40) {
+                    if (dev && dev.authStallTimer) { clearInterval(dev.authStallTimer); dev.authStallTimer = null; }
+                    return;
+                }
+                try {
+                    if (client.pupPage && !client.pupPage.isClosed()) {
+                        const uiActive = await client.pupPage.evaluate(() => {
+                            const hasPane = !!(document.querySelector('#pane-side') || document.querySelector('[data-testid="chat-list"]'));
+                            const hasStore = typeof window.Store !== 'undefined' && !!(window.Store.Chat || window.Store.SendMessage);
+                            return hasPane || hasStore;
+                        }).catch(() => false);
+
+                        if (uiActive && dev && !dev.isReady) {
+                            console.log(`[Watchdog] Device ${deviceId}: WhatsApp Web UI confirmed active. Emitting ready!`);
+                            if (dev.authStallTimer) { clearInterval(dev.authStallTimer); dev.authStallTimer = null; }
+                            await ensureWWebJSInjected(client);
+                            dev.isReady = true;
+                            dev.isAuthenticated = true;
+                            dev.qrCodeData = "";
+                            try {
+                                const info = client.info;
+                                if (info && info.wid && info.wid.user) dev.phoneNumber = info.wid.user;
+                            } catch (_) {}
+                            updateLegacyState();
+                            saveDeviceRegistry();
+                            io.emit("device:ready", { deviceId, phoneNumber: dev.phoneNumber });
+                            io.emit("ready", true);
+                            io.emit("devices:list", serializeDevices());
+                            startDeviceHeartbeat(deviceId);
+                        }
+                    }
+                } catch (_) {}
+            }, 1500);
+        }
     });
     client.on("disconnected", async (reason) => {
-        console.log("Client was logged out or disconnected:", reason);
-        if (authStallTimer) {
-            clearTimeout(authStallTimer);
-            authStallTimer = null;
+        console.log(`[Device ${deviceId}] Disconnected:`, reason);
+        const d = devices.get(deviceId);
+        if (d) {
+            if (d.authStallTimer) { clearTimeout(d.authStallTimer); clearInterval(d.authStallTimer); d.authStallTimer = null; }
         }
-        if (client === activeClient) {
+        if (d && d.client === client) {
             if (reason === "LOGOUT") {
-                console.log("[Watchdog] Logged out by WhatsApp server. Stopping browser and wiping session for fresh QR...");
-                isReady = false;
-                isAuthenticated = false;
-                qrCodeData = "";
+                console.log(`[Watchdog] Device ${deviceId}: logged out. Wiping session for fresh QR...`);
+                d.isReady = false;
+                d.isAuthenticated = false;
+                d.qrCodeData = "";
+                d.phoneNumber = "";
+                updateLegacyState();
+                io.emit("device:disconnected", { deviceId, reason });
                 io.emit("disconnected", reason);
-                
-                // MUST destroy client and kill processes FIRST so Windows releases Crashpad/LevelDB locks!
-                await destroyActiveClient(true);
+                io.emit("devices:list", serializeDevices());
+
+                await destroyDeviceClient(deviceId, true);
                 await killStaleBrowserProcesses();
                 await new Promise(r => setTimeout(r, 600));
-
-                const authPath = process.env.WWEBJS_DATA_PATH || path_1.default.join(process.cwd(), ".wwebjs_auth");
-                safeClearFolder(authPath);
                 cleanChromiumLocks();
+                saveDeviceRegistry();
 
                 setTimeout(() => {
-                    console.log("[Watchdog] Restarting fresh client for new QR code...");
-                    createAndStartQRClient();
+                    console.log(`[Watchdog] Device ${deviceId}: restarting for new QR...`);
+                    createDeviceClient(deviceId, d.label);
                 }, 1000);
             } else if (reason === "Max qrcode retries reached") {
-                console.log("[Watchdog] QR max retries reached. Refreshing QR...");
-                isReady = false;
-                isAuthenticated = false;
-                qrCodeData = "";
+                d.isReady = false;
+                d.isAuthenticated = false;
+                d.qrCodeData = "";
+                updateLegacyState();
+                io.emit("device:disconnected", { deviceId, reason });
                 io.emit("disconnected", reason);
-                scheduleAutoReconnect(2000);
+                io.emit("devices:list", serializeDevices());
+                scheduleDeviceReconnect(deviceId, 2000);
             } else if (reason !== "manual_reset") {
-                // If client was authenticated, do NOT immediately destroy the session on transient disconnect
-                console.log(`[Watchdog] Disconnect event with reason: ${reason}. Checking if browser session is alive...`);
+                console.log(`[Watchdog] Device ${deviceId}: disconnect (${reason}). Checking browser...`);
                 setTimeout(async () => {
-                    if (activeClient === client && client.pupPage && !client.pupPage.isClosed()) {
+                    const dev = devices.get(deviceId);
+                    if (dev && dev.client === client && client.pupPage && !client.pupPage.isClosed()) {
                         try {
                             const stillAlive = await client.pupPage.evaluate(() => {
                                 return !!(document.querySelector('#pane-side') || (window.Store && window.Store.Chat));
                             }).catch(() => false);
                             if (stillAlive) {
-                                console.log("[Watchdog] Session is still alive in Chromium. Restoring ready state!");
+                                console.log(`[Watchdog] Device ${deviceId}: session still alive. Restoring ready!`);
                                 await ensureWWebJSInjected(client);
-                                isReady = true;
-                                isAuthenticated = true;
+                                dev.isReady = true;
+                                dev.isAuthenticated = true;
+                                updateLegacyState();
+                                io.emit("device:ready", { deviceId, phoneNumber: dev.phoneNumber });
                                 io.emit("ready", true);
+                                io.emit("devices:list", serializeDevices());
                                 return;
                             }
                         } catch (_) {}
                     }
-                    console.log(`[Watchdog] Session confirmed lost (${reason}). Scheduling auto-reconnect...`);
-                    isReady = false;
-                    isAuthenticated = false;
-                    qrCodeData = "";
+                    if (dev) {
+                        dev.isReady = false;
+                        dev.isAuthenticated = false;
+                        dev.qrCodeData = "";
+                        updateLegacyState();
+                    }
+                    io.emit("device:disconnected", { deviceId, reason });
                     io.emit("disconnected", reason);
-                    scheduleAutoReconnect(5000);
+                    io.emit("devices:list", serializeDevices());
+                    scheduleDeviceReconnect(deviceId, 5000);
                 }, 4000);
             }
         }
     });
     client.on("auth_failure", (msg) => {
-        console.error("AUTHENTICATION FAILURE", msg);
-        if (authStallTimer) {
-            clearInterval(authStallTimer);
-            authStallTimer = null;
+        console.error(`[Device ${deviceId}] AUTH FAILURE`, msg);
+        const d = devices.get(deviceId);
+        if (d) {
+            if (d.authStallTimer) { clearInterval(d.authStallTimer); d.authStallTimer = null; }
+            d.isReady = false;
+            d.isAuthenticated = false;
+            d.qrCodeData = "";
+            updateLegacyState();
         }
-        isReady = false;
-        isAuthenticated = false;
-        qrCodeData = "";
+        io.emit("device:disconnected", { deviceId, reason: "auth_failure" });
         io.emit("auth_failure", msg);
-        scheduleAutoReconnect(3000);
+        io.emit("devices:list", serializeDevices());
+        scheduleDeviceReconnect(deviceId, 3000);
     });
     client.on("loading_screen", (percent, message) => {
-        console.log("LOADING SCREEN", percent, message);
+        console.log(`[Device ${deviceId}] LOADING`, percent, message);
+        io.emit("device:loading", { deviceId, percent, message });
         io.emit("loading_screen", { percent, message });
     });
-    // Phone-pairing mode: emit the code received event
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     client.on("code", (code) => {
-        console.log("Pairing code received:", code);
+        console.log(`[Device ${deviceId}] Pairing code:`, code);
+        io.emit("device:pairing_code", { deviceId, code });
         io.emit("pairing_code", { code });
     });
+    // Message handling — runs on ALL devices but auto-reply uses default device only
     client.on("message", async (msg) => {
-        // Broadcast incoming message for the Chat UI
         try {
             const contact = await msg.getContact();
             io.emit("incoming_message", {
@@ -1115,24 +1380,21 @@ function registerClientEvents(client) {
                 name: contact.pushname || contact.name || "Unknown",
                 body: msg.body,
                 timestamp: msg.timestamp * 1000,
-                isGroup: msg.from.includes("@g.us")
+                isGroup: msg.from.includes("@g.us"),
+                deviceId
             });
-        }
-        catch (e) {
+        } catch (e) {
             console.error("Error emitting incoming message", e);
         }
 
-        // Auto-reply and self-learning logic (skip groups to avoid spam)
-        if (msg.from.includes("@g.us"))
-            return;
+        // Auto-reply only on the default device (skip groups)
+        const defaultDev = getDefaultDevice();
+        if (msg.from.includes("@g.us") || !defaultDev || defaultDev.id !== deviceId) return;
 
-        // 1. Record incoming message for self-learning
         botEngine.recordIncoming(msg.from, msg.body);
-
         const lowerBody = msg.body.toLowerCase().trim();
         let replied = false;
 
-        // 2. Check exact / contains keyword rules first
         for (const rule of autoResponses) {
             if (rule.exactMatch) {
                 if (lowerBody === rule.keyword.toLowerCase().trim()) {
@@ -1140,8 +1402,7 @@ function registerClientEvents(client) {
                     replied = true;
                     break;
                 }
-            }
-            else {
+            } else {
                 if (lowerBody.includes(rule.keyword.toLowerCase().trim())) {
                     await msg.reply(rule.response);
                     replied = true;
@@ -1150,87 +1411,73 @@ function registerClientEvents(client) {
             }
         }
 
-        // 3. If no rule matched and autoReply is enabled, check Self-Learning / RAG Engine or External AI
         if (!replied && botEngine.settings.autoReply) {
             try {
                 const match = botEngine.findBestAnswer(msg.body);
                 const threshold = (botEngine.settings.similarityThreshold || 0.45) * 100;
-
-                // Priority A: High confidence match in local RAG knowledge base
                 if (match && match.answer && match.score >= threshold) {
-                    console.log(`[ChatbotRag] Auto-replying via ${match.sourceType} (${match.score}% match): "${match.answer.substring(0, 40)}..."`);
                     await msg.reply(match.answer);
                     replied = true;
-                }
-                // Priority B: External AI LLM (OpenAI, Gemini, Claude, DeepSeek, Groq, Ollama)
-                else if (integrationsSettings.ai && integrationsSettings.ai.enabled) {
-                    console.log(`[AI Chatbot] Generating AI reply via ${integrationsSettings.ai.provider} for incoming message...`);
+                } else if (integrationsSettings.ai && integrationsSettings.ai.enabled) {
                     const aiReply = await callAiChatbot(msg.body);
                     if (aiReply) {
                         await msg.reply(aiReply);
                         replied = true;
-                        console.log(`[AI Chatbot] Sent AI response: "${aiReply.substring(0, 40)}..."`);
-                        if (botEngine.settings.autoLearn) {
-                            botEngine.addLearnedPair(msg.body, aiReply);
-                        }
+                        if (botEngine.settings.autoLearn) botEngine.addLearnedPair(msg.body, aiReply);
                     }
-                }
-                // Priority C: Fallback to lower-confidence local knowledge if available
-                else if (match && match.answer) {
-                    console.log(`[ChatbotRag] Fallback auto-reply via ${match.sourceType} (${match.score}% match): "${match.answer.substring(0, 40)}..."`);
+                } else if (match && match.answer) {
                     await msg.reply(match.answer);
                     replied = true;
                 }
             } catch (err) {
-                console.error("[ChatbotRag/AI] Error during auto-reply:", err.message);
+                console.error("[ChatbotRag/AI] Auto-reply error:", err.message);
             }
         }
 
-        // 4. Inbound Message Webhook Dispatch (Zapier, Make, CRM, Slack)
         if (integrationsSettings.webhooks?.inboundMessageWebhookEnabled && integrationsSettings.webhooks?.inboundMessageWebhookUrl) {
             fetch(integrationsSettings.webhooks.inboundMessageWebhookUrl, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     event: "whatsapp_message_received",
-                    from: msg.from,
-                    body: msg.body,
+                    from: msg.from, body: msg.body, deviceId,
                     timestamp: (msg.timestamp || Math.floor(Date.now() / 1000)) * 1000,
-                    hasMedia: msg.hasMedia || false,
-                    replied
+                    hasMedia: msg.hasMedia || false, replied
                 }),
                 signal: AbortSignal.timeout(6000)
             }).catch(wErr => console.warn("[Webhook] Inbound webhook error:", wErr.message));
         }
     });
     client.on("message_create", async (msg) => {
-        // Fired on all messages including our own
         if (msg.fromMe) {
-            // Self-learn from user's replies to contacts!
-            if (!msg.to.includes("@g.us")) {
-                botEngine.recordOutgoing(msg.to, msg.body);
+            if (!msg.to.includes("@g.us")) botEngine.recordOutgoing(msg.to, msg.body);
+            // Track messages for warming
+            const d = devices.get(deviceId);
+            if (d) {
+                d.messagesSentToday++;
+                if (d.warmingStatus === "warming") {
+                    io.emit("device:warming_update", {
+                        deviceId, warmingStatus: d.warmingStatus, warmingDay: d.warmingDay,
+                        messagesSentToday: d.messagesSentToday, dailyLimit: d.dailyLimit
+                    });
+                }
             }
             try {
                 io.emit("outgoing_message", {
-                    id: msg.id._serialized,
-                    to: msg.to,
-                    body: msg.body,
-                    timestamp: msg.timestamp * 1000
+                    id: msg.id._serialized, to: msg.to,
+                    body: msg.body, timestamp: msg.timestamp * 1000, deviceId
                 });
-            }
-            catch (e) { }
+            } catch (e) {}
         }
     });
     client.on("call", async (call) => {
         try {
-            console.log(`[CallResponder] Incoming ${call.isVideo ? 'video' : 'voice'} call from ${call.from}`);
+            console.log(`[CallResponder] Device ${deviceId}: incoming ${call.isVideo ? 'video' : 'voice'} call from ${call.from}`);
             if (callResponderConfig.enabled) {
                 const shouldReject = (call.isVideo && callResponderConfig.rejectVideo) || (!call.isVideo && callResponderConfig.rejectVoice);
                 if (shouldReject) {
                     await call.reject();
                     callResponderConfig.stats.rejectedCalls = (callResponderConfig.stats.rejectedCalls || 0) + 1;
-                    console.log(`[CallResponder] Auto-rejected call from ${call.from}`);
-
                     let sentAutoReply = false;
                     if (callResponderConfig.replyMessage && callResponderConfig.replyMessage.trim()) {
                         await new Promise(r => setTimeout(r, callResponderConfig.autoReplyDelayMs || 1200));
@@ -1238,33 +1485,30 @@ function registerClientEvents(client) {
                             await client.sendMessage(call.from, callResponderConfig.replyMessage.trim());
                             callResponderConfig.stats.repliesSent = (callResponderConfig.stats.repliesSent || 0) + 1;
                             sentAutoReply = true;
-                            console.log(`[CallResponder] Sent automated reply to ${call.from}`);
                         } catch (msgErr) {
-                            console.warn("[CallResponder] Failed to send reply message:", msgErr.message);
+                            console.warn("[CallResponder] Failed to send reply:", msgErr.message);
                         }
                     }
                     saveCallResponder();
-                    io.emit("call_event", {
-                        from: call.from,
-                        isVideo: !!call.isVideo,
-                        rejected: true,
-                        replied: sentAutoReply,
-                        timestamp: Date.now()
-                    });
+                    io.emit("call_event", { from: call.from, isVideo: !!call.isVideo, rejected: true, replied: sentAutoReply, timestamp: Date.now(), deviceId });
                 }
             }
         } catch (err) {
-            console.warn("[CallResponder] Error handling incoming call:", err.message);
+            console.warn("[CallResponder] Error:", err.message);
         }
     });
 }
+// Keep legacy alias
+function registerClientEvents(client) { registerDeviceEvents("device-1", client); }
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 // Move startup to the end to ensure API is ready first
 // createAndStartQRClient();
 // ─── Socket.IO ────────────────────────────────────────────────────────────────
 io.on("connection", (socket) => {
     console.log("Client connected");
-    // Send current status immediately on connect
+    // Send current device list
+    socket.emit("devices:list", serializeDevices());
+    // Send current status immediately on connect (legacy)
     if (isReady) {
         socket.emit("ready", true);
     }
@@ -1275,6 +1519,7 @@ io.on("connection", (socket) => {
         socket.emit("qr", qrCodeData);
     }
     const sendStatus = () => {
+        socket.emit("devices:list", serializeDevices());
         if (isReady) {
             socket.emit("ready", true);
         }
@@ -1335,9 +1580,501 @@ app.get("/api/wa-status", async (_req, res) => {
             }
         } catch (_) {}
     }
-    res.json({ isReady, authenticated: isAuthenticated, qr: qrCodeData || null });
+    res.json({ isReady, isAuthenticated, authenticated: isAuthenticated, qr: qrCodeData || null });
+});
+// Alias: frontend polls /api/status — same logic as /api/wa-status with auto-heal
+app.get("/api/status", async (_req, res) => {
+    if (!isReady && isAuthenticated && activeClient && activeClient.pupPage && !activeClient.pupPage.isClosed()) {
+        try {
+            const hasPane = await activeClient.pupPage.evaluate(() => {
+                return !!(document.querySelector('#pane-side') || document.querySelector('[data-testid="chat-list"]') || (window.Store && window.Store.Chat));
+            }).catch(() => false);
+            if (hasPane) {
+                console.log("[Status API] Detected active WhatsApp Web UI while not marked ready. Marking session ready!");
+                await ensureWWebJSInjected(activeClient);
+                isReady = true;
+                qrCodeData = "";
+                io.emit("ready", true);
+            }
+        } catch (_) {}
+    }
+    res.json({ isReady, isAuthenticated, authenticated: isAuthenticated, qr: qrCodeData || null });
 });
 
+// ─── Device Management API ─────────────────────────────────────────────────────
+app.get("/api/devices", (_req, res) => {
+    res.json(serializeDevices());
+});
+
+app.post("/api/devices", async (req, res) => {
+    try {
+        if (devices.size >= MAX_DEVICES) {
+            return res.status(400).json({ error: `Maximum ${MAX_DEVICES} devices allowed` });
+        }
+        const label = req.body.label || `WhatsApp ${devices.size + 1}`;
+        const deviceId = `device-${Date.now()}`;
+        createDeviceClient(deviceId, label);
+        res.json({ success: true, deviceId, devices: serializeDevices() });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.delete("/api/devices/:id", async (req, res) => {
+    try {
+        const deviceId = req.params.id;
+        if (!devices.has(deviceId)) {
+            return res.status(404).json({ error: "Device not found" });
+        }
+        await destroyDeviceClient(deviceId, false);
+        const wasDefault = devices.get(deviceId)?.isDefault;
+        devices.delete(deviceId);
+        if (wasDefault && devices.size > 0) {
+            const first = devices.values().next().value;
+            first.isDefault = true;
+            defaultDeviceId = first.id;
+        }
+        updateLegacyState();
+        saveDeviceRegistry();
+        io.emit("devices:list", serializeDevices());
+        res.json({ success: true, devices: serializeDevices() });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post("/api/devices/:id/set-default", (req, res) => {
+    const deviceId = req.params.id;
+    if (!devices.has(deviceId)) return res.status(404).json({ error: "Device not found" });
+    for (const d of devices.values()) d.isDefault = false;
+    devices.get(deviceId).isDefault = true;
+    defaultDeviceId = deviceId;
+    updateLegacyState();
+    saveDeviceRegistry();
+    io.emit("devices:list", serializeDevices());
+    res.json({ success: true });
+});
+
+app.post("/api/devices/:id/reset", async (req, res) => {
+    const deviceId = req.params.id;
+    if (!devices.has(deviceId)) return res.status(404).json({ error: "Device not found" });
+    const d = devices.get(deviceId);
+    await destroyDeviceClient(deviceId, false);
+    // Clear auth data for this device
+    const authPath = process.env.WWEBJS_DATA_PATH || path_1.default.join(process.cwd(), ".wwebjs_auth");
+    const sessionDir = path_1.default.join(authPath, `session-${deviceId}`);
+    safeClearFolder(sessionDir);
+    cleanChromiumLocks();
+    d.phoneNumber = "";
+    saveDeviceRegistry();
+    // Restart client
+    setTimeout(() => createDeviceClient(deviceId, d.label), 1000);
+    res.json({ success: true });
+});
+
+app.get("/api/devices/:id/status", (req, res) => {
+    const d = devices.get(req.params.id);
+    if (!d) return res.status(404).json({ error: "Device not found" });
+    res.json({
+        id: d.id, label: d.label, phoneNumber: d.phoneNumber,
+        isReady: d.isReady, isAuthenticated: d.isAuthenticated, isDefault: d.isDefault,
+        warmingStatus: d.warmingStatus, warmingDay: d.warmingDay,
+        messagesSentToday: d.messagesSentToday, dailyLimit: d.dailyLimit
+    });
+});
+
+app.post("/api/devices/:id/request-pairing-code", async (req, res) => {
+    const deviceId = req.params.id;
+    const d = devices.get(deviceId);
+    if (!d) return res.status(404).json({ error: "Device not found" });
+    const { phoneNumber } = req.body;
+    if (!phoneNumber) return res.status(400).json({ error: "Phone number required" });
+    try {
+        await destroyDeviceClient(deviceId, true);
+        cleanChromiumLocks();
+        await new Promise(r => setTimeout(r, 500));
+        const pairingClient = new whatsapp_web_js_1.Client(buildClientOptions(deviceId, phoneNumber));
+        d.client = pairingClient;
+        registerDeviceEvents(deviceId, pairingClient);
+        hookPageLogging(pairingClient);
+        const codePromise = new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error("Pairing timeout")), 90000);
+            pairingClient.on("code", (code) => {
+                clearTimeout(timeout);
+                resolve(code);
+            });
+        });
+        pairingClient.initialize().catch(err => {
+            console.warn(`[Device ${deviceId}] Pairing init error:`, err.message);
+        });
+        const code = await codePromise;
+        res.json({ success: true, code });
+    } catch (err) {
+        console.error(`[Device ${deviceId}] Pairing failed:`, err.message);
+        // Fallback to QR
+        createDeviceClient(deviceId, d.label);
+        res.status(500).json({ error: err.message, fallbackToQR: true });
+    }
+});
+
+// ─── Warming API ─────────────────────────────────────────────────────────────
+app.post("/api/devices/:id/warming/start", (req, res) => {
+    const d = devices.get(req.params.id);
+    if (!d) return res.status(404).json({ error: "Device not found" });
+    d.warmingStatus = "warming";
+    d.warmingStartDate = new Date().toISOString();
+    d.warmingDay = 1;
+    d.warmingMaxDay = 14;
+    d.messagesSentToday = 0;
+    d.dailyLimit = getWarmingLimit(1);
+    d.lastDailyReset = new Date().toISOString().split('T')[0];
+    saveDeviceRegistry();
+    io.emit("devices:list", serializeDevices());
+    io.emit("device:warming_update", {
+        deviceId: d.id, warmingStatus: d.warmingStatus, warmingDay: d.warmingDay,
+        messagesSentToday: d.messagesSentToday, dailyLimit: d.dailyLimit
+    });
+    res.json({ success: true });
+});
+
+app.post("/api/devices/:id/warming/stop", (req, res) => {
+    const d = devices.get(req.params.id);
+    if (!d) return res.status(404).json({ error: "Device not found" });
+    d.warmingStatus = "paused";
+    saveDeviceRegistry();
+    io.emit("devices:list", serializeDevices());
+    res.json({ success: true });
+});
+
+app.get("/api/devices/:id/warming/status", (req, res) => {
+    const d = devices.get(req.params.id);
+    if (!d) return res.status(404).json({ error: "Device not found" });
+    res.json({
+        warmingStatus: d.warmingStatus, warmingDay: d.warmingDay, warmingMaxDay: d.warmingMaxDay,
+        warmingStartDate: d.warmingStartDate, messagesSentToday: d.messagesSentToday,
+        dailyLimit: d.dailyLimit, schedule: WARMING_SCHEDULE
+    });
+});
+
+// ─── Daily Warming Reset (runs every minute) ─────────────────────────────────
+setInterval(() => {
+    const today = new Date().toISOString().split('T')[0];
+    for (const d of devices.values()) {
+        if (d.warmingStatus === "warming" && d.lastDailyReset !== today) {
+            d.lastDailyReset = today;
+            d.messagesSentToday = 0;
+            // Advance warming day
+            const startDate = new Date(d.warmingStartDate);
+            const now = new Date();
+            d.warmingDay = Math.min(Math.ceil((now - startDate) / (1000 * 60 * 60 * 24)) + 1, d.warmingMaxDay);
+            d.dailyLimit = getWarmingLimit(d.warmingDay);
+            if (d.warmingDay >= d.warmingMaxDay) {
+                d.warmingStatus = "warmed";
+                d.dailyLimit = 9999; // No limit after warming
+            }
+            saveDeviceRegistry();
+            io.emit("device:warming_update", {
+                deviceId: d.id, warmingStatus: d.warmingStatus, warmingDay: d.warmingDay,
+                messagesSentToday: d.messagesSentToday, dailyLimit: d.dailyLimit
+            });
+            io.emit("devices:list", serializeDevices());
+        }
+    }
+}, 60000);
+
+// ─── Cart Recovery API ─────────────────────────────────────────────────────────
+const CARTS_PATH = path_1.default.join(DATA_DIR, "abandoned_carts.json");
+const CART_SETTINGS_PATH = path_1.default.join(DATA_DIR, "cart_settings.json");
+let abandonedCarts = [];
+let cartSettings = {
+    autoSendEnabled: false,
+    firstContactDelay: 60,
+    followUpEnabled: true,
+    followUpDelay: 1440,
+    maxFollowUps: 2,
+    recoveryMessageTemplate: "Hi {{name}}! 👋 You left some items in your cart:\n\n{{items}}\n\n💰 Total: {{total}} {{currency}}\n\n🛒 Complete your order: {{cartUrl}}\n\nNeed help? Just reply here!",
+    followUpTemplate: "Hi {{name}}, just a friendly reminder — your cart is still waiting! 🛍️\n\n{{items}}\n\nUse this link to complete your order: {{cartUrl}}",
+    deviceId: null
+};
+
+function loadCarts() {
+    if (fs_1.default.existsSync(CARTS_PATH)) {
+        try { abandonedCarts = JSON.parse(fs_1.default.readFileSync(CARTS_PATH, "utf8")); } catch (_) {}
+    }
+}
+function saveCarts() {
+    try { fs_1.default.writeFileSync(CARTS_PATH, JSON.stringify(abandonedCarts, null, 2)); } catch (_) {}
+}
+function loadCartSettings() {
+    if (fs_1.default.existsSync(CART_SETTINGS_PATH)) {
+        try { Object.assign(cartSettings, JSON.parse(fs_1.default.readFileSync(CART_SETTINGS_PATH, "utf8"))); } catch (_) {}
+    }
+}
+function saveCartSettings() {
+    try { fs_1.default.writeFileSync(CART_SETTINGS_PATH, JSON.stringify(cartSettings, null, 2)); } catch (_) {}
+}
+loadCarts();
+loadCartSettings();
+
+function formatCartMessage(template, cart) {
+    let msg = template;
+    msg = msg.replace(/\{\{name\}\}/g, cart.customerName || "");
+    msg = msg.replace(/\{\{total\}\}/g, String(cart.cartTotal || 0));
+    msg = msg.replace(/\{\{currency\}\}/g, cart.currency || "USD");
+    msg = msg.replace(/\{\{cartUrl\}\}/g, cart.cartUrl || "");
+    const itemsList = (cart.cartItems || []).map(i => `• ${i.name} x${i.qty} — ${i.price}`).join("\n");
+    msg = msg.replace(/\{\{items\}\}/g, itemsList);
+    return msg;
+}
+
+async function sendCartRecoveryMessage(cart) {
+    const client = cartSettings.deviceId ? devices.get(cartSettings.deviceId)?.client : get_activeClient();
+    if (!client) throw new Error("No WhatsApp client available");
+    const template = cart.followUpCount > 0 ? cartSettings.followUpTemplate : cartSettings.recoveryMessageTemplate;
+    const message = formatCartMessage(template, cart);
+    const phone = cart.customerPhone.replace(/[^0-9]/g, "");
+    const numberId = await client.getNumberId(phone);
+    if (!numberId) throw new Error("Number not on WhatsApp");
+    await client.sendMessage(numberId._serialized, message);
+    cart.status = "contacted";
+    cart.contactedAt = new Date().toISOString();
+    cart.followUpCount = (cart.followUpCount || 0) + 1;
+    cart.lastFollowUpAt = new Date().toISOString();
+    saveCarts();
+    io.emit("cart:updated", { id: cart.id, status: cart.status });
+    return true;
+}
+
+app.get("/api/carts", (_req, res) => {
+    res.json(abandonedCarts);
+});
+
+app.get("/api/carts/stats", (_req, res) => {
+    const total = abandonedCarts.length;
+    const pending = abandonedCarts.filter(c => c.status === "pending").length;
+    const contacted = abandonedCarts.filter(c => c.status === "contacted").length;
+    const recovered = abandonedCarts.filter(c => c.status === "recovered").length;
+    const expired = abandonedCarts.filter(c => c.status === "expired").length;
+    const conversionRate = total > 0 ? Math.round((recovered / total) * 100) : 0;
+    res.json({ total, pending, contacted, recovered, expired, conversionRate });
+});
+
+app.post("/api/carts/webhook", (req, res) => {
+    try {
+        const body = req.body;
+        const cart = {
+            id: `cart-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            customerName: body.customer_name || body.customerName || body.billing?.first_name || "Customer",
+            customerPhone: body.customer_phone || body.customerPhone || body.billing?.phone || "",
+            cartItems: (body.line_items || body.cartItems || body.items || []).map(i => ({
+                name: i.name || i.title || "Item",
+                qty: i.quantity || i.qty || 1,
+                price: i.price || i.total || 0,
+                imageUrl: i.image?.src || i.imageUrl || ""
+            })),
+            cartUrl: body.cart_url || body.cartUrl || body.order_status_url || "",
+            cartTotal: parseFloat(body.total || body.cartTotal || 0),
+            currency: body.currency || "USD",
+            status: "pending",
+            receivedAt: new Date().toISOString(),
+            source: "webhook",
+            followUpCount: 0
+        };
+        if (!cart.customerPhone) return res.status(400).json({ error: "No phone number provided" });
+        abandonedCarts.unshift(cart);
+        saveCarts();
+        io.emit("cart:new", cart);
+        res.json({ success: true, cartId: cart.id });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post("/api/carts/import", (req, res) => {
+    try {
+        const items = req.body.carts || req.body;
+        if (!Array.isArray(items)) return res.status(400).json({ error: "Expected array of carts" });
+        const imported = items.map(item => ({
+            id: `cart-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            customerName: item.customerName || item.name || "Customer",
+            customerPhone: item.customerPhone || item.phone || "",
+            cartItems: item.cartItems || [{ name: item.product || "Item", qty: 1, price: item.price || 0 }],
+            cartUrl: item.cartUrl || item.url || "",
+            cartTotal: parseFloat(item.cartTotal || item.total || 0),
+            currency: item.currency || "USD",
+            status: "pending",
+            receivedAt: new Date().toISOString(),
+            source: "csv",
+            followUpCount: 0
+        }));
+        abandonedCarts.unshift(...imported);
+        saveCarts();
+        res.json({ success: true, count: imported.length });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post("/api/carts/add", (req, res) => {
+    const cart = {
+        id: `cart-${Date.now()}`,
+        customerName: req.body.customerName || "Customer",
+        customerPhone: req.body.customerPhone || "",
+        cartItems: req.body.cartItems || [],
+        cartUrl: req.body.cartUrl || "",
+        cartTotal: parseFloat(req.body.cartTotal || 0),
+        currency: req.body.currency || "USD",
+        status: "pending",
+        receivedAt: new Date().toISOString(),
+        source: "manual",
+        followUpCount: 0
+    };
+    abandonedCarts.unshift(cart);
+    saveCarts();
+    io.emit("cart:new", cart);
+    res.json({ success: true, cart });
+});
+
+app.delete("/api/carts/:id", (req, res) => {
+    abandonedCarts = abandonedCarts.filter(c => c.id !== req.params.id);
+    saveCarts();
+    res.json({ success: true });
+});
+
+app.post("/api/carts/:id/send", async (req, res) => {
+    const cart = abandonedCarts.find(c => c.id === req.params.id);
+    if (!cart) return res.status(404).json({ error: "Cart not found" });
+    try {
+        await sendCartRecoveryMessage(cart);
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post("/api/carts/:id/recover", (req, res) => {
+    const cart = abandonedCarts.find(c => c.id === req.params.id);
+    if (!cart) return res.status(404).json({ error: "Cart not found" });
+    cart.status = "recovered";
+    cart.recoveredAt = new Date().toISOString();
+    saveCarts();
+    io.emit("cart:updated", { id: cart.id, status: "recovered" });
+    res.json({ success: true });
+});
+
+app.post("/api/carts/campaign", async (req, res) => {
+    const pending = abandonedCarts.filter(c => c.status === "pending");
+    if (pending.length === 0) return res.json({ success: true, sent: 0 });
+    let sent = 0;
+    for (const cart of pending) {
+        try {
+            await sendCartRecoveryMessage(cart);
+            sent++;
+            await new Promise(r => setTimeout(r, 2000 + Math.random() * 3000));
+        } catch (err) {
+            console.warn(`[Cart Recovery] Failed for ${cart.customerPhone}:`, err.message);
+        }
+    }
+    res.json({ success: true, sent, total: pending.length });
+});
+
+app.get("/api/carts/settings", (_req, res) => {
+    res.json(cartSettings);
+});
+
+app.post("/api/carts/settings", (req, res) => {
+    Object.assign(cartSettings, req.body);
+    saveCartSettings();
+    res.json({ success: true });
+});
+
+// ─── Cart Recovery Auto-Send Scheduler (runs every 5 min) ─────────────────────
+setInterval(async () => {
+    if (!cartSettings.autoSendEnabled || !get_isReady()) return;
+    const now = Date.now();
+    for (const cart of abandonedCarts) {
+        if (cart.status !== "pending" && !(cart.status === "contacted" && cartSettings.followUpEnabled)) continue;
+        const receivedAt = new Date(cart.receivedAt).getTime();
+        const lastAction = cart.lastFollowUpAt ? new Date(cart.lastFollowUpAt).getTime() : receivedAt;
+
+        if (cart.status === "pending") {
+            const threshold = receivedAt + cartSettings.firstContactDelay * 60000;
+            if (now >= threshold) {
+                try { await sendCartRecoveryMessage(cart); } catch (_) {}
+                await new Promise(r => setTimeout(r, 2000));
+            }
+        } else if (cart.status === "contacted" && cartSettings.followUpEnabled) {
+            if ((cart.followUpCount || 0) < cartSettings.maxFollowUps) {
+                const threshold = lastAction + cartSettings.followUpDelay * 60000;
+                if (now >= threshold) {
+                    try { await sendCartRecoveryMessage(cart); } catch (_) {}
+                    await new Promise(r => setTimeout(r, 2000));
+                }
+            }
+        }
+    }
+}, 300000);
+
+// ─── AI Message Generator API ─────────────────────────────────────────────────
+app.post("/api/ai/generate-message", async (req, res) => {
+    try {
+        if (!integrationsSettings.ai || !integrationsSettings.ai.enabled || !integrationsSettings.ai.apiKey) {
+            return res.status(400).json({ error: "AI provider not configured. Go to Settings > Integrations to set up an AI provider." });
+        }
+        const { type, context, cartData } = req.body;
+        const tone = context?.tone || "friendly";
+        const language = context?.language || "en";
+        const productName = context?.productName || "";
+        const customInstructions = context?.customInstructions || "";
+
+        const langLabel = language === "fr" ? "French" : language === "ar" ? "Arabic/Darija" : "English";
+        let typeLabel = type || "promotional";
+        let contextDetails = "";
+        if (cartData) {
+            contextDetails = `\nCart data: Customer "${cartData.customerName}", Items: ${cartData.cartItems || "various items"}, Total: ${cartData.cartTotal} ${cartData.currency || "USD"}, URL: ${cartData.cartUrl || ""}`;
+        }
+        if (productName) contextDetails += `\nProduct/Service: ${productName}`;
+
+        const systemPrompt = `You are a professional WhatsApp marketing copywriter. Generate a concise, engaging message for WhatsApp (max 500 characters). 
+Tone: ${tone}. Language: ${langLabel}. Type: ${typeLabel}.
+Use appropriate emojis. Support template variables: {{name}}, {{items}}, {{total}}, {{currency}}, {{cartUrl}}, {{phone}}.
+${customInstructions ? `Special instructions: ${customInstructions}` : ""}
+${contextDetails}
+
+IMPORTANT: Return ONLY valid JSON with this exact structure:
+{"message": "your main message here", "alternatives": ["alternative 1", "alternative 2"]}
+Do NOT wrap in markdown code blocks. Return raw JSON only.`;
+
+        const userMsg = `Generate a ${typeLabel} WhatsApp message in ${langLabel} with a ${tone} tone.`;
+        const aiResponse = await callAiChatbot(userMsg, systemPrompt);
+
+        if (!aiResponse) {
+            return res.status(500).json({ error: "AI provider returned empty response" });
+        }
+
+        // Try to parse as JSON
+        let parsed;
+        try {
+            // Strip markdown code blocks if present
+            let cleaned = aiResponse.trim();
+            if (cleaned.startsWith("```")) {
+                cleaned = cleaned.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "");
+            }
+            parsed = JSON.parse(cleaned);
+        } catch (_) {
+            // Fallback: treat entire response as the message
+            parsed = { message: aiResponse.trim(), alternatives: [] };
+        }
+
+        res.json({
+            message: parsed.message || aiResponse.trim(),
+            alternatives: Array.isArray(parsed.alternatives) ? parsed.alternatives.slice(0, 2) : []
+        });
+    } catch (err) {
+        console.error("[AI Generator] Error:", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
 // ─── Logout API ───────────────────────────────────────────────────────────────
 app.post("/api/logout", async (_req, res) => {
     console.log("[API] User requested logout...");
@@ -1603,16 +2340,26 @@ app.get("/api/whatsapp/check-number", async (req, res) => {
 
 // ─── Bulk send ────────────────────────────────────────────────────────────────
 app.post("/api/send-bulk", async (req, res) => {
-    const { recipients = [], message, minDelay = 1000, maxDelay = 3000, attachments = [] } = req.body;
-    if (!isReady || !activeClient) {
+    const { recipients = [], message, minDelay = 1000, maxDelay = 3000, attachments = [], deviceIds = [] } = req.body;
+    
+    // Determine target devices
+    let targetDeviceSessions = [];
+    if (Array.isArray(deviceIds) && deviceIds.length > 0) {
+        targetDeviceSessions = deviceIds.map(id => devices.get(id)).filter(d => d && d.isReady && d.client);
+    }
+    if (targetDeviceSessions.length === 0) {
+        targetDeviceSessions = getReadyDevices();
+    }
+
+    if (targetDeviceSessions.length === 0) {
         // @ts-ignore
-        return res.status(503).json({ error: "WhatsApp client not ready" });
+        return res.status(503).json({ error: "No WhatsApp devices connected and ready" });
     }
     if (isBulkRunning) {
         // @ts-ignore
         return res.status(400).json({ error: "A campaign is already running" });
     }
-    const client = activeClient;
+
     isBulkRunning = true;
     currentBulkResults = [];
     // Process in background
@@ -1621,36 +2368,69 @@ app.post("/api/send-bulk", async (req, res) => {
         let failCount = 0;
         const total = recipients.length;
         const startTime = Date.now();
+        let deviceIndex = 0;
+
         for (const recipient of recipients) {
             if (!isBulkRunning) {
                 console.log("Campaign stopped by user");
                 break;
             }
+
+            // Refresh available ready devices in case of disconnects mid-campaign
+            const availableDevices = targetDeviceSessions.filter(d => d && d.isReady && d.client);
+            if (availableDevices.length === 0) {
+                console.error("[BulkSender] All devices disconnected during campaign!");
+                break;
+            }
+
+            // Find next eligible device (considering warming limits)
+            let chosenDev = null;
+            let attempts = 0;
+            while (attempts < availableDevices.length) {
+                const candidate = availableDevices[deviceIndex % availableDevices.length];
+                deviceIndex++;
+                attempts++;
+
+                if (candidate.warmingStatus === "warming" && candidate.messagesSentToday >= candidate.dailyLimit) {
+                    console.warn(`[Warming] Device ${candidate.label} (${candidate.id}) reached daily limit (${candidate.dailyLimit}). Skipping.`);
+                    continue;
+                }
+                chosenDev = candidate;
+                break;
+            }
+
+            if (!chosenDev) {
+                console.warn("[BulkSender] All target devices have reached their daily warming limits.");
+                // Fallback to first available device anyway or stop
+                chosenDev = availableDevices[0];
+            }
+
+            const client = chosenDev.client;
             const number = recipient.number || "";
             const recipientName = recipient.name || (recipient.variables && recipient.variables.name) || "";
             try {
-                console.log(`Resolving contact number on WhatsApp: ${number}`);
+                console.log(`[Device ${chosenDev.label}] Resolving contact number on WhatsApp: ${number}`);
                 const resolved = await resolveWhatsAppNumber(number, client);
                 if (!resolved || !resolved.jid) {
                     console.warn(`Number ${number} could not be resolved on WhatsApp`);
                     throw new Error("Number not registered on WhatsApp");
                 }
                 const formattedNumber = resolved.jid;
-                console.log(`Formatted number: ${formattedNumber}`);
                 let personalizedMessage = message ? message.replace(/{{name}}/g, recipientName) : "";
                 if (personalizedMessage && recipient.variables && typeof recipient.variables === "object") {
                     for (const [k, v] of Object.entries(recipient.variables)) {
                         personalizedMessage = personalizedMessage.replace(new RegExp(`{{${k}}}`, 'g'), v || "");
                     }
                 }
-                if (!isReady)
-                    throw new Error("WhatsApp disconnected during campaign");
+                if (!chosenDev.isReady)
+                    throw new Error(`Device ${chosenDev.label} disconnected during campaign`);
+                
                 await ensureWWebJSInjected(client);
                 if (attachments.length > 0) {
                     const { mimetype, data, filename } = attachments[0];
                     const media = new whatsapp_web_js_1.MessageMedia(mimetype, data, filename);
                     const sendOptions = personalizedMessage && personalizedMessage.trim() ? { caption: personalizedMessage } : {};
-                    console.log(`Sending media${sendOptions.caption ? ' with caption' : ''} to ${formattedNumber}...`);
+                    console.log(`[Device ${chosenDev.label}] Sending media to ${formattedNumber}...`);
                     await client.sendMessage(formattedNumber, media, sendOptions);
                     for (let i = 1; i < attachments.length; i++) {
                         const { mimetype: mt, data: d, filename: fn } = attachments[i];
@@ -1658,19 +2438,34 @@ app.post("/api/send-bulk", async (req, res) => {
                     }
                 }
                 else if (personalizedMessage && personalizedMessage.trim()) {
-                    console.log(`Sending message to ${formattedNumber}...`);
+                    console.log(`[Device ${chosenDev.label}] Sending message to ${formattedNumber}...`);
                     await client.sendMessage(formattedNumber, personalizedMessage);
-                    console.log(`Message sent to ${formattedNumber}`);
                 }
+                
                 sentCount++;
+                chosenDev.messagesSentToday++;
+                saveDeviceRegistry();
+                if (chosenDev.warmingStatus === "warming") {
+                    io.emit("device:warming_update", {
+                        deviceId: chosenDev.id,
+                        warmingStatus: chosenDev.warmingStatus,
+                        warmingDay: chosenDev.warmingDay,
+                        messagesSentToday: chosenDev.messagesSentToday,
+                        dailyLimit: chosenDev.dailyLimit
+                    });
+                }
+
                 const resultItem = {
                     number,
                     name: recipientName,
                     status: "success",
+                    deviceId: chosenDev.id,
+                    deviceLabel: chosenDev.label,
+                    fromNumber: chosenDev.phoneNumber,
                     timestamp: new Date().toISOString()
                 };
                 currentBulkResults.push(resultItem);
-                console.log(`Sent to ${number} (${sentCount}/${total})`);
+                console.log(`[Device ${chosenDev.label}] Sent to ${number} (${sentCount}/${total})`);
                 const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
                 const nextSendAt = Date.now() + delay;
                 const progressPayload = {
@@ -1681,6 +2476,7 @@ app.post("/api/send-bulk", async (req, res) => {
                     lastNumber: number,
                     lastResult: resultItem,
                     status: "Sending...",
+                    activeDevice: chosenDev.label,
                     nextSendAt: (sentCount + failCount) < total && isBulkRunning ? nextSendAt : null,
                     results: currentBulkResults
                 };
@@ -1691,7 +2487,7 @@ app.post("/api/send-bulk", async (req, res) => {
                 }
             }
             catch (e) {
-                console.error(`Failed to send to ${recipient.number}`, e);
+                console.error(`Failed to send to ${recipient.number} from device ${chosenDev.label}`, e);
                 failCount++;
                 let errMsg = e.message || "Failed to send";
                 if (errMsg.includes("No LID for user") || errMsg.includes("wid error") || errMsg.includes("not registered")) {
@@ -1702,6 +2498,8 @@ app.post("/api/send-bulk", async (req, res) => {
                     name: recipientName,
                     status: "error",
                     error: errMsg,
+                    deviceId: chosenDev.id,
+                    deviceLabel: chosenDev.label,
                     timestamp: new Date().toISOString()
                 };
                 currentBulkResults.push(failItem);
@@ -1713,6 +2511,7 @@ app.post("/api/send-bulk", async (req, res) => {
                     lastNumber: recipient.number,
                     lastResult: failItem,
                     status: "Sending...",
+                    activeDevice: chosenDev.label,
                     nextSendAt: (sentCount + failCount) < total && isBulkRunning ? Date.now() + 500 : null,
                     results: currentBulkResults
                 };
@@ -3162,8 +3961,10 @@ app.get("/api/status", async (_req, res) => {
     res.json({
         isReady,
         isAuthenticated,
+        authenticated: isAuthenticated,
         hasQr: !!qrCodeData,
-        qr: qrCodeData || ""
+        qr: qrCodeData || null,
+        devices: serializeDevices()
     });
 });
 

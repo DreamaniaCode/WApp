@@ -8,6 +8,7 @@ import {
 } from "lucide-react";
 import Papa from "papaparse";
 import { MessagePreview } from "./MessagePreview";
+import { AiMessageGenerator } from "./AiMessageGenerator";
 import { formatPhoneNumber, isLandlineNumber } from "@/lib/numberFormatter";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { API_URL } from "@/lib/config";
@@ -69,6 +70,42 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
 
     const [showContactsModal, setShowContactsModal] = useState(false);
     const [savedContacts, setSavedContacts] = useState<{ name: string; number: string }[]>([]);
+
+    // Multi-device sender selection & AI Generator modal
+    const [availableDevices, setAvailableDevices] = useState<any[]>([]);
+    const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
+    const [showAiModal, setShowAiModal] = useState(false);
+
+    useEffect(() => {
+        const fetchDevs = () => {
+            fetch(`${API_URL}/api/devices`)
+                .then(r => r.json())
+                .then(data => {
+                    if (Array.isArray(data)) {
+                        setAvailableDevices(data);
+                        setSelectedDeviceIds(prev => {
+                            if (prev.length === 0) {
+                                return data.filter((d: any) => d.isReady).map((d: any) => d.id);
+                            }
+                            return prev;
+                        });
+                    }
+                })
+                .catch(() => {});
+        };
+        fetchDevs();
+        if (socket) {
+            const onDevs = (list: any[]) => {
+                if (Array.isArray(list)) {
+                    setAvailableDevices(list);
+                }
+            };
+            socket.on("devices:list", onDevs);
+            return () => {
+                socket.off("devices:list", onDevs);
+            };
+        }
+    }, [socket]);
 
     // Check for initial recipients passed via props or localStorage
     useEffect(() => {
@@ -523,7 +560,8 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
                     message,
                     minDelay,
                     maxDelay,
-                    attachments
+                    attachments,
+                    deviceIds: selectedDeviceIds.length > 0 ? selectedDeviceIds : undefined
                 }),
             });
 
@@ -751,9 +789,19 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
 
                         <div>
                             <div className="flex justify-between items-center mb-1">
-                                <label className="block text-sm font-semibold text-gray-800">
-                                    {t("messageContent")}
-                                </label>
+                                <div className="flex items-center gap-2">
+                                    <label className="block text-sm font-semibold text-gray-800">
+                                        {t("messageContent")}
+                                    </label>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowAiModal(true)}
+                                        className="text-xs bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white font-medium px-2.5 py-1 rounded-lg flex items-center gap-1.5 shadow-xs transition-all cursor-pointer"
+                                    >
+                                        <Sparkles className="w-3.5 h-3.5 text-yellow-300" />
+                                        <span>AI Generate</span>
+                                    </button>
+                                </div>
                                 {availableVars.length > 0 && (
                                     <div className="flex gap-1 flex-wrap">
                                         {availableVars.map(v => (
@@ -802,6 +850,72 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
                                     <Upload className="w-3.5 h-3.5" /> Attach Image / File
                                 </button>
                             </div>
+                        </div>
+
+                        {/* Multi-Device Sender Selection */}
+                        <div className="bg-gray-50/80 border border-gray-200 rounded-xl p-3 space-y-2">
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-1.5">
+                                    <Smartphone className="w-4 h-4 text-blue-600" />
+                                    <span className="text-xs font-semibold text-gray-800">Sender Number(s)</span>
+                                </div>
+                                <span className="text-[11px] text-gray-500 font-medium">
+                                    {selectedDeviceIds.length} of {availableDevices.filter(d => d.isReady).length} active numbers selected
+                                </span>
+                            </div>
+
+                            {availableDevices.length === 0 ? (
+                                <p className="text-xs text-amber-600 bg-amber-50 p-2 rounded-lg border border-amber-200">
+                                    No WhatsApp numbers connected. Go to the <strong>Devices</strong> tab to connect numbers.
+                                </p>
+                            ) : (
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                                    {availableDevices.map((dev) => {
+                                        const isSelected = selectedDeviceIds.includes(dev.id);
+                                        const isReady = dev.isReady;
+                                        return (
+                                            <label
+                                                key={dev.id}
+                                                className={`flex items-center gap-2 p-2 rounded-lg border text-xs cursor-pointer transition-all ${
+                                                    !isReady
+                                                        ? "opacity-50 bg-gray-100 border-gray-200 cursor-not-allowed"
+                                                        : isSelected
+                                                        ? "bg-blue-50/80 border-blue-400 text-blue-900 shadow-xs"
+                                                        : "bg-white border-gray-200 text-gray-700 hover:border-gray-300"
+                                                }`}
+                                            >
+                                                <input
+                                                    type="checkbox"
+                                                    disabled={!isReady}
+                                                    checked={isSelected}
+                                                    onChange={(e) => {
+                                                        if (e.target.checked) {
+                                                            setSelectedDeviceIds(prev => [...prev, dev.id]);
+                                                        } else {
+                                                            setSelectedDeviceIds(prev => prev.filter(id => id !== dev.id));
+                                                        }
+                                                    }}
+                                                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                                />
+                                                <div className="min-w-0 flex-1">
+                                                    <div className="flex items-center gap-1 font-semibold truncate">
+                                                        <span>{dev.label}</span>
+                                                        {dev.isDefault && <span className="text-[9px] bg-amber-100 text-amber-800 px-1 rounded">Primary</span>}
+                                                    </div>
+                                                    <div className="text-[10px] text-gray-500 truncate">
+                                                        {dev.phoneNumber ? `+${dev.phoneNumber}` : (isReady ? "Ready" : "Disconnected")}
+                                                        {dev.warmingStatus === "warming" && (
+                                                            <span className="ml-1 text-amber-600 font-medium">
+                                                                (Warm D{dev.warmingDay}: {dev.messagesSentToday}/{dev.dailyLimit})
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </label>
+                                        );
+                                    })}
+                                </div>
+                            )}
                         </div>
 
                         <div className="pt-2">
@@ -1167,6 +1281,19 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
                         </div>
                     </div>
                 </div>
+            )}
+
+            {/* AI Message Generator Modal */}
+            {showAiModal && (
+                <AiMessageGenerator
+                    isOpen={showAiModal}
+                    onClose={() => setShowAiModal(false)}
+                    onSelect={(genMsg) => {
+                        setMessage(genMsg);
+                        setShowAiModal(false);
+                    }}
+                    defaultType="promotional"
+                />
             )}
         </div>
     );
