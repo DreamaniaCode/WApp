@@ -98,7 +98,7 @@ const COUNTRY_PRESETS = [
 
 const MODEL_PRESETS: Record<string, string[]> = {
     openai: ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"],
-    gemini: ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-flash"],
+    gemini: ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.7-flash"],
     claude: ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229"],
     deepseek: ["deepseek-chat", "deepseek-reasoner"],
     groq: ["llama-3.3-70b-versatile", "mixtral-8x7b-32768", "llama-3.1-8b-instant"],
@@ -393,7 +393,7 @@ export function ApiIntegrations() {
                                         className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
                                     >
                                         <option value="openai">OpenAI (ChatGPT - Official API)</option>
-                                        <option value="gemini">Google Gemini (Gemini 1.5 Flash / Pro)</option>
+                                        <option value="gemini">Google Gemini (Gemini 3.6 Flash / 2.5 Pro)</option>
                                         <option value="claude">Anthropic Claude (Claude 3.5 Sonnet / Haiku)</option>
                                         <option value="deepseek">DeepSeek (DeepSeek V3 / R1 Reasoner)</option>
                                         <option value="groq">Groq (Ultra Fast Llama 3.3 / Mixtral)</option>
@@ -437,7 +437,7 @@ export function ApiIntegrations() {
                                     </div>
                                     <input
                                         type="text"
-                                        placeholder="e.g. gpt-4o-mini, gemini-1.5-flash..."
+                                        placeholder="e.g. gpt-4o-mini, gemini-3.6-flash..."
                                         value={config.ai.model}
                                         onChange={(e) => setConfig({ ...config, ai: { ...config.ai, model: e.target.value } })}
                                         className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-mono focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"

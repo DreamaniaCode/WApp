@@ -18,6 +18,20 @@ function walk(dir, callback) {
 
 console.log('Fixing paths in out directory...');
 
+function safeWriteFileSync(targetPath, data, retries = 5) {
+    for (let i = 0; i < retries; i++) {
+        try {
+            fs.writeFileSync(targetPath, data, 'utf8');
+            return;
+        } catch (e) {
+            if (i === retries - 1) throw e;
+            try {
+                Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200 * (i + 1));
+            } catch (_) {}
+        }
+    }
+}
+
 walk(outDir, (filePath) => {
     // ONLY fix HTML attribute paths (href/src/srcset) in .html files.
     // NEVER modify compiled JavaScript chunks or runtime files as that corrupts Turbopack/Webpack module resolution.
@@ -33,7 +47,7 @@ walk(outDir, (filePath) => {
         content = content.replace(/(href|src|srcset)=(["'])\/(?!_next)/g, `$1=$2${prefix}`);
 
         if (content !== originalContent) {
-            fs.writeFileSync(filePath, content, 'utf8');
+            safeWriteFileSync(filePath, content);
             console.log(`Fixed HTML (${depth} levels deep): ${path.relative(outDir, filePath)}`);
         }
     }

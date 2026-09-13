@@ -126,6 +126,16 @@ function loadIntegrationsSettings() {
                 webhooks: { ...DEFAULT_INTEGRATIONS.webhooks, ...(raw.webhooks || {}) },
                 phone: { ...DEFAULT_INTEGRATIONS.phone, ...(raw.phone || {}) }
             };
+
+            // Auto-migrate legacy/deprecated Gemini models (1.5, 2.0, etc.) to gemini-3.6-flash
+            if (integrationsSettings.ai && integrationsSettings.ai.provider === "gemini") {
+                const curModel = (integrationsSettings.ai.model || "").toLowerCase();
+                if (!curModel || curModel.includes("1.5") || curModel.includes("2.0") || curModel === "gemini-pro" || curModel === "gemini-flash") {
+                    console.log(`[Integrations] Auto-migrated deprecated Gemini model "${integrationsSettings.ai.model}" -> "gemini-3.6-flash"`);
+                    integrationsSettings.ai.model = "gemini-3.6-flash";
+                    try { fs_1.default.writeFileSync(INTEGRATIONS_PATH, JSON.stringify(integrationsSettings, null, 2)); } catch (_) {}
+                }
+            }
         } else {
             fs_1.default.writeFileSync(INTEGRATIONS_PATH, JSON.stringify(DEFAULT_INTEGRATIONS, null, 2));
         }
@@ -286,7 +296,8 @@ function getPhoneType(phone, defaultCountry = "212") {
  * Universal AI Caller supporting OpenAI, Google Gemini, Anthropic Claude, DeepSeek, Groq, Ollama, and Custom LLM.
  */
 async function callAiChatbot(userMessage, customConfig = {}) {
-    const aiConfig = { ...integrationsSettings.ai, ...customConfig };
+    const override = typeof customConfig === "string" ? { systemPrompt: customConfig } : (customConfig || {});
+    const aiConfig = { ...integrationsSettings.ai, ...override };
     const { provider, apiKey, model, endpointUrl, systemPrompt, useRagContext, temperature, maxTokens } = aiConfig;
 
     if (!apiKey && provider !== 'ollama') {
@@ -324,26 +335,52 @@ async function callAiChatbot(userMessage, customConfig = {}) {
     try {
         // Google Gemini API
         if (provider === "gemini") {
-            const geminiModel = model || "gemini-1.5-flash";
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${apiKey}`;
-            const res = await fetch(url, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    system_instruction: { parts: [{ text: fullSystemPrompt }] },
-                    contents: [{ parts: [{ text: userMessage }] }],
-                    generationConfig: {
-                        temperature: Number(temperature) || 0.7,
-                        maxOutputTokens: Number(maxTokens) || 350
+            let geminiModel = (model || "").trim();
+            // Automatically upgrade deprecated models (1.5, 2.0, pro/flash legacy) to gemini-3.6-flash
+            if (!geminiModel || geminiModel.includes("1.5") || geminiModel.includes("2.0") || geminiModel === "gemini-pro" || geminiModel === "gemini-flash") {
+                console.log(`[AI Chatbot] Using modern Gemini model: gemini-3.6-flash (was: ${geminiModel || 'default'})`);
+                geminiModel = "gemini-3.6-flash";
+            }
+            // Strip any leading "models/" if user typed it
+            geminiModel = geminiModel.replace(/^models\//, "");
+
+            // Candidate models to try in order
+            const candidateModels = [geminiModel];
+            if (geminiModel !== "gemini-2.5-flash" && !candidateModels.includes("gemini-2.5-flash")) {
+                candidateModels.push("gemini-2.5-flash");
+            }
+
+            let lastError = null;
+            for (const targetModel of candidateModels) {
+                try {
+                    const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
+                    const res = await fetch(url, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            system_instruction: { parts: [{ text: fullSystemPrompt }] },
+                            contents: [{ parts: [{ text: userMessage }] }],
+                            generationConfig: {
+                                temperature: Number(temperature) || 0.7,
+                                maxOutputTokens: Number(maxTokens) || 350
+                            }
+                        }),
+                        signal: controller.signal
+                    });
+                    const data = await res.json();
+                    if (res.ok) {
+                        clearTimeout(timeout);
+                        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                        return text ? text.trim() : null;
                     }
-                }),
-                signal: controller.signal
-            });
-            const data = await res.json();
+                    lastError = new Error(data.error?.message || `Gemini API error ${res.status}`);
+                    console.warn(`[AI Chatbot] Gemini attempt with "${targetModel}" failed:`, lastError.message);
+                } catch (err) {
+                    lastError = err;
+                }
+            }
             clearTimeout(timeout);
-            if (!res.ok) throw new Error(data.error?.message || `Gemini API error ${res.status}`);
-            const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-            return text ? text.trim() : null;
+            throw lastError || new Error("Gemini API call failed");
         }
 
         // Anthropic Claude API
