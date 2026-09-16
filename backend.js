@@ -1634,19 +1634,6 @@ function registerDeviceEvents(deviceId, client) {
     });
     // Message handling — runs on ALL devices but auto-reply uses default device only
     client.on("message", async (msg) => {
-        try {
-            const contact = await msg.getContact();
-            io.emit("incoming_message", {
-                id: msg.id._serialized,
-                from: msg.from,
-                number: contact.number,
-                name: contact.pushname || contact.name || "Unknown",
-                body: msg.body,
-                timestamp: msg.timestamp * 1000,
-                isGroup: msg.from.includes("@g.us"),
-                deviceId
-            });
-        } catch (e) {
         let contactNumber = msg.from.split("@")[0];
         let contactName = contactNumber;
         try {

@@ -1,0 +1,28 @@
+[
+  {
+    "id": "wf-1",
+    "name": "Alerte Demande d'Agent",
+    "trigger": "agent_requested",
+    "active": true,
+    "action": "alert_and_switch_manual",
+    "description": "Bascule la conversation en mode MANUEL et notifie l'agent immédiatement"
+  },
+  {
+    "id": "wf-2",
+    "name": "Accusé de Réception Automatique",
+    "trigger": "first_incoming",
+    "active": false,
+    "action": "send_welcome_msg",
+    "delayMinutes": 0,
+    "description": "Envoie un message de bienvenue personnalisé lors du premier message d'un client"
+  },
+  {
+    "id": "wf-3",
+    "name": "Relance Client Inactif (24h)",
+    "trigger": "no_reply_24h",
+    "active": false,
+    "action": "send_followup",
+    "delayMinutes": 1440,
+    "description": "Relance un prospect qui n'a pas répondu depuis 24 heures"
+  }
+]
