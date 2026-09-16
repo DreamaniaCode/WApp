@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import {
     Send, Upload, Clock, AlertCircle, FileText, X, FileSpreadsheet, Plus, Download,
     CheckCircle2, XCircle, Square, RotateCw, Filter, Search, Users, Loader2, CheckSquare, Sparkles,
-    Smartphone, CheckCheck
+    Smartphone, CheckCheck, Bookmark, BookmarkPlus, ChevronDown
 } from "lucide-react";
 import Papa from "papaparse";
 import { MessagePreview } from "./MessagePreview";
@@ -12,6 +12,7 @@ import { AiMessageGenerator } from "./AiMessageGenerator";
 import { formatPhoneNumber, isLandlineNumber } from "@/lib/numberFormatter";
 import { useLanguage } from "@/contexts/LanguageContext";
 import { API_URL } from "@/lib/config";
+import { playSuccessSound, playErrorSound } from "@/utils/soundEffects";
 
 interface Attachment {
     filename: string;
@@ -76,6 +77,67 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
     const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
     const [showAiModal, setShowAiModal] = useState(false);
 
+    // Templates state & management
+    const [templatesList, setTemplatesList] = useState<{ id: string; title?: string; name?: string; content: string }[]>([]);
+    const [showTemplatesDropdown, setShowTemplatesDropdown] = useState(false);
+    const [showSaveTemplateModal, setShowSaveTemplateModal] = useState(false);
+    const [templateTitleInput, setTemplateTitleInput] = useState("");
+    const [isSavingTemplate, setIsSavingTemplate] = useState(false);
+    const [templateSuccessMsg, setTemplateSuccessMsg] = useState("");
+
+    const loadTemplatesList = async () => {
+        try {
+            const res = await fetch(`${API_URL}/api/templates`);
+            if (res.ok) {
+                const data = await res.json();
+                const list = Array.isArray(data) ? data : (data.templates || []);
+                setTemplatesList(list);
+            }
+        } catch (e) {
+            console.warn("Failed to load templates:", e);
+        }
+    };
+
+    useEffect(() => {
+        loadTemplatesList();
+    }, []);
+
+    const handleSelectTemplate = (tpl: { title?: string; name?: string; content: string }) => {
+        setMessage(tpl.content);
+        setShowTemplatesDropdown(false);
+    };
+
+    const handleSaveAsTemplate = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!templateTitleInput.trim() || !message.trim()) return;
+        setIsSavingTemplate(true);
+        try {
+            const res = await fetch(`${API_URL}/api/templates`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    title: templateTitleInput.trim(),
+                    name: templateTitleInput.trim(),
+                    content: message.trim()
+                })
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                setTemplateSuccessMsg(`Template "${templateTitleInput.trim()}" saved!`);
+                setShowSaveTemplateModal(false);
+                setTemplateTitleInput("");
+                await loadTemplatesList();
+                setTimeout(() => setTemplateSuccessMsg(""), 3500);
+            } else {
+                alert(data.error || "Failed to save template");
+            }
+        } catch (err: any) {
+            alert("Error saving template: " + err.message);
+        } finally {
+            setIsSavingTemplate(false);
+        }
+    };
+
     useEffect(() => {
         const fetchDevs = () => {
             fetch(`${API_URL}/api/devices`)
@@ -134,12 +196,56 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
                         localStorage.removeItem("bulk_imported_recipients");
                     }
                 } catch (_) {}
+            } else {
+                // Restore persistent draft
+                const savedDraft = localStorage.getItem("wapp_bulk_draft");
+                if (savedDraft) {
+                    try {
+                        const parsed = JSON.parse(savedDraft);
+                        if (parsed.recipients && Array.isArray(parsed.recipients) && parsed.recipients.length > 0) {
+                            setRecipients(parsed.recipients);
+                        }
+                        if (parsed.textInput) {
+                            setTextInput(parsed.textInput);
+                        }
+                        if (parsed.message) {
+                            setMessage(parsed.message);
+                        }
+                        if (parsed.selectedDeviceIds && Array.isArray(parsed.selectedDeviceIds) && parsed.selectedDeviceIds.length > 0) {
+                            setSelectedDeviceIds(parsed.selectedDeviceIds);
+                        }
+                    } catch (_) {}
+                }
             }
         }
         if (initialMessage) {
             setMessage(initialMessage);
         }
     }, [initialRecipients, initialMessage]);
+
+    // Auto-save bulk composition draft
+    useEffect(() => {
+        if (recipients.length > 0 || message.trim().length > 0 || textInput.trim().length > 0) {
+            try {
+                localStorage.setItem("wapp_bulk_draft", JSON.stringify({
+                    recipients,
+                    textInput,
+                    message,
+                    selectedDeviceIds
+                }));
+            } catch (_) {}
+        }
+    }, [recipients, textInput, message, selectedDeviceIds]);
+
+    const clearDraftSession = () => {
+        setRecipients([]);
+        setTextInput("");
+        setMessage("");
+        setAttachments([]);
+        localStorage.removeItem("wapp_bulk_draft");
+        if (onClearInitial) onClearInitial();
+        setStatus({ type: "success", msg: "Brouillon de campagne effacé." });
+    };
 
     const openGroupModal = async () => {
         setShowGroupModal(true);
@@ -252,6 +358,7 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
 
             if (data.status === "Completed" || (data.current >= data.total && data.total > 0)) {
                 setIsLoading(false);
+                playSuccessSound();
                 setStatus({
                     type: "success",
                     msg: `Campaign finished: ${data.success || data.sentCount || 0} sent successfully, ${data.failed || data.failCount || 0} failed.`
@@ -261,6 +368,7 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
 
         const handleComplete = (data: any) => {
             setIsLoading(false);
+            playSuccessSound();
             if (data.results && Array.isArray(data.results)) {
                 setResultsList(data.results);
             }
@@ -285,6 +393,7 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
         try {
             await fetch(`${API_URL}/api/stop-bulk`, { method: "POST" });
             setIsLoading(false);
+            playErrorSound();
             setStatus({ type: "error", msg: "Campaign stopping requested..." });
         } catch {
             setStatus({ type: "error", msg: "Failed to request stopping campaign." });
@@ -695,10 +804,27 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
                     <div className="space-y-5">
                         <div>
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-2 gap-2">
-                                <label className="block text-sm font-semibold text-gray-800">
-                                    {t("recipients")} ({recipients.length})
-                                </label>
+                                <div className="flex items-center gap-2">
+                                    <label className="block text-sm font-semibold text-gray-800">
+                                        {t("recipients")} ({recipients.length})
+                                    </label>
+                                    {(recipients.length > 0 || message.length > 0) && (
+                                        <span className="text-[10px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded-full font-medium border border-blue-100">
+                                            💾 Brouillon sauvegardé
+                                        </span>
+                                    )}
+                                </div>
                                 <div className="flex items-center gap-1.5 flex-wrap">
+                                    {(recipients.length > 0 || message.length > 0 || textInput.length > 0) && (
+                                        <button
+                                            type="button"
+                                            onClick={clearDraftSession}
+                                            className="text-xs flex items-center gap-1 text-red-600 hover:text-red-800 font-semibold bg-red-50 hover:bg-red-100 px-2 py-1.5 rounded-lg border border-red-200 transition"
+                                            title="Réinitialiser le brouillon de campagne"
+                                        >
+                                            <X className="w-3 h-3" /> Effacer
+                                        </button>
+                                    )}
                                     <button
                                         type="button"
                                         onClick={openGroupModal}
@@ -788,8 +914,8 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
                         </div>
 
                         <div>
-                            <div className="flex justify-between items-center mb-1">
-                                <div className="flex items-center gap-2">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-1.5 gap-2">
+                                <div className="flex items-center gap-2 flex-wrap relative">
                                     <label className="block text-sm font-semibold text-gray-800">
                                         {t("messageContent")}
                                     </label>
@@ -801,14 +927,84 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
                                         <Sparkles className="w-3.5 h-3.5 text-yellow-300" />
                                         <span>AI Generate</span>
                                     </button>
+
+                                    {/* Templates Dropdown */}
+                                    <div className="relative">
+                                        <button
+                                            type="button"
+                                            onClick={() => {
+                                                setShowTemplatesDropdown(!showTemplatesDropdown);
+                                                if (!showTemplatesDropdown) loadTemplatesList();
+                                            }}
+                                            className="text-xs bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium px-2.5 py-1 rounded-lg flex items-center gap-1 border border-gray-300 transition cursor-pointer"
+                                            title="Choose a saved message template"
+                                        >
+                                            <Bookmark className="w-3.5 h-3.5 text-blue-600" />
+                                            <span>Templates</span>
+                                            <ChevronDown className="w-3 h-3 text-gray-500" />
+                                        </button>
+
+                                        {showTemplatesDropdown && (
+                                            <div className="absolute left-0 top-full mt-1.5 w-80 bg-white rounded-xl shadow-2xl border border-gray-200 p-2 z-40 space-y-1 animate-in fade-in">
+                                                <div className="flex items-center justify-between px-2 py-1.5 border-b border-gray-100">
+                                                    <span className="text-[11px] font-bold text-gray-600 uppercase tracking-wider">
+                                                        Saved Templates ({templatesList.length})
+                                                    </span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setShowTemplatesDropdown(false)}
+                                                        className="text-gray-400 hover:text-gray-600 cursor-pointer"
+                                                    >
+                                                        <X className="w-3.5 h-3.5" />
+                                                    </button>
+                                                </div>
+                                                <div className="max-h-56 overflow-y-auto divide-y divide-gray-50">
+                                                    {templatesList.length === 0 ? (
+                                                        <div className="p-4 text-center text-xs text-gray-400">
+                                                            No saved templates found.
+                                                        </div>
+                                                    ) : (
+                                                        templatesList.map(tpl => (
+                                                            <button
+                                                                key={tpl.id}
+                                                                type="button"
+                                                                onClick={() => handleSelectTemplate(tpl)}
+                                                                className="w-full text-left p-2 hover:bg-blue-50/70 rounded-lg transition group block cursor-pointer"
+                                                            >
+                                                                <div className="text-xs font-semibold text-gray-800 group-hover:text-blue-600 truncate">
+                                                                    {tpl.title || tpl.name || "Untitled"}
+                                                                </div>
+                                                                <div className="text-[11px] text-gray-500 line-clamp-2 mt-0.5 whitespace-pre-wrap">
+                                                                    {tpl.content}
+                                                                </div>
+                                                            </button>
+                                                        ))
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Save as Template Button */}
+                                    <button
+                                        type="button"
+                                        disabled={!message.trim()}
+                                        onClick={() => setShowSaveTemplateModal(true)}
+                                        className="text-xs text-emerald-700 bg-emerald-50 hover:bg-emerald-100 font-medium px-2.5 py-1 rounded-lg flex items-center gap-1 border border-emerald-200 transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                                        title={message.trim() ? "Save current message as a template" : "Type a message first to save as template"}
+                                    >
+                                        <BookmarkPlus className="w-3.5 h-3.5 text-emerald-600" />
+                                        <span>Save Template</span>
+                                    </button>
                                 </div>
+
                                 {availableVars.length > 0 && (
                                     <div className="flex gap-1 flex-wrap">
                                         {availableVars.map(v => (
                                             <button
                                                 key={v}
                                                 onClick={() => insertVariable(v)}
-                                                className="text-xs bg-gray-100 hover:bg-gray-200 text-gray-800 px-2 py-0.5 rounded border border-gray-300 flex items-center gap-0.5 font-mono"
+                                                className="text-xs bg-gray-100 hover:bg-gray-200 text-gray-800 px-2 py-0.5 rounded border border-gray-300 flex items-center gap-0.5 font-mono cursor-pointer"
                                             >
                                                 <Plus className="w-3 h-3" /> {`{{${v}}}`}
                                             </button>
@@ -816,6 +1012,14 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
                                     </div>
                                 )}
                             </div>
+
+                            {templateSuccessMsg && (
+                                <div className="p-2 mb-2 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-800 flex items-center gap-1.5 animate-in fade-in">
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                                    <span>{templateSuccessMsg}</span>
+                                </div>
+                            )}
+
                             <textarea
                                 className="w-full text-black h-36 p-3 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 transition-all mb-2"
                                 placeholder="Write your message here... Use {{name}} to personalize with contact name."
@@ -1294,6 +1498,60 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
                     }}
                     defaultType="promotional"
                 />
+            )}
+
+            {/* Save Template Modal */}
+            {showSaveTemplateModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
+                    <div className="bg-white rounded-2xl p-5 max-w-sm w-full shadow-2xl border border-gray-100">
+                        <div className="flex items-center justify-between mb-3">
+                            <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                                <BookmarkPlus className="w-4 h-4 text-emerald-600" />
+                                Save as Template
+                            </h3>
+                            <button
+                                type="button"
+                                onClick={() => { setShowSaveTemplateModal(false); setTemplateTitleInput(""); }}
+                                className="text-gray-400 hover:text-gray-600 cursor-pointer"
+                            >
+                                <X className="w-4 h-4" />
+                            </button>
+                        </div>
+                        <p className="text-xs text-gray-500 mb-3">
+                            Give your template a name so you can reuse it in future campaigns.
+                        </p>
+                        <form onSubmit={handleSaveAsTemplate} className="space-y-3">
+                            <input
+                                type="text"
+                                autoFocus
+                                value={templateTitleInput}
+                                onChange={(e) => setTemplateTitleInput(e.target.value)}
+                                placeholder="e.g. Special Weekend Offer"
+                                className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500 text-gray-900"
+                            />
+                            <div className="p-2.5 bg-gray-50 rounded-xl text-[11px] text-gray-500 line-clamp-2 italic border border-gray-200/60">
+                                &quot;{message}&quot;
+                            </div>
+                            <div className="flex items-center justify-end gap-2 pt-1">
+                                <button
+                                    type="button"
+                                    onClick={() => { setShowSaveTemplateModal(false); setTemplateTitleInput(""); }}
+                                    className="px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-100 rounded-lg transition cursor-pointer"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    type="submit"
+                                    disabled={isSavingTemplate || !templateTitleInput.trim()}
+                                    className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs rounded-xl transition disabled:opacity-50 flex items-center gap-1.5 cursor-pointer shadow-xs"
+                                >
+                                    {isSavingTemplate ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : null}
+                                    {isSavingTemplate ? "Saving..." : "Save Template"}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
             )}
         </div>
     );

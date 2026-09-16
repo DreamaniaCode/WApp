@@ -1,0 +1,19 @@
+{
+  "defaultDeviceId": "device-1",
+  "devices": [
+    {
+      "id": "device-1",
+      "label": "WhatsApp 1",
+      "phoneNumber": "",
+      "isDefault": true,
+      "createdAt": "2026-09-13T23:01:59.120Z",
+      "warmingStatus": "off",
+      "warmingStartDate": null,
+      "warmingDay": 0,
+      "warmingMaxDay": 14,
+      "messagesSentToday": 0,
+      "dailyLimit": 100,
+      "lastDailyReset": "2026-09-13"
+    }
+  ]
+}

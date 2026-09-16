@@ -95,9 +95,10 @@ const DEFAULT_INTEGRATIONS = {
         maxTokens: 350
     },
     scraper: {
-        mode: "browser", // "browser", "google_places", "serpapi", "custom_webhook"
+        mode: "serper", // "serper", "serpapi", "browser", "google_places", "custom_webhook"
         googlePlacesApiKey: "",
         serpApiKey: "",
+        serperApiKey: "56b7780f8785c9d26504deca8d2adb9c48546ffd",
         scraperApiKey: "",
         customWebhookUrl: ""
     },
@@ -127,12 +128,19 @@ function loadIntegrationsSettings() {
                 phone: { ...DEFAULT_INTEGRATIONS.phone, ...(raw.phone || {}) }
             };
 
-            // Auto-migrate legacy/deprecated Gemini models (1.5, 2.0, etc.) to gemini-3.6-flash
+            // Set user's Serper.dev key if not set
+            if (!integrationsSettings.scraper.serperApiKey) {
+                integrationsSettings.scraper.serperApiKey = "56b7780f8785c9d26504deca8d2adb9c48546ffd";
+            }
+            if (integrationsSettings.scraper.mode === "browser" || !integrationsSettings.scraper.mode) {
+                integrationsSettings.scraper.mode = "serper";
+            }
+
+            // Ensure valid Gemini model without forcing deprecated 3.6
             if (integrationsSettings.ai && integrationsSettings.ai.provider === "gemini") {
-                const curModel = (integrationsSettings.ai.model || "").toLowerCase();
-                if (!curModel || curModel.includes("1.5") || curModel.includes("2.0") || curModel === "gemini-pro" || curModel === "gemini-flash") {
-                    console.log(`[Integrations] Auto-migrated deprecated Gemini model "${integrationsSettings.ai.model}" -> "gemini-3.6-flash"`);
-                    integrationsSettings.ai.model = "gemini-3.6-flash";
+                const curModel = (integrationsSettings.ai.model || "").trim();
+                if (!curModel || curModel === "gemini-3.6-flash") {
+                    integrationsSettings.ai.model = "gemini-2.5-flash";
                     try { fs_1.default.writeFileSync(INTEGRATIONS_PATH, JSON.stringify(integrationsSettings, null, 2)); } catch (_) {}
                 }
             }
@@ -152,6 +160,148 @@ function saveIntegrationsSettings() {
     }
 }
 loadIntegrationsSettings();
+
+// ─── Live Chat, AI Reply Log, Emailing, Contacts & Workflows Stores ──────────
+const CONVERSATIONS_PATH = path_1.default.join(DATA_DIR, "conversations.json");
+const CONVERSATIONS_STATE_PATH = path_1.default.join(DATA_DIR, "conversations_state.json");
+const AI_REPLY_LOG_PATH = path_1.default.join(DATA_DIR, "ai_reply_log.json");
+const EMAIL_SETTINGS_PATH = path_1.default.join(DATA_DIR, "email_settings.json");
+const EMAIL_HISTORY_PATH = path_1.default.join(DATA_DIR, "email_history.json");
+const CONTACTS_PATH = path_1.default.join(DATA_DIR, "contacts.json");
+const WORKFLOWS_PATH = path_1.default.join(DATA_DIR, "workflows.json");
+
+let conversationsMap = new Map();
+let conversationsState = {};
+let aiReplyLogs = [];
+let emailSettings = {
+    host: "",
+    port: 587,
+    secure: false,
+    user: "",
+    pass: "",
+    fromName: "WApp Manager Pro",
+    fromEmail: ""
+};
+let emailHistory = [];
+let savedContacts = [];
+let workflowsList = [];
+
+function loadExtendedStores() {
+    try {
+        if (fs_1.default.existsSync(CONVERSATIONS_PATH)) {
+            const raw = JSON.parse(fs_1.default.readFileSync(CONVERSATIONS_PATH, 'utf8'));
+            if (Array.isArray(raw)) {
+                conversationsMap = new Map(raw.map(c => [c.id, c]));
+            }
+        }
+        if (fs_1.default.existsSync(CONVERSATIONS_STATE_PATH)) {
+            conversationsState = JSON.parse(fs_1.default.readFileSync(CONVERSATIONS_STATE_PATH, 'utf8')) || {};
+        }
+        if (fs_1.default.existsSync(AI_REPLY_LOG_PATH)) {
+            aiReplyLogs = JSON.parse(fs_1.default.readFileSync(AI_REPLY_LOG_PATH, 'utf8')) || [];
+        }
+        if (fs_1.default.existsSync(EMAIL_SETTINGS_PATH)) {
+            emailSettings = { ...emailSettings, ...JSON.parse(fs_1.default.readFileSync(EMAIL_SETTINGS_PATH, 'utf8')) };
+        }
+        if (fs_1.default.existsSync(EMAIL_HISTORY_PATH)) {
+            emailHistory = JSON.parse(fs_1.default.readFileSync(EMAIL_HISTORY_PATH, 'utf8')) || [];
+        }
+        if (fs_1.default.existsSync(CONTACTS_PATH)) {
+            savedContacts = JSON.parse(fs_1.default.readFileSync(CONTACTS_PATH, 'utf8')) || [];
+        }
+        if (fs_1.default.existsSync(WORKFLOWS_PATH)) {
+            workflowsList = JSON.parse(fs_1.default.readFileSync(WORKFLOWS_PATH, 'utf8')) || [];
+        } else {
+            workflowsList = [
+                { id: "wf-1", name: "Alerte Demande d'Agent", trigger: "agent_requested", active: true, action: "alert_and_switch_manual", description: "Bascule la conversation en mode MANUEL et notifie l'agent immédiatement" },
+                { id: "wf-2", name: "Accusé de Réception Automatique", trigger: "first_incoming", active: false, action: "send_welcome_msg", delayMinutes: 0, description: "Envoie un message de bienvenue personnalisé lors du premier message d'un client" },
+                { id: "wf-3", name: "Relance Client Inactif (24h)", trigger: "no_reply_24h", active: false, action: "send_followup", delayMinutes: 1440, description: "Relance un prospect qui n'a pas répondu depuis 24 heures" }
+            ];
+            try { fs_1.default.writeFileSync(WORKFLOWS_PATH, JSON.stringify(workflowsList, null, 2)); } catch (_) {}
+        }
+    } catch (e) {
+        console.warn("[ExtendedStores] Error loading stores:", e.message);
+    }
+}
+loadExtendedStores();
+
+function saveConversations() {
+    try {
+        const arr = Array.from(conversationsMap.values());
+        fs_1.default.writeFileSync(CONVERSATIONS_PATH, JSON.stringify(arr, null, 2));
+    } catch (e) {
+        console.error("[ExtendedStores] Could not save conversations:", e.message);
+    }
+}
+
+function recordChatMessage({ id, chatId, from, to, fromMe, body, senderName, number, timestamp, isAiReply, source, confidence }) {
+    if (!chatId) return;
+    const cleanId = chatId.includes("@") ? chatId : `${chatId}@c.us`;
+    const state = conversationsState[cleanId] || { mode: "ai", requestedAgent: false };
+
+    let conv = conversationsMap.get(cleanId);
+    if (!conv) {
+        conv = {
+            id: cleanId,
+            name: senderName || number || cleanId.split("@")[0],
+            number: number || cleanId.split("@")[0],
+            lastMessage: body,
+            lastTimestamp: timestamp || Date.now(),
+            unreadCount: fromMe ? 0 : 1,
+            mode: state.mode || "ai",
+            requestedAgent: !!state.requestedAgent,
+            agentRequestTimestamp: state.agentRequestTimestamp || null,
+            messages: []
+        };
+        conversationsMap.set(cleanId, conv);
+    } else {
+        conv.lastMessage = body;
+        conv.lastTimestamp = timestamp || Date.now();
+        if (!fromMe) conv.unreadCount = (conv.unreadCount || 0) + 1;
+        conv.mode = state.mode || conv.mode || "ai";
+        conv.requestedAgent = !!state.requestedAgent;
+        conv.agentRequestTimestamp = state.agentRequestTimestamp || conv.agentRequestTimestamp;
+        if (senderName && (conv.name === conv.number || !conv.name)) conv.name = senderName;
+    }
+
+    const msgItem = {
+        id: id || `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        fromMe: !!fromMe,
+        body,
+        timestamp: timestamp || Date.now(),
+        isAiReply: !!isAiReply,
+        source: source || (fromMe ? "manual" : "incoming"),
+        confidence: confidence || null
+    };
+
+    if (!conv.messages) conv.messages = [];
+    conv.messages.push(msgItem);
+    if (conv.messages.length > 100) conv.messages = conv.messages.slice(-100);
+
+    saveConversations();
+    io.emit("chat:message_added", { chatId: cleanId, message: msgItem, conversation: { ...conv, messages: undefined } });
+}
+
+function recordAiReplyLogEntry({ contactNumber, contactName, question, reply, source, confidence, deviceId }) {
+    const entry = {
+        id: `airpl-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        timestamp: new Date().toISOString(),
+        contactNumber: contactNumber || "Inconnu",
+        contactName: contactName || contactNumber || "Client",
+        question: question || "",
+        reply: reply || "",
+        source: source || "AI Fallback",
+        confidence: confidence || "100%",
+        deviceId: deviceId || "default"
+    };
+    aiReplyLogs.unshift(entry);
+    if (aiReplyLogs.length > 500) aiReplyLogs = aiReplyLogs.slice(0, 500);
+    try {
+        fs_1.default.writeFileSync(AI_REPLY_LOG_PATH, JSON.stringify(aiReplyLogs, null, 2));
+    } catch (_) {}
+    io.emit("chatbot:reply_logged", entry);
+    return entry;
+}
 
 /**
  * Normalizes scraped telephone numbers into valid WhatsApp-compatible format.
@@ -329,58 +479,34 @@ async function callAiChatbot(userMessage, customConfig = {}) {
 
     const fullSystemPrompt = `${systemPrompt || "You are a helpful customer service assistant on WhatsApp."}${ragContext ? "\n\nBUSINESS CONTEXT:\n" + ragContext : ""}\n\nIMPORTANT: Provide concise, accurate responses tailored for WhatsApp. Always respond in the same language the customer uses.`;
 
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 30000);
-
     try {
         // Google Gemini API
         if (provider === "gemini") {
-            let geminiModel = (model || "").trim();
-            // Automatically upgrade deprecated models (1.5, 2.0, pro/flash legacy) to gemini-3.6-flash
-            if (!geminiModel || geminiModel.includes("1.5") || geminiModel.includes("2.0") || geminiModel === "gemini-pro" || geminiModel === "gemini-flash") {
-                console.log(`[AI Chatbot] Using modern Gemini model: gemini-3.6-flash (was: ${geminiModel || 'default'})`);
-                geminiModel = "gemini-3.6-flash";
-            }
-            // Strip any leading "models/" if user typed it
-            geminiModel = geminiModel.replace(/^models\//, "");
-
-            // Candidate models to try in order
-            const candidateModels = [geminiModel];
-            if (geminiModel !== "gemini-2.5-flash" && !candidateModels.includes("gemini-2.5-flash")) {
-                candidateModels.push("gemini-2.5-flash");
+            let geminiModel = (model || "").trim().replace(/^models\//, "");
+            if (!geminiModel || geminiModel === "default") {
+                geminiModel = "gemini-2.5-flash";
             }
 
-            let lastError = null;
-            for (const targetModel of candidateModels) {
-                try {
-                    const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
-                    const res = await fetch(url, {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                            system_instruction: { parts: [{ text: fullSystemPrompt }] },
-                            contents: [{ parts: [{ text: userMessage }] }],
-                            generationConfig: {
-                                temperature: Number(temperature) || 0.7,
-                                maxOutputTokens: Math.max(Number(maxTokens) || 350, 2048)
-                            }
-                        }),
-                        signal: controller.signal
-                    });
-                    const data = await res.json();
-                    if (res.ok) {
-                        clearTimeout(timeout);
-                        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-                        return text ? text.trim() : null;
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${geminiModel}:generateContent?key=${apiKey}`;
+            const res = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    system_instruction: { parts: [{ text: fullSystemPrompt }] },
+                    contents: [{ parts: [{ text: userMessage }] }],
+                    generationConfig: {
+                        temperature: Number(temperature) || 0.7,
+                        maxOutputTokens: Math.max(Number(maxTokens) || 350, 1024)
                     }
-                    lastError = new Error(data.error?.message || `Gemini API error ${res.status}`);
-                    console.warn(`[AI Chatbot] Gemini attempt with "${targetModel}" failed:`, lastError.message);
-                } catch (err) {
-                    lastError = err;
-                }
+                }),
+                signal: AbortSignal.timeout(25000)
+            });
+            const data = await res.json();
+            if (res.ok) {
+                const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                return text ? text.trim() : null;
             }
-            clearTimeout(timeout);
-            throw lastError || new Error("Gemini API call failed");
+            throw new Error(data.error?.message || `Erreur Gemini API (${geminiModel}): HTTP ${res.status}`);
         }
 
         // Anthropic Claude API
@@ -400,20 +526,22 @@ async function callAiChatbot(userMessage, customConfig = {}) {
                     max_tokens: Number(maxTokens) || 350,
                     temperature: Number(temperature) || 0.7
                 }),
-                signal: controller.signal
+                signal: AbortSignal.timeout(25000)
             });
             const data = await res.json();
-            clearTimeout(timeout);
             if (!res.ok) throw new Error(data.error?.message || `Claude API error ${res.status}`);
             const text = data.content?.[0]?.text;
             return text ? text.trim() : null;
         }
 
-        // OpenAI, DeepSeek, Groq, Ollama, Custom OpenAI-Compatible
+        // OpenRouter, OpenAI, DeepSeek, Groq, Ollama, Custom OpenAI-Compatible
         let baseUrl = "https://api.openai.com/v1";
         let defaultModel = "gpt-4o-mini";
 
-        if (provider === "deepseek") {
+        if (provider === "openrouter") {
+            baseUrl = "https://openrouter.ai/api/v1";
+            defaultModel = "google/gemini-2.5-flash";
+        } else if (provider === "deepseek") {
             baseUrl = "https://api.deepseek.com/v1";
             defaultModel = "deepseek-chat";
         } else if (provider === "groq") {
@@ -430,6 +558,10 @@ async function callAiChatbot(userMessage, customConfig = {}) {
         const endpoint = `${baseUrl}/chat/completions`;
         const headers = { "Content-Type": "application/json" };
         if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+        if (provider === "openrouter") {
+            headers["HTTP-Referer"] = "https://wapp-manager.local";
+            headers["X-Title"] = "WApp Manager Leads Pro";
+        }
 
         const res = await fetch(endpoint, {
             method: "POST",
@@ -443,15 +575,13 @@ async function callAiChatbot(userMessage, customConfig = {}) {
                 temperature: Number(temperature) || 0.7,
                 max_tokens: Number(maxTokens) || 350
             }),
-            signal: controller.signal
+            signal: AbortSignal.timeout(25000)
         });
         const data = await res.json();
-        clearTimeout(timeout);
         if (!res.ok) throw new Error(data.error?.message || `AI API returned status ${res.status}`);
         const text = data.choices?.[0]?.message?.content;
         return text ? text.trim() : null;
     } catch (err) {
-        clearTimeout(timeout);
         throw err;
     }
 }
@@ -903,7 +1033,14 @@ let messageTemplates = [
 function loadTemplates() {
     if (fs_1.default.existsSync(TEMPLATES_PATH)) {
         try {
-            messageTemplates = JSON.parse(fs_1.default.readFileSync(TEMPLATES_PATH, "utf8"));
+            const raw = JSON.parse(fs_1.default.readFileSync(TEMPLATES_PATH, "utf8"));
+            if (Array.isArray(raw)) {
+                messageTemplates = raw.map(t => ({
+                    ...t,
+                    title: t.title || t.name || "Untitled Template",
+                    name: t.name || t.title || "Untitled Template"
+                }));
+            }
         } catch (e) {
             console.error("Failed to load templates", e);
         }
@@ -1510,26 +1647,99 @@ function registerDeviceEvents(deviceId, client) {
                 deviceId
             });
         } catch (e) {
+        let contactNumber = msg.from.split("@")[0];
+        let contactName = contactNumber;
+        try {
+            const contact = await msg.getContact();
+            contactNumber = contact.number || contactNumber;
+            contactName = contact.pushname || contact.name || contactNumber;
+            io.emit("incoming_message", {
+                id: msg.id._serialized,
+                from: msg.from,
+                number: contactNumber,
+                name: contactName,
+                body: msg.body,
+                timestamp: msg.timestamp * 1000,
+                isGroup: msg.from.includes("@g.us"),
+                deviceId
+            });
+        } catch (e) {
             console.error("Error emitting incoming message", e);
         }
 
-        // Auto-reply only on the default device (skip groups)
+        const chatId = msg.from;
+        const lowerBody = (msg.body || "").toLowerCase().trim();
+
+        // 1. Detect if customer requests a human agent
+        const isAgentRequest = !msg.from.includes("@g.us") && (
+            /(?:agent|humain|human|conseiller|conseilleur|support|aide|service client|parler.*avec|responsable)/i.test(lowerBody) ||
+            /^(agent|humain|human|support|aide|\?)$/i.test(lowerBody)
+        );
+
+        if (isAgentRequest) {
+            conversationsState[chatId] = {
+                mode: "manual",
+                requestedAgent: true,
+                agentRequestTimestamp: Date.now()
+            };
+            try {
+                fs_1.default.writeFileSync(CONVERSATIONS_STATE_PATH, JSON.stringify(conversationsState, null, 2));
+            } catch (_) {}
+
+            io.emit("agent_requested", {
+                chatId,
+                from: msg.from,
+                number: contactNumber,
+                name: contactName,
+                body: msg.body,
+                timestamp: Date.now()
+            });
+            console.log(`[LiveChat] ⚠️ Human agent requested by ${contactName} (${contactNumber})! Chat mode switched to MANUAL.`);
+        }
+
+        // 2. Record incoming message in LiveChat store
+        recordChatMessage({
+            id: msg.id._serialized,
+            chatId,
+            from: msg.from,
+            to: "me",
+            fromMe: false,
+            body: msg.body,
+            senderName: contactName,
+            number: contactNumber,
+            timestamp: msg.timestamp * 1000
+        });
+
+        // 3. Auto-reply only on default device (skip groups)
         const defaultDev = getDefaultDevice();
         if (msg.from.includes("@g.us") || !defaultDev || defaultDev.id !== deviceId) return;
 
-        botEngine.recordIncoming(msg.from, msg.body);
-        const lowerBody = msg.body.toLowerCase().trim();
-        let replied = false;
+        // 4. If conversation is in MANUAL mode, skip automatic replies completely
+        const currentMode = conversationsState[chatId]?.mode || "ai";
+        if (currentMode === "manual") {
+            console.log(`[AutoReply] Skipped for ${chatId} (Conversation is in MANUEL mode)`);
+            return;
+        }
 
+        botEngine.recordIncoming(msg.from, msg.body);
+        let replied = false;
+        let replySource = "";
+        let replyText = "";
+
+        // 5. Keyword rules
         for (const rule of autoResponses) {
             if (rule.exactMatch) {
                 if (lowerBody === rule.keyword.toLowerCase().trim()) {
+                    replyText = rule.response;
+                    replySource = "Règle Mot-Clé (Exact)";
                     await msg.reply(rule.response);
                     replied = true;
                     break;
                 }
             } else {
                 if (lowerBody.includes(rule.keyword.toLowerCase().trim())) {
+                    replyText = rule.response;
+                    replySource = "Règle Mot-Clé (Contient)";
                     await msg.reply(rule.response);
                     replied = true;
                     break;
@@ -1537,27 +1747,61 @@ function registerDeviceEvents(deviceId, client) {
             }
         }
 
+        // 6. Chatbot Learned Pairs & RAG & AI Fallback
+        // Requirement: Do NOT reply with AI unless explicitly granted (aiAutoReplyEnabled !== false)
         if (!replied && botEngine.settings.autoReply) {
             try {
                 const match = botEngine.findBestAnswer(msg.body);
                 const threshold = (botEngine.settings.similarityThreshold || 0.45) * 100;
                 if (match && match.answer && match.score >= threshold) {
+                    replyText = match.answer;
+                    replySource = `Base de Connaissance (${match.sourceType || "Apprise"})`;
                     await msg.reply(match.answer);
                     replied = true;
-                } else if (integrationsSettings.ai && integrationsSettings.ai.enabled) {
+                } else if (botEngine.settings.aiAutoReplyEnabled && integrationsSettings.ai && integrationsSettings.ai.enabled) {
                     const aiReply = await callAiChatbot(msg.body);
                     if (aiReply) {
+                        replyText = aiReply;
+                        replySource = `IA Générative (${integrationsSettings.ai.provider || "LLM"})`;
                         await msg.reply(aiReply);
                         replied = true;
                         if (botEngine.settings.autoLearn) botEngine.addLearnedPair(msg.body, aiReply);
                     }
                 } else if (match && match.answer) {
+                    replyText = match.answer;
+                    replySource = "RAG Match";
                     await msg.reply(match.answer);
                     replied = true;
                 }
             } catch (err) {
                 console.error("[ChatbotRag/AI] Auto-reply error:", err.message);
             }
+        }
+
+        // 7. If replied, log to AI reply log and record message in LiveChat
+        if (replied && replyText) {
+            recordAiReplyLogEntry({
+                contactNumber,
+                contactName,
+                question: msg.body,
+                reply: replyText,
+                source: replySource,
+                confidence: "100%",
+                deviceId
+            });
+            recordChatMessage({
+                id: `rep-${Date.now()}`,
+                chatId,
+                from: "me",
+                to: msg.from,
+                fromMe: true,
+                body: replyText,
+                senderName: "AI Bot",
+                number: contactNumber,
+                timestamp: Date.now(),
+                isAiReply: true,
+                source: replySource
+            });
         }
 
         if (integrationsSettings.webhooks?.inboundMessageWebhookEnabled && integrationsSettings.webhooks?.inboundMessageWebhookUrl) {
@@ -1589,6 +1833,18 @@ function registerDeviceEvents(deviceId, client) {
                 }
             }
             try {
+                recordChatMessage({
+                    id: msg.id._serialized,
+                    chatId: msg.to,
+                    from: "me",
+                    to: msg.to,
+                    fromMe: true,
+                    body: msg.body,
+                    senderName: "Vous",
+                    number: msg.to.split("@")[0],
+                    timestamp: msg.timestamp * 1000,
+                    source: "manual"
+                });
                 io.emit("outgoing_message", {
                     id: msg.id._serialized, to: msg.to,
                     body: msg.body, timestamp: msg.timestamp * 1000, deviceId
@@ -1768,10 +2024,17 @@ app.post("/api/devices", async (req, res) => {
         if (devices.size >= MAX_DEVICES) {
             return res.status(400).json({ error: `Maximum ${MAX_DEVICES} devices allowed` });
         }
-        const label = req.body.label || `WhatsApp ${devices.size + 1}`;
+        const label = (req.body.label || `WhatsApp ${devices.size + 1}`).trim();
         const deviceId = `device-${Date.now()}`;
         createDeviceClient(deviceId, label);
-        res.json({ success: true, deviceId, devices: serializeDevices() });
+        res.json({
+            success: true,
+            id: deviceId,
+            deviceId,
+            label,
+            message: `Appareil "${label}" ajouté avec succès. Initialisation en cours...`,
+            devices: serializeDevices()
+        });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -3295,12 +3558,13 @@ app.delete("/api/chatbot/knowledge/:id", (req, res) => {
     res.json(result);
 });
 app.post("/api/chatbot/settings", (req, res) => {
-    const { autoLearn, autoReply, useRag, similarityThreshold, maxResponseLength } = req.body;
+    const { autoLearn, autoReply, useRag, similarityThreshold, maxResponseLength, aiAutoReplyEnabled } = req.body;
     botEngine.settings = {
         ...botEngine.settings,
         ...(autoLearn !== undefined && { autoLearn: !!autoLearn }),
         ...(autoReply !== undefined && { autoReply: !!autoReply }),
         ...(useRag !== undefined && { useRag: !!useRag }),
+        ...(aiAutoReplyEnabled !== undefined && { aiAutoReplyEnabled: !!aiAutoReplyEnabled }),
         ...(similarityThreshold !== undefined && { similarityThreshold: Number(similarityThreshold) }),
         ...(maxResponseLength !== undefined && { maxResponseLength: Number(maxResponseLength) })
     };
@@ -3314,6 +3578,525 @@ app.post("/api/chatbot/test-query", (req, res) => {
     }
     const match = botEngine.findBestAnswer(query);
     res.json({ success: true, query, match: match || null });
+});
+
+// ─── Chatbot File Ingestion (Excel, PDF, DOCX, TXT) ──────────────────────────
+app.post("/api/chatbot/ingest-file", async (req, res) => {
+    try {
+        const { filename, data } = req.body;
+        if (!filename || !data) {
+            return res.status(400).json({ error: "Filename and file data (base64) are required" });
+        }
+        const ext = path_1.default.extname(filename).toLowerCase();
+        const buffer = Buffer.from(data, 'base64');
+        let extractedText = "";
+
+        if (ext === '.xlsx' || ext === '.xls' || ext === '.csv') {
+            const xlsx = require('xlsx');
+            const workbook = xlsx.read(buffer, { type: 'buffer' });
+            const sheetsText = [];
+            for (const sheetName of workbook.SheetNames) {
+                const sheet = workbook.Sheets[sheetName];
+                const rows = xlsx.utils.sheet_to_json(sheet, { header: 1 });
+                if (rows.length > 0) {
+                    const headers = rows[0] || [];
+                    const bodyRows = rows.slice(1);
+                    const formattedRows = bodyRows.map(r => {
+                        return headers.map((h, i) => `${h}: ${r[i] !== undefined ? r[i] : ''}`).join(" | ");
+                    }).filter(l => l.trim().length > 5);
+                    sheetsText.push(`=== Fichier: ${filename} (Feuille: ${sheetName}) ===\n` + formattedRows.join("\n"));
+                }
+            }
+            extractedText = sheetsText.join("\n\n");
+        } else if (ext === '.pdf') {
+            const raw = buffer.toString('binary');
+            const textParts = [];
+            const matches = raw.match(/\(([^()]{3,})\)/g) || [];
+            for (const m of matches) {
+                const clean = m.slice(1, -1).trim();
+                if (clean.length > 3 && /[a-zA-ZÀ-ÿ0-9]/.test(clean)) {
+                    textParts.push(clean);
+                }
+            }
+            extractedText = textParts.join(" ");
+            if (!extractedText || extractedText.length < 30) {
+                extractedText = buffer.toString('utf8').replace(/[^\x20-\x7E\xC0-\xFF\n\r\t]/g, ' ').replace(/\s{2,}/g, ' ');
+            }
+        } else {
+            extractedText = buffer.toString('utf8').replace(/[^\x20-\x7E\xC0-\xFF\n\r\t]/g, ' ');
+        }
+
+        if (!extractedText || extractedText.trim().length < 15) {
+            return res.status(400).json({ error: "Impossible d'extraire du contenu textuel de ce fichier." });
+        }
+
+        const result = botEngine.ingestText(filename, extractedText, filename);
+        res.json({
+            success: true,
+            filename,
+            chunkCount: result.chunkCount,
+            characterCount: extractedText.length,
+            preview: extractedText.slice(0, 300)
+        });
+    } catch (err) {
+        console.error("[/api/chatbot/ingest-file] Error:", err);
+        res.status(500).json({ error: err.message || "Erreur lors du traitement du fichier" });
+    }
+});
+
+app.get("/api/chatbot/files", (_req, res) => {
+    res.json({ success: true, sources: botEngine.sources || [] });
+});
+
+app.delete("/api/chatbot/files/:id", (req, res) => {
+    const result = botEngine.deleteSource(req.params.id);
+    res.json(result);
+});
+
+// ─── AI Reply Log Endpoints ──────────────────────────────────────────────────
+app.get("/api/chatbot/reply-log", (_req, res) => {
+    res.json(aiReplyLogs);
+});
+
+app.delete("/api/chatbot/reply-log", (_req, res) => {
+    aiReplyLogs = [];
+    try { fs_1.default.writeFileSync(AI_REPLY_LOG_PATH, JSON.stringify([], null, 2)); } catch (_) {}
+    res.json({ success: true });
+});
+
+// ─── Live Chat & Conversations Endpoints ─────────────────────────────────────
+app.get("/api/chat/conversations", (_req, res) => {
+    const list = Array.from(conversationsMap.values()).map(c => ({
+        ...c,
+        messages: undefined
+    })).sort((a, b) => (b.lastTimestamp || 0) - (a.lastTimestamp || 0));
+    res.json(list);
+});
+
+app.get("/api/chat/messages/:chatId", (req, res) => {
+    const chatId = req.params.chatId;
+    const cleanId = chatId.includes('@') ? chatId : `${chatId}@c.us`;
+    const conv = conversationsMap.get(cleanId) || conversationsMap.get(chatId);
+    if (conv) {
+        conv.unreadCount = 0;
+        saveConversations();
+        res.json({ success: true, conversation: conv, messages: conv.messages || [] });
+    } else {
+        res.json({ success: true, conversation: null, messages: [] });
+    }
+});
+
+app.post("/api/chat/send", async (req, res) => {
+    try {
+        const { chatId, message } = req.body;
+        if (!chatId || !message) return res.status(400).json({ error: "ChatId et message requis" });
+        if (!isReady || !activeClient) return res.status(503).json({ error: "WhatsApp non connecté. Veuillez connecter un appareil." });
+
+        const targetJid = chatId.includes("@") ? chatId : `${chatId}@c.us`;
+        await ensureWWebJSInjected(activeClient);
+        await activeClient.sendMessage(targetJid, message.trim());
+
+        recordChatMessage({
+            id: `msg-${Date.now()}`,
+            chatId: targetJid,
+            from: "me",
+            to: targetJid,
+            fromMe: true,
+            body: message.trim(),
+            senderName: "Vous",
+            number: targetJid.split("@")[0],
+            timestamp: Date.now(),
+            source: "manual"
+        });
+
+        res.json({ success: true, message: "Message envoyé avec succès" });
+    } catch (e) {
+        console.error("[/api/chat/send] Error:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/chat/mode", (req, res) => {
+    try {
+        const { chatId, mode } = req.body;
+        if (!chatId || !mode) return res.status(400).json({ error: "ChatId et mode requis" });
+        const cleanId = chatId.includes("@") ? chatId : `${chatId}@c.us`;
+        conversationsState[cleanId] = {
+            ...(conversationsState[cleanId] || {}),
+            mode: mode === "manual" ? "manual" : "ai"
+        };
+        const conv = conversationsMap.get(cleanId);
+        if (conv) {
+            conv.mode = conversationsState[cleanId].mode;
+        }
+        fs_1.default.writeFileSync(CONVERSATIONS_STATE_PATH, JSON.stringify(conversationsState, null, 2));
+        saveConversations();
+        io.emit("chat:mode_changed", { chatId: cleanId, mode: conversationsState[cleanId].mode });
+        res.json({ success: true, chatId: cleanId, mode: conversationsState[cleanId].mode });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/chat/resolve-agent-request", (req, res) => {
+    try {
+        const { chatId } = req.body;
+        const cleanId = chatId.includes("@") ? chatId : `${chatId}@c.us`;
+        if (conversationsState[cleanId]) {
+            conversationsState[cleanId].requestedAgent = false;
+        }
+        const conv = conversationsMap.get(cleanId);
+        if (conv) {
+            conv.requestedAgent = false;
+        }
+        fs_1.default.writeFileSync(CONVERSATIONS_STATE_PATH, JSON.stringify(conversationsState, null, 2));
+        saveConversations();
+        io.emit("chat:agent_request_resolved", { chatId: cleanId });
+        res.json({ success: true, chatId: cleanId });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── Contacts Endpoints ──────────────────────────────────────────────────────
+app.get("/api/contacts", (_req, res) => {
+    res.json(savedContacts);
+});
+
+app.post("/api/contacts", (req, res) => {
+    try {
+        const { name, number, email, company, city, tags } = req.body;
+        if (!number) return res.status(400).json({ error: "Numéro de téléphone requis" });
+        const clean = String(number).replace(/\D/g, '');
+        const existingIdx = savedContacts.findIndex(c => c.number.replace(/\D/g, '') === clean);
+        const contactItem = {
+            id: `cnt-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+            name: name || "Contact",
+            number: clean,
+            email: email || "",
+            company: company || "",
+            city: city || "",
+            tags: tags || "",
+            createdAt: new Date().toISOString()
+        };
+        if (existingIdx !== -1) {
+            savedContacts[existingIdx] = { ...savedContacts[existingIdx], ...contactItem };
+        } else {
+            savedContacts.unshift(contactItem);
+        }
+        fs_1.default.writeFileSync(CONTACTS_PATH, JSON.stringify(savedContacts, null, 2));
+        res.json({ success: true, contact: contactItem, contacts: savedContacts });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/contacts/import", (req, res) => {
+    try {
+        const { contacts = [] } = req.body;
+        if (!Array.isArray(contacts)) return res.status(400).json({ error: "Format invalide" });
+        let added = 0;
+        for (const item of contacts) {
+            const rawNum = item.number || item.phone || item.telephone || item.tel || item["Téléphone"] || item["Telephone"];
+            if (!rawNum) continue;
+            const clean = String(rawNum).replace(/\D/g, '');
+            if (clean.length < 6) continue;
+            const exists = savedContacts.some(c => c.number.replace(/\D/g, '') === clean);
+            if (!exists) {
+                savedContacts.push({
+                    id: `cnt-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+                    name: item.name || item.nom || item["Nom"] || "Contact",
+                    number: clean,
+                    email: item.email || item["Email"] || "",
+                    company: item.company || item.entreprise || item["Entreprise"] || "",
+                    city: item.city || item.ville || item["Ville"] || "",
+                    tags: item.tags || item.note || item["Tags"] || "",
+                    createdAt: new Date().toISOString()
+                });
+                added++;
+            }
+        }
+        fs_1.default.writeFileSync(CONTACTS_PATH, JSON.stringify(savedContacts, null, 2));
+        res.json({ success: true, added, total: savedContacts.length, contacts: savedContacts });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.delete("/api/contacts/:id", (req, res) => {
+    try {
+        savedContacts = savedContacts.filter(c => c.id !== req.params.id);
+        fs_1.default.writeFileSync(CONTACTS_PATH, JSON.stringify(savedContacts, null, 2));
+        res.json({ success: true, contacts: savedContacts });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ─── Email Marketing Endpoints (Custom SMTP & Campaigns) ─────────────────────
+app.get("/api/email/settings", (_req, res) => {
+    res.json({ success: true, settings: emailSettings });
+});
+
+app.post("/api/email/settings", (req, res) => {
+    try {
+        emailSettings = { ...emailSettings, ...(req.body || {}) };
+        fs_1.default.writeFileSync(EMAIL_SETTINGS_PATH, JSON.stringify(emailSettings, null, 2));
+        res.json({ success: true, settings: emailSettings });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/email/test-smtp", async (req, res) => {
+    try {
+        const config = req.body || emailSettings;
+        if (!config.host || !config.user) {
+            return res.status(400).json({ error: "Hôte SMTP et identifiant requis" });
+        }
+        const nodemailer = require('nodemailer');
+        const transporter = nodemailer.createTransport({
+            host: config.host,
+            port: Number(config.port) || 587,
+            secure: config.secure === true || Number(config.port) === 465,
+            auth: {
+                user: config.user,
+                pass: config.pass
+            },
+            tls: { rejectUnauthorized: false }
+        });
+        await transporter.verify();
+        res.json({ success: true, message: "Connexion SMTP établie avec succès !" });
+    } catch (err) {
+        console.error("[SMTP Test] Error:", err);
+        res.status(500).json({ error: err.message || "Échec de connexion au serveur SMTP" });
+    }
+});
+
+app.post("/api/email/send-single", async (req, res) => {
+    try {
+        const { to, subject, html, text } = req.body;
+        if (!to || !subject) return res.status(400).json({ error: "Destinataire et objet requis" });
+        if (!emailSettings.host || !emailSettings.user) {
+            return res.status(400).json({ error: "Veuillez d'abord configurer vos paramètres SMTP dans Email Marketing" });
+        }
+        const nodemailer = require('nodemailer');
+        const transporter = nodemailer.createTransport({
+            host: emailSettings.host,
+            port: Number(emailSettings.port) || 587,
+            secure: emailSettings.secure === true || Number(emailSettings.port) === 465,
+            auth: {
+                user: emailSettings.user,
+                pass: emailSettings.pass
+            },
+            tls: { rejectUnauthorized: false }
+        });
+
+        const info = await transporter.sendMail({
+            from: `"${emailSettings.fromName || 'WApp Manager'}" <${emailSettings.fromEmail || emailSettings.user}>`,
+            to,
+            subject,
+            text: text || html?.replace(/<[^>]+>/g, ''),
+            html: html || text
+        });
+
+        const historyItem = {
+            id: `eml-${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            to,
+            subject,
+            status: "success",
+            messageId: info.messageId
+        };
+        emailHistory.unshift(historyItem);
+        if (emailHistory.length > 500) emailHistory = emailHistory.slice(0, 500);
+        try { fs_1.default.writeFileSync(EMAIL_HISTORY_PATH, JSON.stringify(emailHistory, null, 2)); } catch (_) {}
+
+        res.json({ success: true, messageId: info.messageId, message: "Email envoyé avec succès !" });
+    } catch (err) {
+        console.error("[Email Send] Error:", err);
+        const failItem = {
+            id: `eml-${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            to: req.body.to || "",
+            subject: req.body.subject || "",
+            status: "failed",
+            error: err.message
+        };
+        emailHistory.unshift(failItem);
+        try { fs_1.default.writeFileSync(EMAIL_HISTORY_PATH, JSON.stringify(emailHistory, null, 2)); } catch (_) {}
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post("/api/email/send-bulk", async (req, res) => {
+    try {
+        const { recipients = [], subject, template } = req.body;
+        if (!recipients.length || !subject) return res.status(400).json({ error: "Destinataires et objet requis" });
+        if (!emailSettings.host || !emailSettings.user) return res.status(400).json({ error: "Configuration SMTP manquante" });
+
+        const nodemailer = require('nodemailer');
+        const transporter = nodemailer.createTransport({
+            host: emailSettings.host,
+            port: Number(emailSettings.port) || 587,
+            secure: emailSettings.secure === true || Number(emailSettings.port) === 465,
+            auth: { user: emailSettings.user, pass: emailSettings.pass },
+            tls: { rejectUnauthorized: false }
+        });
+
+        res.json({ success: true, message: `Campagne email lancée pour ${recipients.length} destinataires.` });
+
+        (async () => {
+            let sent = 0;
+            let failed = 0;
+            for (const r of recipients) {
+                const targetEmail = typeof r === 'string' ? r : r.email;
+                if (!targetEmail || !targetEmail.includes('@')) { failed++; continue; }
+                const name = (typeof r === 'object' && r.name) ? r.name : targetEmail.split('@')[0];
+                const bodyHtml = (template || "").replace(/{{name}}/g, name).replace(/{{email}}/g, targetEmail);
+                try {
+                    await transporter.sendMail({
+                        from: `"${emailSettings.fromName || 'WApp Manager'}" <${emailSettings.fromEmail || emailSettings.user}>`,
+                        to: targetEmail,
+                        subject: subject.replace(/{{name}}/g, name),
+                        html: bodyHtml
+                    });
+                    sent++;
+                    emailHistory.unshift({ id: `eml-${Date.now()}`, timestamp: new Date().toISOString(), to: targetEmail, subject, status: "success" });
+                } catch (e) {
+                    failed++;
+                    emailHistory.unshift({ id: `eml-${Date.now()}`, timestamp: new Date().toISOString(), to: targetEmail, subject, status: "failed", error: e.message });
+                }
+                io.emit("email:campaign_progress", { current: sent + failed, total: recipients.length, sent, failed });
+                await new Promise(r => setTimeout(r, 600));
+            }
+            fs_1.default.writeFileSync(EMAIL_HISTORY_PATH, JSON.stringify(emailHistory.slice(0, 500), null, 2));
+            io.emit("email:campaign_complete", { total: recipients.length, sent, failed });
+        })();
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get("/api/email/history", (_req, res) => {
+    res.json(emailHistory);
+});
+
+app.delete("/api/email/history", (_req, res) => {
+    emailHistory = [];
+    try { fs_1.default.writeFileSync(EMAIL_HISTORY_PATH, JSON.stringify([], null, 2)); } catch (_) {}
+    res.json({ success: true });
+});
+
+// ─── Reports & Analytics API ─────────────────────────────────────────────────
+app.get("/api/reports/full", (_req, res) => {
+    try {
+        let history = [];
+        if (fs_1.default.existsSync(HISTORY_PATH)) {
+            try { history = JSON.parse(fs_1.default.readFileSync(HISTORY_PATH, "utf8")); } catch (_) {}
+        }
+
+        let totalMessagesSent = 0;
+        let totalMessagesFailed = 0;
+        const daysMap = {};
+        for (let i = 6; i >= 0; i--) {
+            const d = new Date();
+            d.setDate(d.getDate() - i);
+            const str = d.toISOString().split('T')[0];
+            daysMap[str] = { date: str, sent: 0, failed: 0, emails: 0, aiReplies: 0 };
+        }
+
+        history.forEach(h => {
+            const sent = h.sentCount || 0;
+            const failed = h.failCount || 0;
+            totalMessagesSent += sent;
+            totalMessagesFailed += failed;
+            const dStr = (h.timestamp || "").split('T')[0];
+            if (daysMap[dStr]) {
+                daysMap[dStr].sent += sent;
+                daysMap[dStr].failed += failed;
+            }
+        });
+
+        emailHistory.forEach(e => {
+            const dStr = (e.timestamp || "").split('T')[0];
+            if (daysMap[dStr]) {
+                daysMap[dStr].emails += 1;
+            }
+        });
+
+        aiReplyLogs.forEach(r => {
+            const dStr = (r.timestamp || "").split('T')[0];
+            if (daysMap[dStr]) {
+                daysMap[dStr].aiReplies += 1;
+            }
+        });
+
+        const activeDevs = serializeDevices().filter(d => d.isReady);
+        const agentRequestsCount = Array.from(conversationsMap.values()).filter(c => c.requestedAgent).length;
+
+        const sourceBreakdown = {};
+        aiReplyLogs.forEach(log => {
+            const src = log.source || "Autre";
+            sourceBreakdown[src] = (sourceBreakdown[src] || 0) + 1;
+        });
+
+        res.json({
+            success: true,
+            summary: {
+                totalWhatsAppSent: totalMessagesSent,
+                totalWhatsAppFailed: totalMessagesFailed,
+                deliveryRate: (totalMessagesSent + totalMessagesFailed) > 0 ? Math.round((totalMessagesSent / (totalMessagesSent + totalMessagesFailed)) * 100) : 100,
+                totalEmailsSent: emailHistory.filter(e => e.status === 'success').length,
+                totalEmailsFailed: emailHistory.filter(e => e.status === 'failed').length,
+                totalContacts: savedContacts.length,
+                totalAiReplies: aiReplyLogs.length,
+                activeDevicesCount: activeDevs.length,
+                agentRequestsPending: agentRequestsCount,
+                bulkCampaignsCount: history.length
+            },
+            dailyStats: Object.values(daysMap),
+            sourceBreakdown,
+            devices: serializeDevices()
+        });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ─── Workflow Bot Endpoints ──────────────────────────────────────────────────
+app.get("/api/workflows", (_req, res) => {
+    res.json(workflowsList);
+});
+
+app.post("/api/workflows", (req, res) => {
+    try {
+        const { workflows } = req.body;
+        if (Array.isArray(workflows)) {
+            workflowsList = workflows;
+            fs_1.default.writeFileSync(WORKFLOWS_PATH, JSON.stringify(workflowsList, null, 2));
+            res.json({ success: true, workflows: workflowsList });
+        } else {
+            res.status(400).json({ error: "Workflows array required" });
+        }
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/workflows/:id/toggle", (req, res) => {
+    try {
+        const wf = workflowsList.find(w => w.id === req.params.id);
+        if (wf) {
+            wf.active = !wf.active;
+            fs_1.default.writeFileSync(WORKFLOWS_PATH, JSON.stringify(workflowsList, null, 2));
+            res.json({ success: true, workflow: wf });
+        } else {
+            res.status(404).json({ error: "Workflow non trouvé" });
+        }
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
 });
 
 // ─── API Integrations Routes ──────────────────────────────────────────────────
@@ -3367,8 +4150,168 @@ app.post("/api/integrations/test-webhook", async (req, res) => {
     }
 });
 
+app.post("/api/integrations/test-serper", async (req, res) => {
+    try {
+        const apiKey = req.body?.apiKey || integrationsSettings.scraper?.serperApiKey || "56b7780f8785c9d26504deca8d2adb9c48546ffd";
+        if (!apiKey) return res.status(400).json({ success: false, error: "Serper.dev API key is required" });
+
+        const testRes = await fetch("https://google.serper.dev/maps", {
+            method: "POST",
+            headers: {
+                "X-API-KEY": apiKey,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                q: "restaurant Paris",
+                gl: "fr",
+                hl: "fr"
+            }),
+            signal: AbortSignal.timeout(10000)
+        });
+
+        if (!testRes.ok) {
+            const errBody = await testRes.json().catch(() => ({}));
+            return res.status(testRes.status).json({
+                success: false,
+                error: errBody.message || `Serper.dev returned HTTP ${testRes.status}`
+            });
+        }
+
+        const data = await testRes.json();
+        const count = data.places?.length || 0;
+        return res.json({
+            success: true,
+            message: `Connected to Serper.dev! Verified ${count} business results.`,
+            placesCount: count
+        });
+    } catch (e) {
+        return res.status(500).json({ success: false, error: e.message || "Serper.dev test connection failed" });
+    }
+});
+
+app.post("/api/integrations/test-serpapi", async (req, res) => {
+    try {
+        const apiKey = req.body?.apiKey || integrationsSettings.scraper?.serpApiKey;
+        if (!apiKey) return res.status(400).json({ success: false, error: "SerpApi API key is required" });
+
+        const url = `https://serpapi.com/search.json?engine=google_maps&q=cafe+paris&api_key=${apiKey}&hl=fr&gl=fr`;
+        const testRes = await fetch(url, { signal: AbortSignal.timeout(10000) });
+        const data = await testRes.json();
+
+        if (data.error) {
+            return res.status(400).json({ success: false, error: data.error });
+        }
+
+        return res.json({
+            success: true,
+            message: `Connected to SerpApi! Found ${data.local_results?.length || 0} local results.`,
+            count: data.local_results?.length || 0
+        });
+    } catch (e) {
+        return res.status(500).json({ success: false, error: e.message || "SerpApi test connection failed" });
+    }
+});
+
+// ─── Lead Scraping & Multi-Source Extraction Suite ───────────────────────────
+
+const EMAIL_REGEX = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,7}\b/g;
+const PHONE_EXTRACT_REGEX = /(?:\+(?:[0-9]\s*){1,3})?[0-9](?:[\s.-]*[0-9]){8,13}/g;
+
+function cleanExtractedEmail(text) {
+    if (!text) return "";
+    const matches = text.match(EMAIL_REGEX) || [];
+    const valid = matches.filter(e => {
+        const l = e.toLowerCase();
+        return !l.endsWith('.png') && !l.endsWith('.jpg') && !l.endsWith('.jpeg') && !l.endsWith('.webp')
+            && !l.endsWith('.svg') && !l.endsWith('.gif') && !l.endsWith('.bmp')
+            && !l.includes('example.com') && !l.includes('domain.com') && !l.includes('email.com')
+            && !l.includes('sentry.io') && !l.includes('wixpress.com') && !l.includes('cloudflare.com')
+            && !l.includes('webpack') && !l.includes('schema.org') && !l.includes('bootstrap')
+            && !l.includes('googleapis.com') && !l.includes('w3.org');
+    });
+    return valid.length > 0 ? valid[0].toLowerCase() : "";
+}
+
+async function extractEmailFromWebsite(websiteUrl, timeoutMs = 4500) {
+    if (!websiteUrl || !websiteUrl.startsWith('http')) return "";
+    try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+        const res = await fetch(websiteUrl, {
+            signal: controller.signal,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            }
+        });
+        clearTimeout(timeout);
+        if (!res.ok) return "";
+        const html = await res.text();
+
+        // 1. Check for mailto: links
+        const mailtoMatches = [...html.matchAll(/mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,7})/gi)];
+        if (mailtoMatches.length > 0) {
+            const mEmail = mailtoMatches[0][1].toLowerCase();
+            if (!mEmail.includes('example') && !mEmail.includes('domain')) return mEmail;
+        }
+
+        // 2. Search html text
+        const email = cleanExtractedEmail(html);
+        if (email) return email;
+
+        // 3. Try contact subpage if homepage had no email
+        try {
+            const urlObj = new URL(websiteUrl);
+            const contactUrl = `${urlObj.origin}/contact`;
+            const cController = new AbortController();
+            const cTimeout = setTimeout(() => cController.abort(), 2500);
+            const cRes = await fetch(contactUrl, {
+                signal: cController.signal,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': 'text/html'
+                }
+            });
+            clearTimeout(cTimeout);
+            if (cRes.ok) {
+                const cHtml = await cRes.text();
+                const cEmail = cleanExtractedEmail(cHtml);
+                if (cEmail) return cEmail;
+            }
+        } catch (_) {}
+
+        return "";
+    } catch (_) {
+        return "";
+    }
+}
+
+function decodeBingUrl(url) {
+    if (!url) return '';
+    if (url.includes('&u=a1') || url.includes('?u=a1')) {
+        const match = url.match(/[?&]u=a1([a-zA-Z0-9_-]+)/);
+        if (match) {
+            try {
+                let base64 = match[1].replace(/-/g, '+').replace(/_/g, '/');
+                while (base64.length % 4) base64 += '=';
+                return Buffer.from(base64, 'base64').toString('utf8');
+            } catch (_) {}
+        }
+    }
+    return url;
+}
+
+function extractPhonesFromText(text) {
+    if (!text) return [];
+    const matches = text.match(PHONE_EXTRACT_REGEX) || [];
+    return matches.map(m => m.trim()).filter(m => {
+        const digits = m.replace(/\D/g, '');
+        return digits.length >= 9 && digits.length <= 15;
+    });
+}
+
 // ─── External Scraper Engines ────────────────────────────────────────────────
-async function scrapeGooglePlacesApi(keyword, location, limit, apiKey, mobileOnly = false) {
+async function scrapeGooglePlacesApi(keyword, location, limit, apiKey, mobileOnly = false, extractEmails = true) {
     io.emit("scrape_status", { step: "navigating", message: `Connecting to Google Places API for "${keyword} in ${location}"...`, progress: 20 });
     const query = `${keyword} in ${location}`;
     const searchUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${apiKey}`;
@@ -3410,9 +4353,14 @@ async function scrapeGooglePlacesApi(keyword, location, limit, apiKey, mobileOnl
                 }
                 seenPhones.add(cleanNumber);
                 const phoneType = getPhoneType(cleanNumber, defaultCountry);
+                let email = "";
+                if (extractEmails && d.website) {
+                    email = await extractEmailFromWebsite(d.website);
+                }
                 const leadObj = {
                     name: d.name || place.name,
                     number: cleanNumber,
+                    email,
                     phoneType,
                     address: d.formatted_address || place.formatted_address || "",
                     website: d.website || "",
@@ -3429,7 +4377,7 @@ async function scrapeGooglePlacesApi(keyword, location, limit, apiKey, mobileOnl
     return leads;
 }
 
-async function scrapeSerpApi(keyword, location, limit, apiKey, mobileOnly = false) {
+async function scrapeSerpApi(keyword, location, limit, apiKey, mobileOnly = false, extractEmails = true) {
     io.emit("scrape_status", { step: "navigating", message: `Querying SerpAPI Google Maps for "${keyword} in ${location}"...`, progress: 25 });
     const url = `https://serpapi.com/search.json?engine=google_maps&q=${encodeURIComponent(keyword + ' ' + location)}&api_key=${apiKey}&hl=fr&gl=ma`;
     const res = await fetch(url);
@@ -3462,9 +4410,14 @@ async function scrapeSerpApi(keyword, location, limit, apiKey, mobileOnly = fals
             }
             seenPhones.add(cleanNumber);
             const phoneType = getPhoneType(cleanNumber, defaultCountry);
+            let email = "";
+            if (extractEmails && item.website) {
+                email = await extractEmailFromWebsite(item.website);
+            }
             const leadObj = {
                 name: item.title || "Business Lead",
                 number: cleanNumber,
+                email,
                 phoneType,
                 address: item.address || "",
                 website: item.website || "",
@@ -3478,32 +4431,812 @@ async function scrapeSerpApi(keyword, location, limit, apiKey, mobileOnly = fals
     return leads;
 }
 
+async function scrapeSerperDev(keyword, location, limit, apiKey, mobileOnly = false, extractEmails = true) {
+    io.emit("scrape_status", { step: "navigating", message: `Connecting to Serper.dev Google Maps for "${keyword} in ${location}"...`, progress: 20 });
+
+    const leads = [];
+    const seenPhones = new Set();
+    const defaultCountry = integrationsSettings.phone?.defaultCountryCode || "212";
+    const glCode = defaultCountry === "212" ? "ma" : (defaultCountry === "33" ? "fr" : "us");
+    const maxPages = Math.min(Math.ceil(limit / 15), 10);
+
+    for (let page = 1; page <= maxPages; page++) {
+        if (leads.length >= limit) break;
+        io.emit("scrape_status", {
+            step: "scrolling",
+            message: `Fetching Serper.dev Maps results (Page ${page})...`,
+            progress: Math.min(25 + page * 15, 85)
+        });
+
+        const res = await fetch("https://google.serper.dev/maps", {
+            method: "POST",
+            headers: {
+                "X-API-KEY": apiKey,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                q: `${keyword} ${location}`,
+                gl: glCode,
+                hl: "fr",
+                page: page
+            }),
+            signal: AbortSignal.timeout(15000)
+        });
+
+        if (!res.ok) {
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.message || `Serper.dev returned HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        const places = data.places || [];
+        if (places.length === 0) break;
+
+        for (let i = 0; i < places.length; i++) {
+            if (leads.length >= limit) break;
+            const item = places[i];
+            const rawPhone = item.phoneNumber || item.phone || "";
+            const cleanNumber = normalizeScrapedPhone(rawPhone, location, defaultCountry);
+
+            if (cleanNumber && cleanNumber.length >= 8 && !seenPhones.has(cleanNumber)) {
+                if (mobileOnly && isLandlineNumber(cleanNumber, defaultCountry)) {
+                    continue;
+                }
+                seenPhones.add(cleanNumber);
+                const phoneType = getPhoneType(cleanNumber, defaultCountry);
+                let email = "";
+                if (extractEmails && item.website) {
+                    email = await extractEmailFromWebsite(item.website);
+                }
+                const leadObj = {
+                    name: item.title || "Business Lead",
+                    number: cleanNumber,
+                    email,
+                    phoneType,
+                    address: item.address || "",
+                    website: item.website || "",
+                    rating: item.rating ? String(item.rating) : "",
+                    source: "Serper.dev"
+                };
+                leads.push(leadObj);
+                io.emit("scrape_lead_found", { lead: leadObj, current: leads.length, totalTarget: limit });
+            }
+        }
+    }
+    return leads;
+}
+
+// ─── Free Chrome Puppeteer Scrapers ──────────────────────────────────────────
+
+async function scrapeGoogleMapsPuppeteer(browser, keyword, location, limit, options = {}) {
+    const { mobileOnly = false, extractEmails = true, seenPhones = new Set(), seenEmails = new Set() } = options;
+    const defaultCountry = integrationsSettings.phone?.defaultCountryCode || "212";
+    const leads = [];
+
+    const page = await browser.newPage();
+    try {
+        await page.setViewport({ width: 1280, height: 800 });
+        const consentCookie = { name: 'CONSENT', value: 'YES+cb.20230101-00-p0.en+FX+777', domain: '.google.com' };
+        await page.setCookie(consentCookie);
+
+        const query = encodeURIComponent(`${keyword} in ${location}`);
+        const searchUrl = `https://www.google.com/maps/search/${query}`;
+        console.log(`[Google Maps Scraper] Navigating to: ${searchUrl}`);
+        io.emit("scrape_status", { step: "navigating", message: `Opening Google Maps for "${keyword} in ${location}"...`, progress: 15, current: leads.length, total: limit, mode: "Google Maps" });
+
+        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
+
+        try {
+            await page.waitForSelector('div[role="feed"], a.hfpxzc, a[href*="/maps/place/"]', { timeout: 15000 });
+        } catch (_) {}
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // Auto-dismiss Google cookie dialog
+        try {
+            await page.evaluate(() => {
+                const buttons = Array.from(document.querySelectorAll('button, form button'));
+                const acceptBtn = buttons.find(b => {
+                    const txt = (b.innerText || b.getAttribute('aria-label') || '').toLowerCase();
+                    return txt.includes('tout accepter') || txt.includes('accept all') || txt.includes('i agree') || txt.includes('accepter tout');
+                });
+                if (acceptBtn) acceptBtn.click();
+            });
+        } catch (_) {}
+
+        // Scroll the feed to load matching results
+        io.emit("scrape_status", { step: "scrolling", message: "Scanning Google Maps listings...", progress: 30, current: leads.length, total: limit, mode: "Google Maps" });
+        const scrollSelector = 'div[role="feed"]';
+        let previousHeight = 0;
+        let scrollAttempts = 0;
+        const maxScrollAttempts = Math.min(Math.max(Math.ceil(limit / 3), 8), 40);
+
+        while (scrollAttempts < maxScrollAttempts) {
+            scrollAttempts++;
+            await page.evaluate((sel) => {
+                const feed = document.querySelector(sel);
+                if (feed) {
+                    feed.scrollTop = feed.scrollHeight;
+                } else {
+                    window.scrollBy(0, 1000);
+                }
+            }, scrollSelector);
+
+            await new Promise(resolve => setTimeout(resolve, 1500));
+
+            const currentResultsCount = await page.evaluate(() => {
+                return document.querySelectorAll('a.hfpxzc, a[href*="/maps/place/"]').length;
+            });
+
+            io.emit("scrape_status", {
+                step: "scrolling",
+                message: `Discovered ${currentResultsCount} listings on Google Maps...`,
+                progress: Math.min(30 + Math.round((scrollAttempts / maxScrollAttempts) * 25), 55),
+                current: leads.length,
+                total: limit,
+                mode: "Google Maps"
+            });
+
+            if (currentResultsCount >= limit * 1.5) break;
+
+            const newHeight = await page.evaluate((sel) => {
+                const feed = document.querySelector(sel);
+                return feed ? feed.scrollHeight : document.body.scrollHeight;
+            }, scrollSelector);
+
+            if (newHeight === previousHeight && scrollAttempts > 8) break;
+            previousHeight = newHeight;
+        }
+
+        // Extract place links and summary cards
+        const placeItems = await page.evaluate(() => {
+            const results = [];
+            const links = Array.from(document.querySelectorAll('a.hfpxzc, a[href*="/maps/place/"]'));
+
+            for (const link of links) {
+                const href = link.getAttribute('href');
+                let ariaLabel = link.getAttribute('aria-label') || '';
+                const container = link.closest('div[role="article"], div.Nv2PK') || link.parentElement;
+                const containerText = container ? container.innerText : '';
+
+                if (!ariaLabel && container) {
+                    const titleEl = container.querySelector('.qBF1Pd, font, [class*="title"]');
+                    if (titleEl) ariaLabel = titleEl.innerText;
+                }
+
+                if (href && (ariaLabel || containerText)) {
+                    results.push({
+                        name: ariaLabel || "Business",
+                        url: href,
+                        containerText
+                    });
+                }
+            }
+            return results;
+        });
+
+        console.log(`[Google Maps Scraper] Discovered ${placeItems.length} candidate places.`);
+        io.emit("scrape_status", {
+            step: "inspecting",
+            message: `Extracting contact details for ${placeItems.length} businesses...`,
+            progress: 55,
+            current: leads.length,
+            total: limit,
+            mode: "Google Maps"
+        });
+
+        // First pass: extract phones directly from card text without opening pages!
+        for (const item of placeItems) {
+            if (leads.length >= limit) break;
+            if (item.containerText) {
+                const phones = extractPhonesFromText(item.containerText);
+                if (phones.length > 0) {
+                    const cleanNumber = normalizeScrapedPhone(phones[0], location, defaultCountry);
+                    if (cleanNumber && cleanNumber.length >= 8 && !seenPhones.has(cleanNumber)) {
+                        if (mobileOnly && isLandlineNumber(cleanNumber, defaultCountry)) {
+                            continue;
+                        }
+                        seenPhones.add(cleanNumber);
+                        const phoneType = getPhoneType(cleanNumber, defaultCountry);
+                        const leadObj = {
+                            name: item.name,
+                            number: cleanNumber,
+                            email: "",
+                            phoneType,
+                            address: location,
+                            website: "",
+                            rating: "",
+                            source: "Google Maps"
+                        };
+                        leads.push(leadObj);
+                        io.emit("scrape_lead_found", { lead: leadObj, current: leads.length, totalTarget: limit });
+                    }
+                }
+            }
+        }
+
+        // Second pass: for remaining needed leads, inspect place detail pages
+        const remainingNeeded = limit - leads.length;
+        if (remainingNeeded > 0) {
+            const placesToInspect = placeItems.filter(p => !leads.some(l => l.name === p.name)).slice(0, remainingNeeded * 2);
+            const workerPage = await browser.newPage();
+            try {
+                await workerPage.setViewport({ width: 1280, height: 800 });
+                for (let i = 0; i < placesToInspect.length; i++) {
+                    if (leads.length >= limit) break;
+                    const item = placesToInspect[i];
+                    io.emit("scrape_status", {
+                        step: "inspecting",
+                        message: `Inspecting Google Maps page for "${item.name}"...`,
+                        current: leads.length,
+                        total: limit,
+                        currentBusiness: item.name,
+                        progress: Math.min(60 + Math.round(((i + 1) / placesToInspect.length) * 35), 96)
+                    });
+
+                    try {
+                        await workerPage.goto(item.url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+                        const details = await workerPage.evaluate(() => {
+                            let phone = '';
+                            const phoneBtn = document.querySelector('button[data-item-id*="phone:"], [data-tooltip*="téléphone" i], [data-tooltip*="phone" i], [aria-label*="phone" i], [aria-label*="téléphone" i]');
+                            if (phoneBtn) {
+                                phone = phoneBtn.getAttribute('aria-label') || phoneBtn.innerText || '';
+                                phone = phone.replace(/^[^\d+]+/, '').trim();
+                            }
+                            if (!phone) {
+                                const mainPane = document.querySelector('div[role="main"]') || document.body;
+                                const phoneRegex = /(?:\+(?:[0-9]\s*){1,3})?[0-9](?:[\s.-]*[0-9]){8,13}/g;
+                                const matches = (mainPane.innerText.match(phoneRegex) || []).filter(n => {
+                                    const digits = n.replace(/\D/g, '');
+                                    return digits.length >= 9 && digits.length <= 15;
+                                });
+                                if (matches.length > 0) phone = matches[0];
+                            }
+                            const websiteEl = document.querySelector('a[data-item-id="authority"], a[aria-label*="site web" i], a[aria-label*="website" i]');
+                            const website = websiteEl ? websiteEl.getAttribute('href') : '';
+                            const addressEl = document.querySelector('button[data-item-id="address"]');
+                            const address = addressEl ? (addressEl.innerText || addressEl.getAttribute('aria-label') || '') : '';
+                            const ratingEl = document.querySelector('span.MW4etd, [aria-label*="étoiles" i], [aria-label*="stars" i]');
+                            const rating = ratingEl ? (ratingEl.innerText || ratingEl.getAttribute('aria-label') || '') : '';
+                            return { phone, website, address, rating };
+                        });
+
+                        const cleanNumber = normalizeScrapedPhone(details.phone, location, defaultCountry);
+                        if (cleanNumber && cleanNumber.length >= 8 && !seenPhones.has(cleanNumber)) {
+                            if (mobileOnly && isLandlineNumber(cleanNumber, defaultCountry)) {
+                                continue;
+                            }
+                            seenPhones.add(cleanNumber);
+                            const phoneType = getPhoneType(cleanNumber, defaultCountry);
+                            let email = "";
+                            if (extractEmails && details.website) {
+                                email = await extractEmailFromWebsite(details.website);
+                            }
+                            const leadObj = {
+                                name: item.name,
+                                number: cleanNumber,
+                                email,
+                                phoneType,
+                                address: details.address.replace(/\n/g, ' ').replace(/^\s*/, '').trim() || location,
+                                website: details.website || "",
+                                rating: details.rating ? details.rating.trim() : "",
+                                source: "Google Maps"
+                            };
+                            leads.push(leadObj);
+                            io.emit("scrape_lead_found", { lead: leadObj, current: leads.length, totalTarget: limit });
+                        }
+                    } catch (_) {}
+                }
+            } finally {
+                await workerPage.close().catch(() => {});
+            }
+        }
+    } finally {
+        await page.close().catch(() => {});
+    }
+    return leads;
+}
+
+async function scrapeBingPuppeteer(browser, keyword, location, limit, options = {}) {
+    const { mobileOnly = false, extractEmails = true, seenPhones = new Set(), seenEmails = new Set() } = options;
+    const defaultCountry = integrationsSettings.phone?.defaultCountryCode || "212";
+    const leads = [];
+    const page = await browser.newPage();
+
+    try {
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+        const maxPages = Math.min(Math.ceil(limit / 10), 6);
+
+        for (let pIdx = 0; pIdx < maxPages; pIdx++) {
+            if (leads.length >= limit) break;
+            const first = pIdx * 10 + 1;
+            const query = `${keyword} ${location} telephone email contact`;
+            const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&first=${first}&setlang=fr-fr`;
+
+            io.emit("scrape_status", {
+                step: "navigating",
+                message: `Searching Bing (Page ${pIdx + 1}) for "${keyword} in ${location}"...`,
+                progress: Math.min(20 + pIdx * 15, 80),
+                current: leads.length,
+                total: limit,
+                mode: "Bing"
+            });
+
+            await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+
+            // Dismiss Bing consent
+            try {
+                await page.evaluate(() => {
+                    const btn = document.querySelector('#bnp_btn_accept, #b_privacyCookieConsent, button[id*="accept"]');
+                    if (btn) btn.click();
+                });
+            } catch (_) {}
+
+            const items = await page.evaluate(() => {
+                const results = [];
+                document.querySelectorAll('h2').forEach(h2 => {
+                    const a = h2.querySelector('a');
+                    const li = h2.closest('li, div.b_algo, div.b_entityTitle') || h2.parentElement;
+                    const text = li ? li.innerText : '';
+                    if (a && a.innerText && a.href) {
+                        results.push({
+                            title: a.innerText.trim(),
+                            url: a.href,
+                            text: text + ' ' + (a.getAttribute('title') || '')
+                        });
+                    }
+                });
+                return results;
+            });
+
+            for (const item of items) {
+                if (leads.length >= limit) break;
+                const realUrl = decodeBingUrl(item.url);
+                const phones = extractPhonesFromText(item.text);
+                let email = cleanExtractedEmail(item.text);
+
+                if (!email && extractEmails && realUrl && realUrl.startsWith('http') && !realUrl.includes('bing.com')) {
+                    email = await extractEmailFromWebsite(realUrl, 3000);
+                }
+
+                let cleanNumber = "";
+                if (phones.length > 0) {
+                    cleanNumber = normalizeScrapedPhone(phones[0], location, defaultCountry);
+                }
+
+                const hasValidPhone = cleanNumber && cleanNumber.length >= 8 && !seenPhones.has(cleanNumber);
+                const hasValidEmail = email && !seenEmails.has(email.toLowerCase());
+
+                if (hasValidPhone || hasValidEmail) {
+                    if (hasValidPhone && mobileOnly && isLandlineNumber(cleanNumber, defaultCountry) && !hasValidEmail) {
+                        continue;
+                    }
+                    if (hasValidPhone) seenPhones.add(cleanNumber);
+                    if (hasValidEmail) seenEmails.add(email.toLowerCase());
+
+                    const phoneType = hasValidPhone ? getPhoneType(cleanNumber, defaultCountry) : 'unknown';
+                    const leadObj = {
+                        name: item.title.split(/[-|•–]/)[0].trim(),
+                        number: cleanNumber || "",
+                        email: email || "",
+                        phoneType,
+                        address: location,
+                        website: realUrl.startsWith('http') && !realUrl.includes('bing.com') ? realUrl : "",
+                        rating: "",
+                        source: "Bing"
+                    };
+                    leads.push(leadObj);
+                    io.emit("scrape_lead_found", { lead: leadObj, current: leads.length, totalTarget: limit });
+                }
+            }
+        }
+    } catch (e) {
+        console.warn("[Bing Scraper] Error:", e.message);
+    } finally {
+        await page.close().catch(() => {});
+    }
+    return leads;
+}
+
+async function scrapeYahooPuppeteer(browser, keyword, location, limit, options = {}) {
+    const { mobileOnly = false, extractEmails = true, seenPhones = new Set(), seenEmails = new Set() } = options;
+    const defaultCountry = integrationsSettings.phone?.defaultCountryCode || "212";
+    const leads = [];
+    const page = await browser.newPage();
+
+    try {
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+        const maxPages = Math.min(Math.ceil(limit / 10), 5);
+
+        for (let pIdx = 0; pIdx < maxPages; pIdx++) {
+            if (leads.length >= limit) break;
+            const bOffset = pIdx * 10 + 1;
+            const searchUrl = `https://fr.search.yahoo.com/search?p=${encodeURIComponent(keyword + ' ' + location + ' telephone email')}&b=${bOffset}`;
+
+            io.emit("scrape_status", {
+                step: "navigating",
+                message: `Searching Yahoo & Annuaires (Page ${pIdx + 1}) for "${keyword} in ${location}"...`,
+                progress: Math.min(25 + pIdx * 15, 80),
+                current: leads.length,
+                total: limit,
+                mode: "Yahoo"
+            });
+
+            await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+
+            // Handle Yahoo consent popup
+            if (page.url().includes('consent.yahoo.com') || page.url().includes('guce.yahoo.com')) {
+                try {
+                    await page.evaluate(() => {
+                        const btns = Array.from(document.querySelectorAll('button, input[type="submit"]'));
+                        const btn = btns.find(b => {
+                            const t = (b.innerText || b.value || '').toLowerCase();
+                            return t.includes('accepter') || t.includes('agree') || b.name === 'agree';
+                        });
+                        if (btn) btn.click();
+                    });
+                    await page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 7000 }).catch(() => {});
+                } catch (_) {}
+            }
+
+            const items = await page.evaluate(() => {
+                const list = [];
+                document.querySelectorAll('div.algo, li div.compText, div.dd, div[class*="rel-news"], div.compArticle').forEach(el => {
+                    const a = el.querySelector('h3 a, a');
+                    if (a && a.innerText && a.href && !a.href.includes('yahoo.com')) {
+                        list.push({
+                            title: a.innerText.trim(),
+                            url: a.href,
+                            text: el.innerText
+                        });
+                    }
+                });
+                return list;
+            });
+
+            for (const item of items) {
+                if (leads.length >= limit) break;
+                const phones = extractPhonesFromText(item.text);
+                let email = cleanExtractedEmail(item.text);
+
+                if (!email && extractEmails && item.url && item.url.startsWith('http') && !item.url.includes('yahoo.com')) {
+                    email = await extractEmailFromWebsite(item.url, 3000);
+                }
+
+                let cleanNumber = "";
+                if (phones.length > 0) {
+                    cleanNumber = normalizeScrapedPhone(phones[0], location, defaultCountry);
+                }
+
+                const hasValidPhone = cleanNumber && cleanNumber.length >= 8 && !seenPhones.has(cleanNumber);
+                const hasValidEmail = email && !seenEmails.has(email.toLowerCase());
+
+                if (hasValidPhone || hasValidEmail) {
+                    if (hasValidPhone && mobileOnly && isLandlineNumber(cleanNumber, defaultCountry) && !hasValidEmail) {
+                        continue;
+                    }
+                    if (hasValidPhone) seenPhones.add(cleanNumber);
+                    if (hasValidEmail) seenEmails.add(email.toLowerCase());
+
+                    const phoneType = hasValidPhone ? getPhoneType(cleanNumber, defaultCountry) : 'unknown';
+                    const leadObj = {
+                        name: item.title.split(/[-|•–]/)[0].trim(),
+                        number: cleanNumber || "",
+                        email: email || "",
+                        phoneType,
+                        address: location,
+                        website: item.url.startsWith('http') && !item.url.includes('yahoo.com') ? item.url : "",
+                        rating: "",
+                        source: "Yahoo"
+                    };
+                    leads.push(leadObj);
+                    io.emit("scrape_lead_found", { lead: leadObj, current: leads.length, totalTarget: limit });
+                }
+            }
+        }
+    } catch (e) {
+        console.warn("[Yahoo Scraper] Error:", e.message);
+    } finally {
+        await page.close().catch(() => {});
+    }
+    return leads;
+}
+
+async function scrapeYelpPuppeteer(browser, keyword, location, limit, options = {}) {
+    const { mobileOnly = false, extractEmails = true, seenPhones = new Set(), seenEmails = new Set() } = options;
+    const defaultCountry = integrationsSettings.phone?.defaultCountryCode || "212";
+    const leads = [];
+    const page = await browser.newPage();
+
+    try {
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+        const maxPages = Math.min(Math.ceil(limit / 10), 5);
+
+        for (let pIdx = 0; pIdx < maxPages; pIdx++) {
+            if (leads.length >= limit) break;
+            const start = pIdx * 10;
+            const yelpUrl = `https://www.yelp.fr/search?find_desc=${encodeURIComponent(keyword)}&find_loc=${encodeURIComponent(location)}&start=${start}`;
+
+            io.emit("scrape_status", {
+                step: "navigating",
+                message: `Scanning Yelp (Page ${pIdx + 1}) for "${keyword} in ${location}"...`,
+                progress: Math.min(25 + pIdx * 15, 80),
+                current: leads.length,
+                total: limit,
+                mode: "Yelp"
+            });
+
+            await page.goto(yelpUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+
+            const bizList = await page.evaluate(() => {
+                const list = [];
+                document.querySelectorAll('a[href*="/biz/"]').forEach(a => {
+                    const name = a.innerText.trim();
+                    if (name && !name.includes('Yelp') && !name.includes('Plus') && !name.includes('continuer') && name.length > 2 && !list.some(x => x.name === name)) {
+                        list.push({
+                            name: name.replace(/^\d+\.\s*/, '').trim(),
+                            url: a.href
+                        });
+                    }
+                });
+                return list;
+            });
+
+            for (const biz of bizList) {
+                if (leads.length >= limit) break;
+                const bizPage = await browser.newPage();
+                try {
+                    await bizPage.goto(biz.url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+                    const details = await bizPage.evaluate(() => {
+                        const text = document.body.innerText;
+                        const phoneRegex = /(?:\+?\d{1,3}[\s.-]?)?\(?\d{2,4}\)?[\s.-]?\d{2,4}[\s.-]?\d{2,4}(?:[\s.-]?\d{2,4})?/g;
+                        const matches = text.match(phoneRegex) || [];
+                        const addressEl = document.querySelector('address, [class*="address"]');
+                        const address = addressEl ? addressEl.innerText.replace(/\n/g, ' ') : '';
+                        const websiteEl = document.querySelector('a[href*="/biz_redir"], a[role="link"][target="_blank"]');
+                        let website = websiteEl ? websiteEl.href : '';
+                        if (website.includes('url=')) {
+                            const m = website.match(/url=([^&]+)/);
+                            if (m) website = decodeURIComponent(m[1]);
+                        }
+                        const ratingEl = document.querySelector('[aria-label*="star rating" i], [aria-label*="étoile" i]');
+                        const rating = ratingEl ? ratingEl.getAttribute('aria-label') || '' : '';
+                        return { phones: matches, address, website, rating, text };
+                    });
+
+                    const validPhones = details.phones.filter(p => {
+                        const d = p.replace(/\D/g, '');
+                        return d.length >= 9 && d.length <= 15;
+                    });
+
+                    let cleanNumber = "";
+                    if (validPhones.length > 0) {
+                        cleanNumber = normalizeScrapedPhone(validPhones[0], location, defaultCountry);
+                    }
+
+                    let email = cleanExtractedEmail(details.text);
+                    if (!email && extractEmails && details.website) {
+                        email = await extractEmailFromWebsite(details.website, 3000);
+                    }
+
+                    const hasValidPhone = cleanNumber && cleanNumber.length >= 8 && !seenPhones.has(cleanNumber);
+                    const hasValidEmail = email && !seenEmails.has(email.toLowerCase());
+
+                    if (hasValidPhone || hasValidEmail) {
+                        if (hasValidPhone && mobileOnly && isLandlineNumber(cleanNumber, defaultCountry) && !hasValidEmail) {
+                            continue;
+                        }
+                        if (hasValidPhone) seenPhones.add(cleanNumber);
+                        if (hasValidEmail) seenEmails.add(email.toLowerCase());
+
+                        const phoneType = hasValidPhone ? getPhoneType(cleanNumber, defaultCountry) : 'unknown';
+                        const leadObj = {
+                            name: biz.name,
+                            number: cleanNumber || "",
+                            email: email || "",
+                            phoneType,
+                            address: details.address || location,
+                            website: details.website || biz.url,
+                            rating: details.rating ? details.rating.replace(/[^0-9.,]/g, '') : "",
+                            source: "Yelp"
+                        };
+                        leads.push(leadObj);
+                        io.emit("scrape_lead_found", { lead: leadObj, current: leads.length, totalTarget: limit });
+                    }
+                } catch (err) {
+                    console.warn(`[Yelp] Error inspecting ${biz.name}:`, err.message);
+                } finally {
+                    await bizPage.close().catch(() => {});
+                }
+            }
+        }
+    } catch (e) {
+        console.warn("[Yelp Scraper] Error:", e.message);
+    } finally {
+        await page.close().catch(() => {});
+    }
+    return leads;
+}
+
+async function scrapeSocialPuppeteer(browser, keyword, location, limit, options = {}) {
+    const { mobileOnly = false, extractEmails = true, seenPhones = new Set(), seenEmails = new Set() } = options;
+    const defaultCountry = integrationsSettings.phone?.defaultCountryCode || "212";
+    const leads = [];
+    const page = await browser.newPage();
+
+    try {
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+        const query = `(site:facebook.com OR site:instagram.com OR site:linkedin.com/company OR site:linkedin.com/in) "${keyword}" "${location}" ("@gmail.com" OR "contact" OR "tel" OR "06" OR "07" OR "+")`;
+        const maxPages = Math.min(Math.ceil(limit / 10), 6);
+
+        for (let pIdx = 0; pIdx < maxPages; pIdx++) {
+            if (leads.length >= limit) break;
+            const first = pIdx * 10 + 1;
+            const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}&first=${first}&setlang=fr-fr`;
+
+            io.emit("scrape_status", {
+                step: "navigating",
+                message: `Searching Social Media (Facebook, Instagram, LinkedIn) for "${keyword} in ${location}" (Page ${pIdx + 1})...`,
+                progress: Math.min(25 + pIdx * 15, 85),
+                current: leads.length,
+                total: limit,
+                mode: "Social Networks"
+            });
+
+            await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+
+            try {
+                await page.evaluate(() => {
+                    const btn = document.querySelector('#bnp_btn_accept, #b_privacyCookieConsent, button[id*="accept"]');
+                    if (btn) btn.click();
+                });
+            } catch (_) {}
+
+            const items = await page.evaluate(() => {
+                const results = [];
+                document.querySelectorAll('h2').forEach(h2 => {
+                    const a = h2.querySelector('a');
+                    const li = h2.closest('li, div.b_algo') || h2.parentElement;
+                    const text = li ? li.innerText : '';
+                    if (a && a.innerText && a.href) {
+                        results.push({
+                            title: a.innerText.trim(),
+                            url: a.href,
+                            text: text + ' ' + (a.getAttribute('title') || '')
+                        });
+                    }
+                });
+                return results;
+            });
+
+            for (const item of items) {
+                if (leads.length >= limit) break;
+                const realUrl = decodeBingUrl(item.url);
+                let platform = "Social";
+                if (realUrl.includes("facebook.com") || item.url.includes("facebook.com")) platform = "Facebook";
+                else if (realUrl.includes("instagram.com") || item.url.includes("instagram.com")) platform = "Instagram";
+                else if (realUrl.includes("linkedin.com") || item.url.includes("linkedin.com")) platform = "LinkedIn";
+
+                const phones = extractPhonesFromText(item.text);
+                const email = cleanExtractedEmail(item.text);
+
+                let cleanNumber = "";
+                if (phones.length > 0) {
+                    cleanNumber = normalizeScrapedPhone(phones[0], location, defaultCountry);
+                }
+
+                const hasValidPhone = cleanNumber && cleanNumber.length >= 8 && !seenPhones.has(cleanNumber);
+                const hasValidEmail = email && !seenEmails.has(email.toLowerCase());
+
+                if (hasValidPhone || hasValidEmail) {
+                    if (hasValidPhone && mobileOnly && isLandlineNumber(cleanNumber, defaultCountry) && !hasValidEmail) {
+                        continue;
+                    }
+                    if (hasValidPhone) seenPhones.add(cleanNumber);
+                    if (hasValidEmail) seenEmails.add(email.toLowerCase());
+
+                    const phoneType = hasValidPhone ? getPhoneType(cleanNumber, defaultCountry) : 'unknown';
+                    const leadObj = {
+                        name: item.title.split(/[-|•–]/)[0].replace(/\| Facebook|\| LinkedIn|\| Instagram/gi, '').trim(),
+                        number: cleanNumber || "",
+                        email: email || "",
+                        phoneType,
+                        address: location,
+                        website: realUrl,
+                        rating: "",
+                        source: platform
+                    };
+                    leads.push(leadObj);
+                    io.emit("scrape_lead_found", { lead: leadObj, current: leads.length, totalTarget: limit });
+                }
+            }
+        }
+    } catch (e) {
+        console.warn("[Social Scraper] Error:", e.message);
+    } finally {
+        await page.close().catch(() => {});
+    }
+    return leads;
+}
+
+// ─── Multi-Source Orchestrator ────────────────────────────────────────────────
+
+async function scrapeMultiSources(browser, keyword, location, limit, options = {}) {
+    const { source = "all", mobileOnly = false, extractEmails = true } = options;
+    const leads = [];
+    const seenPhones = new Set();
+    const seenEmails = new Set();
+    const subOptions = { mobileOnly, extractEmails, seenPhones, seenEmails };
+
+    const sourcesToRun = [];
+    if (source === "all") {
+        sourcesToRun.push("google_maps", "bing", "yahoo", "yelp", "social");
+    } else {
+        sourcesToRun.push(source);
+    }
+
+    for (const src of sourcesToRun) {
+        if (leads.length >= limit) break;
+        const needed = limit - leads.length;
+
+        try {
+            if (src === "google_maps") {
+                const gLeads = await scrapeGoogleMapsPuppeteer(browser, keyword, location, needed, subOptions);
+                leads.push(...gLeads);
+            } else if (src === "bing") {
+                const bLeads = await scrapeBingPuppeteer(browser, keyword, location, needed, subOptions);
+                leads.push(...bLeads);
+            } else if (src === "yahoo") {
+                const yLeads = await scrapeYahooPuppeteer(browser, keyword, location, needed, subOptions);
+                leads.push(...yLeads);
+            } else if (src === "yelp") {
+                const yelpLeads = await scrapeYelpPuppeteer(browser, keyword, location, needed, subOptions);
+                leads.push(...yelpLeads);
+            } else if (src === "social") {
+                const sLeads = await scrapeSocialPuppeteer(browser, keyword, location, needed, subOptions);
+                leads.push(...sLeads);
+            }
+        } catch (srcErr) {
+            console.warn(`[MultiSource] Error on ${src}:`, srcErr.message);
+        }
+    }
+
+    return leads;
+}
+
 // ─── Scraper API ──────────────────────────────────────────────────────────────
 app.post("/api/scrape-leads", async (req, res) => {
-    const { keyword, location, maxResults = 25, mobileOnly = false } = req.body;
+    const {
+        keyword,
+        location,
+        maxResults = 25,
+        mobileOnly = false,
+        source = "all",
+        extractEmails = true
+    } = req.body;
+
     if (!keyword || !location) {
         return res.status(400).json({ error: "Keyword and location required" });
     }
 
-    const limit = Math.min(Math.max(parseInt(maxResults, 10) || 20, 5), 100);
-    const scraperMode = integrationsSettings.scraper?.mode || "browser";
+    const limit = Math.min(Math.max(parseInt(maxResults, 10) || 25, 5), 500);
+    const scraperMode = integrationsSettings.scraper?.mode || "serper";
 
     io.emit("scrape_status", {
         step: "init",
-        message: `Starting research for "${keyword}" in "${location}" (Target: ${limit} ${mobileOnly ? 'mobile ' : ''}leads)...`,
+        message: `Starting research for "${keyword}" in "${location}" (Target: ${limit} leads, Source: ${source.toUpperCase()})...`,
         progress: 5,
         current: 0,
         total: limit,
-        mode: scraperMode
+        mode: source
     });
 
-    // 1. Google Places API Mode
-    if (scraperMode === "google_places" && integrationsSettings.scraper?.googlePlacesApiKey) {
+    // 0. If user explicitly configured and selected Google Places API
+    if (source === "google_maps" && scraperMode === "google_places" && integrationsSettings.scraper?.googlePlacesApiKey) {
         try {
-            const leads = await scrapeGooglePlacesApi(keyword, location, limit, integrationsSettings.scraper.googlePlacesApiKey, mobileOnly);
+            const leads = await scrapeGooglePlacesApi(keyword, location, limit, integrationsSettings.scraper.googlePlacesApiKey, mobileOnly, extractEmails);
             io.emit("scrape_status", {
                 step: "completed",
-                message: `Research complete! Successfully extracted ${leads.length} leads.`,
+                message: `Research complete! Successfully extracted ${leads.length} leads via Google Places API.`,
                 progress: 100,
                 current: leads.length,
                 total: limit
@@ -3519,17 +5252,16 @@ app.post("/api/scrape-leads", async (req, res) => {
             return res.json({ success: true, count: leads.length, leads });
         } catch (gpErr) {
             console.warn("[Google Places API] Failed, falling back to Browser scraper:", gpErr.message);
-            io.emit("scrape_status", { step: "navigating", message: `Google Places API notice: ${gpErr.message}. Falling back to Browser Scraper...`, progress: 15 });
         }
     }
 
-    // 2. SerpAPI Mode
-    if (scraperMode === "serpapi" && integrationsSettings.scraper?.serpApiKey) {
+    // 1. If user explicitly configured and selected SerpAPI
+    if (source === "google_maps" && scraperMode === "serpapi" && integrationsSettings.scraper?.serpApiKey) {
         try {
-            const leads = await scrapeSerpApi(keyword, location, limit, integrationsSettings.scraper.serpApiKey, mobileOnly);
+            const leads = await scrapeSerpApi(keyword, location, limit, integrationsSettings.scraper.serpApiKey, mobileOnly, extractEmails);
             io.emit("scrape_status", {
                 step: "completed",
-                message: `Research complete! Successfully extracted ${leads.length} leads.`,
+                message: `Research complete! Successfully extracted ${leads.length} leads via SerpAPI.`,
                 progress: 100,
                 current: leads.length,
                 total: limit
@@ -3545,11 +5277,10 @@ app.post("/api/scrape-leads", async (req, res) => {
             return res.json({ success: true, count: leads.length, leads });
         } catch (serpErr) {
             console.warn("[SerpAPI] Failed, falling back to Browser scraper:", serpErr.message);
-            io.emit("scrape_status", { step: "navigating", message: `SerpAPI notice: ${serpErr.message}. Falling back to Browser Scraper...`, progress: 15 });
         }
     }
 
-    // 3. Default Browser Scraper (Puppeteer Headless Chrome - 100% Free)
+    // 2. Default & Multi-Source Browser Scraper (Puppeteer Headless Chrome - 100% Free)
     const browserExecutable = chromePath || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
     let browser = null;
     try {
@@ -3565,245 +5296,20 @@ app.post("/api/scrape-leads", async (req, res) => {
             ]
         });
 
-        const page = await browser.newPage();
-        await page.setViewport({ width: 1280, height: 800 });
-
-        // Bypass Google Cookie Consent popup
-        const consentCookie = { name: 'CONSENT', value: 'YES+cb.20230101-00-p0.en+FX+777', domain: '.google.com' };
-        await page.setCookie(consentCookie);
-
-        const query = encodeURIComponent(`${keyword} in ${location}`);
-        const searchUrl = `https://www.google.com/maps/search/${query}`;
-        console.log(`[Google Maps Scraper] Navigating to: ${searchUrl}`);
-        io.emit("scrape_status", { step: "navigating", message: `Opening Google Maps for "${keyword} in ${location}"...`, progress: 15, current: 0, total: limit });
-
-        await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 35000 });
-        
-        // Wait for results container or navigation redirect to settle
-        try {
-            await page.waitForSelector('div[role="feed"], a.hfpxzc, a[href*="/maps/place/"]', { timeout: 15000 });
-        } catch (_) {}
-        await new Promise(resolve => setTimeout(resolve, 3000));
-
-        // Auto-dismiss any Google consent dialog
-        try {
-            await page.evaluate(() => {
-                const buttons = Array.from(document.querySelectorAll('button, form button'));
-                const acceptBtn = buttons.find(b => {
-                    const txt = (b.innerText || b.getAttribute('aria-label') || '').toLowerCase();
-                    return txt.includes('tout accepter') || txt.includes('accept all') || txt.includes('i agree') || txt.includes('accepter tout');
-                });
-                if (acceptBtn) acceptBtn.click();
-            });
-        } catch (_) {}
-
-        // Scroll the feed to load matching results
-        io.emit("scrape_status", { step: "scrolling", message: "Scanning Google Maps listings...", progress: 30, current: 0, total: limit });
-        const scrollSelector = 'div[role="feed"]';
-        let previousHeight = 0;
-        let scrollAttempts = 0;
-        const maxScrollAttempts = Math.max(Math.ceil(limit / 5), 4);
-
-        while (scrollAttempts < maxScrollAttempts) {
-            scrollAttempts++;
-            await page.evaluate((sel) => {
-                const feed = document.querySelector(sel);
-                if (feed) {
-                    feed.scrollTop = feed.scrollHeight;
-                } else {
-                    window.scrollBy(0, 1000);
-                }
-            }, scrollSelector);
-
-            await new Promise(resolve => setTimeout(resolve, 2000));
-
-            const currentResultsCount = await page.evaluate(() => {
-                return document.querySelectorAll('a.hfpxzc, div[role="article"]').length;
-            });
-
-            io.emit("scrape_status", {
-                step: "scrolling",
-                message: `Discovered ${currentResultsCount} listings on Google Maps...`,
-                progress: Math.min(30 + Math.round((scrollAttempts / maxScrollAttempts) * 20), 50),
-                current: 0,
-                total: limit
-            });
-
-            if (currentResultsCount >= limit * 1.5) break;
-
-            const newHeight = await page.evaluate((sel) => {
-                const feed = document.querySelector(sel);
-                return feed ? feed.scrollHeight : document.body.scrollHeight;
-            }, scrollSelector);
-
-            if (newHeight === previousHeight && scrollAttempts > 3) break;
-            previousHeight = newHeight;
-        }
-
-        // Extract place links and preliminary details from feed
-        const placeItems = await page.evaluate(() => {
-            const results = [];
-            const links = Array.from(document.querySelectorAll('a.hfpxzc'));
-
-            for (const link of links) {
-                const href = link.getAttribute('href');
-                const ariaLabel = link.getAttribute('aria-label') || '';
-                const container = link.closest('div[role="article"], div.Nv2PK') || link.parentElement;
-                const containerText = container ? container.innerText : '';
-
-                if (href && ariaLabel) {
-                    results.push({
-                        name: ariaLabel,
-                        url: href,
-                        containerText
-                    });
-                }
-            }
-
-            return results;
+        const leads = await scrapeMultiSources(browser, keyword, location, limit, {
+            source,
+            mobileOnly,
+            extractEmails
         });
 
-        console.log(`[Google Maps Scraper] Discovered ${placeItems.length} candidate places. Extracting details...`);
-        io.emit("scrape_status", {
-            step: "scrolling",
-            message: `Discovered ${placeItems.length} candidate businesses. Starting detailed phone extraction...`,
-            progress: 50,
-            current: 0,
-            total: limit
-        });
-
-        const leads = [];
-        const seenPhones = new Set();
-        const defaultCountry = integrationsSettings.phone?.defaultCountryCode || "212";
-        const workerPage = await browser.newPage();
-        await workerPage.setViewport({ width: 1280, height: 800 });
-
-        for (let i = 0; i < placeItems.length; i++) {
-            if (leads.length >= limit) break;
-
-            const item = placeItems[i];
-            const currentProgress = Math.min(50 + Math.round(((i + 1) / placeItems.length) * 45), 95);
-
-            io.emit("scrape_status", {
-                step: "inspecting",
-                message: `Extracting contact details for "${item.name}"...`,
-                current: leads.length,
-                total: limit,
-                currentBusiness: item.name,
-                progress: currentProgress
-            });
-
-            try {
-                await workerPage.goto(item.url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-                await workerPage.waitForSelector('div[role="main"]', { timeout: 7000 }).catch(() => {});
-
-                // Extract precise business details from detail panel
-                const details = await workerPage.evaluate(() => {
-                    // Phone
-                    let phone = '';
-                    const phoneBtn = document.querySelector('button[data-item-id*="phone:"], [data-tooltip*="téléphone" i], [data-tooltip*="phone" i], [aria-label*="phone" i], [aria-label*="téléphone" i]');
-                    if (phoneBtn) {
-                        phone = phoneBtn.getAttribute('aria-label') || phoneBtn.innerText || '';
-                        phone = phone.replace(/^[^\d+]+/, '').trim();
-                    }
-
-                    if (!phone) {
-                        const mainPane = document.querySelector('div[role="main"]') || document.body;
-                        const phoneRegex = /(?:\+(?:[0-9]\s*){1,3})?[0-9](?:[\s.-]*[0-9]){8,13}/g;
-                        const matches = (mainPane.innerText.match(phoneRegex) || []).filter(n => {
-                            const digits = n.replace(/\D/g, '');
-                            return digits.length >= 9 && digits.length <= 15;
-                        });
-                        if (matches.length > 0) phone = matches[0];
-                    }
-
-                    // Website
-                    const websiteEl = document.querySelector('a[data-item-id="authority"], a[aria-label*="site web" i], a[aria-label*="website" i]');
-                    const website = websiteEl ? websiteEl.getAttribute('href') : '';
-
-                    // Address
-                    const addressEl = document.querySelector('button[data-item-id="address"]');
-                    const address = addressEl ? (addressEl.innerText || addressEl.getAttribute('aria-label') || '') : '';
-
-                    // Rating
-                    const ratingEl = document.querySelector('span.MW4etd, [aria-label*="étoiles" i], [aria-label*="stars" i]');
-                    const rating = ratingEl ? (ratingEl.innerText || ratingEl.getAttribute('aria-label') || '') : '';
-
-                    return { phone, website, address, rating };
-                });
-
-                // Clean phone number with country normalization (strips redundant zero, eliminates +0...)
-                let cleanNumber = "";
-                if (details.phone) {
-                    cleanNumber = normalizeScrapedPhone(details.phone, location, defaultCountry);
-                } else if (item.containerText) {
-                    // Fallback to number inside search card
-                    const phoneRegex = /(?:\+(?:[0-9]\s*){1,3})?[0-9](?:[\s.-]*[0-9]){8,13}/g;
-                    const cardMatches = item.containerText.match(phoneRegex) || [];
-                    if (cardMatches.length > 0) {
-                        cleanNumber = normalizeScrapedPhone(cardMatches[0], location, defaultCountry);
-                    }
-                }
-
-                if (cleanNumber && cleanNumber.length >= 8 && !seenPhones.has(cleanNumber)) {
-                    if (mobileOnly && isLandlineNumber(cleanNumber, defaultCountry)) {
-                        console.log(`[Google Maps Scraper] Skipping landline: ${cleanNumber} (${item.name})`);
-                        io.emit("scrape_status", {
-                            step: "inspecting",
-                            message: `Excluded landline: ${cleanNumber} (Smartphone filter active)`,
-                            current: leads.length,
-                            total: limit,
-                            currentBusiness: item.name,
-                            progress: Math.min(Math.round((leads.length / limit) * 100), 98)
-                        });
-                        continue;
-                    }
-
-                    seenPhones.add(cleanNumber);
-                    const phoneType = getPhoneType(cleanNumber, defaultCountry);
-                    const leadObj = {
-                        name: item.name,
-                        number: cleanNumber,
-                        phoneType,
-                        address: details.address.replace(/\n/g, ' ').replace(/^\s*/, '').trim(),
-                        website: details.website || "",
-                        rating: details.rating ? details.rating.trim() : "",
-                        source: "Google Maps"
-                    };
-
-                    leads.push(leadObj);
-
-                    // Real-time notification over socket
-                    io.emit("scrape_lead_found", {
-                        lead: leadObj,
-                        current: leads.length,
-                        totalTarget: limit
-                    });
-
-                    io.emit("scrape_status", {
-                        step: "found",
-                        message: `Verified phone: ${leadObj.number} (${leadObj.name})`,
-                        current: leads.length,
-                        total: limit,
-                        currentBusiness: leadObj.name,
-                        progress: Math.min(Math.round((leads.length / limit) * 100), 98)
-                    });
-
-                    console.log(`[Google Maps Scraper] [${leads.length}/${limit}] Found: ${leadObj.name} (${leadObj.number})`);
-                }
-            } catch (itemErr) {
-                console.warn(`[Google Maps Scraper] Error scraping ${item.name}:`, itemErr.message);
-            }
-        }
-
-        try { await workerPage.close(); } catch (_) {}
-        await browser.close();
+        await browser.close().catch(() => {});
         browser = null;
 
-        console.log(`[Google Maps Scraper] Successfully scraped ${leads.length} leads with verified phone numbers.`);
+        const emailCount = leads.filter(l => l.email).length;
+        console.log(`[Scraper] Successfully extracted ${leads.length} leads (${emailCount} with email).`);
         io.emit("scrape_status", {
             step: "completed",
-            message: `Research complete! Successfully found ${leads.length} leads with verified phone numbers.`,
+            message: `Research complete! Successfully found ${leads.length} leads (${emailCount} with verified email).`,
             progress: 100,
             current: leads.length,
             total: limit
@@ -3826,8 +5332,7 @@ app.post("/api/scrape-leads", async (req, res) => {
         }
 
         res.json({ success: true, count: leads.length, leads });
-    }
-    catch (e) {
+    } catch (e) {
         if (browser) {
             try { await browser.close(); } catch (_) {}
         }
@@ -3837,8 +5342,7 @@ app.post("/api/scrape-leads", async (req, res) => {
             message: `Scraping error: ${e.message}`,
             progress: 0
         });
-        // @ts-ignore
-        res.status(500).json({ error: "Failed to scrape leads from Google Maps.", details: e?.message });
+        res.status(500).json({ error: "Failed to scrape leads.", details: e?.message });
     }
 });
 
@@ -3923,23 +5427,32 @@ app.post("/api/send-single", async (req, res) => {
 
 // ─── Templates API ────────────────────────────────────────────────────────────
 app.get("/api/templates", (_req, res) => {
-    res.json(messageTemplates);
+    res.json({ success: true, templates: messageTemplates });
 });
 app.post("/api/templates", (req, res) => {
-    const { id, title, content, category } = req.body;
+    const { id, category } = req.body;
+    const title = (req.body.title || req.body.name || "").trim();
+    const content = (req.body.content || "").trim();
     if (!title || !content) {
         return res.status(400).json({ error: "Title and content are required." });
     }
+    const templateItem = {
+        id: id || ("tpl-" + Date.now()),
+        title,
+        name: title,
+        content,
+        category: category || "General",
+        createdAt: new Date().toISOString()
+    };
     if (id) {
         const idx = messageTemplates.findIndex(t => t.id === id);
         if (idx !== -1) {
-            messageTemplates[idx] = { ...messageTemplates[idx], title, content, category: category || "General" };
+            messageTemplates[idx] = { ...messageTemplates[idx], ...templateItem };
         } else {
-            messageTemplates.unshift({ id, title, content, category: category || "General", createdAt: new Date().toISOString() });
+            messageTemplates.unshift(templateItem);
         }
     } else {
-        const newId = "tpl-" + Date.now();
-        messageTemplates.unshift({ id: newId, title, content, category: category || "General", createdAt: new Date().toISOString() });
+        messageTemplates.unshift(templateItem);
     }
     saveTemplates();
     res.json({ success: true, templates: messageTemplates });

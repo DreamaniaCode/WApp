@@ -1,8 +1,30 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { API_URL } from "@/lib/config";
-import { MessageSquareReply, Plus, Trash2, Save, Loader2, Globe, Brain, Sparkles, AlertCircle, CheckCircle2 } from "lucide-react";
+import {
+    MessageSquareReply,
+    Plus,
+    Trash2,
+    Save,
+    Loader2,
+    Globe,
+    Brain,
+    Sparkles,
+    AlertCircle,
+    CheckCircle2,
+    Upload,
+    FileSpreadsheet,
+    FileText,
+    ListFilter,
+    Search,
+    Clock,
+    ShieldAlert,
+    ShieldCheck,
+    Bot,
+    UserCheck,
+    RefreshCw
+} from "lucide-react";
 
 export interface AutoResponseRule {
     keyword: string;
@@ -28,21 +50,39 @@ export interface RagSource {
     createdAt?: string;
 }
 
+export interface AiReplyLog {
+    id: string;
+    timestamp: string;
+    contactNumber: string;
+    contactName: string;
+    question: string;
+    reply: string;
+    source: string;
+    confidence: string;
+    deviceId: string;
+}
+
 export function SettingsBot() {
     const [rules, setRules] = useState<AutoResponseRule[]>([]);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
     const [alert, setAlert] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
-    const [tab, setTab] = useState<'rules' | 'learning' | 'rag'>('rules');
+    const [tab, setTab] = useState<'rules' | 'learning' | 'rag' | 'replies_log'>('rules');
 
     // Self-Learning state
     const [knowledge, setKnowledge] = useState<LearnedPair[]>([]);
-    const [settings, setSettings] = useState({ autoLearn: true, autoReply: true, useRag: true, similarityThreshold: 0.45 });
+    const [settings, setSettings] = useState({
+        autoLearn: true,
+        autoReply: true,
+        useRag: true,
+        similarityThreshold: 0.45,
+        aiAutoReplyEnabled: false
+    });
     const [newQuestion, setNewQuestion] = useState("");
     const [newAnswer, setNewAnswer] = useState("");
     const [showAddPair, setShowAddPair] = useState(false);
 
-    // RAG Website Ingestion state
+    // RAG Website & Document Ingestion state
     const [sources, setSources] = useState<RagSource[]>([]);
     const [webUrl, setWebUrl] = useState("");
     const [crawling, setCrawling] = useState(false);
@@ -52,6 +92,16 @@ export function SettingsBot() {
     const [testQuery, setTestQuery] = useState("");
     const [testResult, setTestResult] = useState<any>(null);
     const [testingQuery, setTestingQuery] = useState(false);
+
+    // File Ingestion State (Excel, PDF, DOCX, TXT)
+    const [uploadingFile, setUploadingFile] = useState(false);
+    const [uploadFeedback, setUploadFeedback] = useState<string | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    // AI Reply Log state
+    const [replyLogs, setReplyLogs] = useState<AiReplyLog[]>([]);
+    const [logSearch, setLogSearch] = useState("");
+    const [loadingLogs, setLoadingLogs] = useState(false);
 
     useEffect(() => {
         loadAllData();
@@ -67,16 +117,65 @@ export function SettingsBot() {
             const knowData = await resKnowledge.json();
             if (knowData.success) {
                 setKnowledge(knowData.pairs || []);
-                if (knowData.settings) setSettings(knowData.settings);
+                if (knowData.settings) {
+                    setSettings(prev => ({ ...prev, ...knowData.settings }));
+                }
             }
 
             const resSources = await fetch(`${API_URL}/api/chatbot/sources`);
             const sourcesData = await resSources.json();
             if (sourcesData.success) setSources(sourcesData.sources || []);
+
+            loadReplyLogs();
         } catch (e) {
-            setAlert({ type: 'error', message: 'Failed to load bot rules and knowledge' });
+            setAlert({ type: 'error', message: 'Erreur lors du chargement des règles et de la base de connaissances' });
         } finally {
             setLoading(false);
+        }
+    };
+
+    const loadReplyLogs = async () => {
+        setLoadingLogs(true);
+        try {
+            const res = await fetch(`${API_URL}/api/chatbot/reply-log`);
+            const data = await res.json();
+            if (Array.isArray(data)) setReplyLogs(data);
+        } catch (e) {
+            console.error("Failed to load AI reply logs", e);
+        } finally {
+            setLoadingLogs(false);
+        }
+    };
+
+    const clearReplyLogs = async () => {
+        if (!confirm("Voulez-vous vraiment vider tout l'historique des réponses automatiques de l'IA ?")) return;
+        try {
+            await fetch(`${API_URL}/api/chatbot/reply-log`, { method: "DELETE" });
+            setReplyLogs([]);
+            setAlert({ type: 'success', message: 'Historique des réponses vidé avec succès.' });
+        } catch (e) {
+            setAlert({ type: 'error', message: 'Échec de la suppression des logs.' });
+        }
+    };
+
+    const toggleAiAutoReply = async () => {
+        const nextState = !settings.aiAutoReplyEnabled;
+        setSettings(prev => ({ ...prev, aiAutoReplyEnabled: nextState }));
+        try {
+            await fetch(`${API_URL}/api/chatbot/settings`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ aiAutoReplyEnabled: nextState })
+            });
+            setAlert({
+                type: 'success',
+                message: nextState
+                    ? "✅ Répondeur IA ACTIVÉ : L'IA répondra aux questions des clients selon vos fichiers et règles."
+                    : "⏸️ Répondeur IA DÉSACTIVÉ : L'IA ne répondra à aucun message sans votre accord."
+            });
+            setTimeout(() => setAlert(null), 4000);
+        } catch (e) {
+            setAlert({ type: 'error', message: 'Erreur lors de la mise à jour des paramètres.' });
         }
     };
 
@@ -89,66 +188,60 @@ export function SettingsBot() {
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ rules })
             });
-            const data = await res.json();
-            if (data.success) {
-                setAlert({ type: 'success', message: 'Bot configuration saved successfully' });
-                setTimeout(() => setAlert(null), 3000);
+            if (res.ok) {
+                setAlert({ type: 'success', message: 'Règles de mots-clés enregistrées avec succès !' });
             } else {
-                setAlert({ type: 'error', message: data.error || 'Failed to save rules' });
+                setAlert({ type: 'error', message: 'Erreur lors de la sauvegarde.' });
             }
         } catch (e) {
-            setAlert({ type: 'error', message: 'Could not connect to backend' });
+            setAlert({ type: 'error', message: 'Erreur réseau.' });
         } finally {
             setSaving(false);
+            setTimeout(() => setAlert(null), 4000);
         }
     };
 
-    const toggleLearnSetting = async () => {
-        const updated = { ...settings, autoLearn: !settings.autoLearn };
-        setSettings(updated);
-        try {
-            await fetch(`${API_URL}/api/chatbot/settings`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(updated)
-            });
-        } catch (e) { }
-    };
+    const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
 
-    const addManualPair = async () => {
-        if (!newQuestion.trim() || !newAnswer.trim()) return;
-        try {
-            const res = await fetch(`${API_URL}/api/chatbot/knowledge`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ question: newQuestion, answer: newAnswer })
-            });
-            const data = await res.json();
-            if (data.success) {
-                setKnowledge(prev => [{ id: data.id, question: newQuestion, answer: newAnswer, uses: 0, source: 'manual' }, ...prev]);
-                setNewQuestion("");
-                setNewAnswer("");
-                setShowAddPair(false);
-                setAlert({ type: 'success', message: 'New learned pair added successfully' });
-                setTimeout(() => setAlert(null), 3000);
+        setUploadingFile(true);
+        setUploadFeedback(null);
+
+        const reader = new FileReader();
+        reader.onload = async () => {
+            try {
+                const base64Data = (reader.result as string).split(",")[1];
+                const res = await fetch(`${API_URL}/api/chatbot/ingest-file`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        filename: file.name,
+                        data: base64Data
+                    })
+                });
+                const data = await res.json();
+                if (data.success) {
+                    setUploadFeedback(`✅ "${file.name}" importé avec succès ! ${data.chunkCount} segments de connaissances créés.`);
+                    const resSources = await fetch(`${API_URL}/api/chatbot/sources`);
+                    const sourcesData = await resSources.json();
+                    if (sourcesData.success) setSources(sourcesData.sources || []);
+                } else {
+                    setUploadFeedback(`❌ Erreur: ${data.error || "Impossible d'analyser le fichier"}`);
+                }
+            } catch (err) {
+                setUploadFeedback("❌ Erreur réseau lors de l'envoi du fichier");
+            } finally {
+                setUploadingFile(false);
+                if (fileInputRef.current) fileInputRef.current.value = "";
+                setTimeout(() => setUploadFeedback(null), 6000);
             }
-        } catch (e) {
-            setAlert({ type: 'error', message: 'Failed to add learned pair' });
-        }
+        };
+        reader.readAsDataURL(file);
     };
 
-    const deletePair = async (id: string) => {
-        try {
-            await fetch(`${API_URL}/api/chatbot/knowledge/${id}`, { method: "DELETE" });
-            setKnowledge(prev => prev.filter(p => p.id !== id));
-        } catch (e) { }
-    };
-
-    const handleIngestUrl = async () => {
-        if (!webUrl.trim() || !webUrl.startsWith("http")) {
-            setAlert({ type: 'error', message: 'Please enter a valid URL (http:// or https://)' });
-            return;
-        }
+    const handleCrawl = async () => {
+        if (!webUrl.trim()) return;
         setCrawling(true);
         setAlert(null);
         try {
@@ -159,17 +252,14 @@ export function SettingsBot() {
             });
             const data = await res.json();
             if (data.success) {
-                setAlert({ type: 'success', message: `Successfully crawled and indexed ${data.chunkCount} chunks!` });
+                setSources(prev => [data.source, ...prev]);
                 setWebUrl("");
-                const r = await fetch(`${API_URL}/api/chatbot/sources`);
-                const d = await r.json();
-                if (d.success) setSources(d.sources || []);
-                setTimeout(() => setAlert(null), 4000);
+                setAlert({ type: 'success', message: `Site web analysé : ${data.chunkCount} segments créés !` });
             } else {
-                setAlert({ type: 'error', message: data.error || 'Failed to crawl website' });
+                setAlert({ type: 'error', message: data.error || "Échec de l'exploration du site" });
             }
         } catch (e) {
-            setAlert({ type: 'error', message: 'Crawling network error' });
+            setAlert({ type: 'error', message: "Erreur réseau lors de l'exploration" });
         } finally {
             setCrawling(false);
         }
@@ -181,27 +271,56 @@ export function SettingsBot() {
             const res = await fetch(`${API_URL}/api/chatbot/ingest-text`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ title: docTitle, content: docContent })
+                body: JSON.stringify({ title: docTitle.trim(), text: docContent.trim() })
             });
             const data = await res.json();
             if (data.success) {
-                setAlert({ type: 'success', message: `Document indexed (${data.chunkCount} chunks)` });
+                setSources(prev => [data.source, ...prev]);
                 setDocTitle("");
                 setDocContent("");
                 setShowDocInput(false);
-                const r = await fetch(`${API_URL}/api/chatbot/sources`);
-                const d = await r.json();
-                if (d.success) setSources(d.sources || []);
-                setTimeout(() => setAlert(null), 3000);
+                setAlert({ type: 'success', message: `Document indexé : ${data.chunkCount} segments créés !` });
             }
-        } catch (e) { }
+        } catch (e) {}
+    };
+
+    const handleAddManualPair = async () => {
+        if (!newQuestion.trim() || !newAnswer.trim()) return;
+        try {
+            const res = await fetch(`${API_URL}/api/chatbot/knowledge`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ question: newQuestion.trim(), answer: newAnswer.trim() })
+            });
+            const data = await res.json();
+            if (data.success) {
+                setKnowledge(prev => [{
+                    id: data.id,
+                    question: newQuestion.trim(),
+                    answer: newAnswer.trim(),
+                    source: 'manual',
+                    uses: 0,
+                    createdAt: new Date().toISOString()
+                }, ...prev]);
+                setNewQuestion("");
+                setNewAnswer("");
+                setShowAddPair(false);
+            }
+        } catch (e) {}
+    };
+
+    const deletePair = async (id: string) => {
+        try {
+            await fetch(`${API_URL}/api/chatbot/knowledge/${id}`, { method: "DELETE" });
+            setKnowledge(prev => prev.filter(p => p.id !== id));
+        } catch (e) {}
     };
 
     const deleteSource = async (id: string) => {
         try {
             await fetch(`${API_URL}/api/chatbot/sources/${id}`, { method: "DELETE" });
             setSources(prev => prev.filter(s => s.id !== id));
-        } catch (e) { }
+        } catch (e) {}
     };
 
     const handleTestQuery = async () => {
@@ -217,7 +336,7 @@ export function SettingsBot() {
             const data = await res.json();
             setTestResult(data.match || { notFound: true });
         } catch (e) {
-            setTestResult({ error: 'Failed to test query' });
+            setTestResult({ error: "Erreur lors du test" });
         } finally {
             setTestingQuery(false);
         }
@@ -231,215 +350,457 @@ export function SettingsBot() {
         setRules(copy);
     };
 
+    const filteredLogs = replyLogs.filter(l =>
+        (l.contactNumber || "").includes(logSearch) ||
+        (l.contactName || "").toLowerCase().includes(logSearch.toLowerCase()) ||
+        (l.question || "").toLowerCase().includes(logSearch.toLowerCase()) ||
+        (l.reply || "").toLowerCase().includes(logSearch.toLowerCase()) ||
+        (l.source || "").toLowerCase().includes(logSearch.toLowerCase())
+    );
+
     if (loading) {
         return (
             <div className="flex justify-center items-center py-12">
-                <Loader2 className="w-8 h-8 animate-spin text-[#00a884]" />
+                <Loader2 className="w-8 h-8 animate-spin text-emerald-600" />
             </div>
         );
     }
 
     return (
-        <div className="bg-white rounded-xl shadow-lg border border-gray-100 p-6 flex flex-col gap-5">
-            {/* Header */}
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-100 pb-4">
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-200 p-6 flex flex-col gap-5">
+            {/* Master AI Activation Control Banner (Requirement: Ne répond pas si pas activé) */}
+            <div className={`rounded-2xl p-4.5 border transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
+                settings.aiAutoReplyEnabled
+                    ? "bg-emerald-50/80 border-emerald-200 text-emerald-950"
+                    : "bg-amber-50/80 border-amber-200 text-amber-950"
+            }`}>
+                <div className="flex items-start sm:items-center gap-3.5">
+                    <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${
+                        settings.aiAutoReplyEnabled ? "bg-emerald-600 text-white" : "bg-amber-600 text-white"
+                    }`}>
+                        {settings.aiAutoReplyEnabled ? <ShieldCheck className="w-6 h-6" /> : <ShieldAlert className="w-6 h-6" />}
+                    </div>
+                    <div>
+                        <div className="flex items-center gap-2">
+                            <h3 className="text-sm font-bold">
+                                {settings.aiAutoReplyEnabled
+                                    ? "Répondeur Automatique IA : ACTIVÉ & AUTORISÉ"
+                                    : "Répondeur Automatique IA : DÉSACTIVÉ (En Attente de Votre Accord)"}
+                            </h3>
+                            <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
+                                settings.aiAutoReplyEnabled ? "bg-emerald-200 text-emerald-900" : "bg-amber-200 text-amber-900"
+                            }`}>
+                                {settings.aiAutoReplyEnabled ? "Prêt à Répondre" : "Silence Radio"}
+                            </span>
+                        </div>
+                        <p className="text-xs opacity-85 mt-0.5">
+                            {settings.aiAutoReplyEnabled
+                                ? "L'IA est autorisée à répondre automatiquement aux clients sur WhatsApp en se basant sur vos documents Excel/PDF et règles."
+                                : "L'IA ne répondra à AUCUN client sans votre activation explicite. Activez le bouton ci-contre pour démarrer."}
+                        </p>
+                    </div>
+                </div>
+
+                <button
+                    onClick={toggleAiAutoReply}
+                    className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 shrink-0 shadow-2xs ${
+                        settings.aiAutoReplyEnabled
+                            ? "bg-emerald-700 hover:bg-emerald-800 text-white"
+                            : "bg-amber-700 hover:bg-amber-800 text-white"
+                    }`}
+                >
+                    <Bot className="w-4 h-4" />
+                    <span>{settings.aiAutoReplyEnabled ? "Désactiver l'IA" : "Donner l'accord & Activer l'IA"}</span>
+                </button>
+            </div>
+
+            {/* Header & Sub-Navigation */}
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-gray-100 pb-3">
                 <div>
-                    <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2">
-                        <MessageSquareReply className="w-6 h-6 text-[#00a884]" />
-                        Auto-Reply & AI Chatbot
+                    <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+                        <MessageSquareReply className="w-5 h-5 text-emerald-600" />
+                        Auto Reply, Chatbot IA & Entraînement
                     </h2>
-                    <p className="text-xs text-gray-500 mt-1">
-                        Configure keyword rules, conversation self-learning, and RAG website knowledge.
+                    <p className="text-xs text-gray-500 mt-0.5">
+                        Enseignez l'IA avec vos fichiers (Excel, PDF, Docs), configurez les mots-clés et inspectez l'historique des réponses.
                     </p>
                 </div>
                 {tab === 'rules' && (
                     <button
                         onClick={saveRules}
                         disabled={saving}
-                        className="flex items-center gap-2 px-4 py-2 bg-[#00a884] hover:bg-[#008f6f] text-white rounded-lg transition-colors text-sm font-medium disabled:opacity-50"
+                        className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl transition text-xs font-bold disabled:opacity-50 shadow-2xs"
                     >
                         {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                        Save Config
+                        Enregistrer les Règles
                     </button>
                 )}
             </div>
 
-            {/* Sub-tabs */}
-            <div className="flex items-center gap-2 bg-gray-100 p-1 rounded-lg text-xs font-semibold text-gray-600">
+            {/* Sub-tabs with 4 entries */}
+            <div className="flex items-center gap-2 bg-gray-100 p-1 rounded-xl text-xs font-semibold text-gray-600 overflow-x-auto">
                 <button
                     onClick={() => setTab('rules')}
-                    className={`flex-1 py-2 px-3 rounded-md transition-all flex items-center justify-center gap-1.5 ${tab === 'rules' ? 'bg-white text-gray-900 shadow-sm' : 'hover:text-gray-900'}`}
+                    className={`flex-1 py-2 px-3 rounded-lg transition-all flex items-center justify-center gap-1.5 shrink-0 ${tab === 'rules' ? 'bg-white text-gray-900 shadow-xs' : 'hover:text-gray-900'}`}
                 >
-                    <MessageSquareReply className="w-3.5 h-3.5 text-[#00a884]" />
-                    Keyword Rules ({rules.length})
-                </button>
-                <button
-                    onClick={() => setTab('learning')}
-                    className={`flex-1 py-2 px-3 rounded-md transition-all flex items-center justify-center gap-1.5 ${tab === 'learning' ? 'bg-white text-gray-900 shadow-sm' : 'hover:text-gray-900'}`}
-                >
-                    <Brain className="w-3.5 h-3.5 text-purple-600" />
-                    Self-Learning ({knowledge.length})
+                    <MessageSquareReply className="w-3.5 h-3.5 text-emerald-600" />
+                    Règles Mots-Clés ({rules.length})
                 </button>
                 <button
                     onClick={() => setTab('rag')}
-                    className={`flex-1 py-2 px-3 rounded-md transition-all flex items-center justify-center gap-1.5 ${tab === 'rag' ? 'bg-white text-gray-900 shadow-sm' : 'hover:text-gray-900'}`}
+                    className={`flex-1 py-2 px-3 rounded-lg transition-all flex items-center justify-center gap-1.5 shrink-0 ${tab === 'rag' ? 'bg-white text-gray-900 shadow-xs' : 'hover:text-gray-900'}`}
                 >
-                    <Globe className="w-3.5 h-3.5 text-sky-600" />
-                    Website & RAG ({sources.length})
+                    <FileSpreadsheet className="w-3.5 h-3.5 text-sky-600" />
+                    Enseignement Fichiers & RAG ({sources.length})
+                </button>
+                <button
+                    onClick={() => setTab('learning')}
+                    className={`flex-1 py-2 px-3 rounded-lg transition-all flex items-center justify-center gap-1.5 shrink-0 ${tab === 'learning' ? 'bg-white text-gray-900 shadow-xs' : 'hover:text-gray-900'}`}
+                >
+                    <Brain className="w-3.5 h-3.5 text-purple-600" />
+                    Auto-Apprentissage ({knowledge.length})
+                </button>
+                <button
+                    onClick={() => { setTab('replies_log'); loadReplyLogs(); }}
+                    className={`flex-1 py-2 px-3 rounded-lg transition-all flex items-center justify-center gap-1.5 shrink-0 ${tab === 'replies_log' ? 'bg-white text-gray-900 shadow-xs' : 'hover:text-gray-900'}`}
+                >
+                    <Clock className="w-3.5 h-3.5 text-indigo-600" />
+                    Historique Réponses IA ({replyLogs.length})
                 </button>
             </div>
 
-            {/* Alert */}
+            {/* Global Alert Notification */}
             {alert && (
-                <div className={`p-3 rounded-lg text-xs font-medium flex items-center gap-2 ${alert.type === 'success' ? 'bg-green-50 text-green-700 border border-green-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
-                    {alert.type === 'success' ? <CheckCircle2 className="w-4 h-4 flex-shrink-0" /> : <AlertCircle className="w-4 h-4 flex-shrink-0" />}
-                    {alert.message}
+                <div className={`p-3 rounded-xl text-xs font-medium flex items-center gap-2 animate-in fade-in ${
+                    alert.type === 'success' ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-red-50 text-red-800 border border-red-200'
+                }`}>
+                    {alert.type === 'success' ? <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-600" /> : <AlertCircle className="w-4 h-4 shrink-0 text-red-600" />}
+                    <span>{alert.message}</span>
                 </div>
             )}
 
-            {/* Tab 1: Keyword Rules */}
+            {/* TAB 1: Keyword Rules */}
             {tab === 'rules' && (
                 <div className="space-y-4">
-                    {rules.length === 0 ? (
-                        <div className="text-center py-8 text-gray-500 bg-gray-50 rounded-lg border border-gray-100 border-dashed">
-                            <p className="text-sm">No auto-reply rules configured yet.</p>
-                            <button onClick={addRule} className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-[#00a884] hover:text-[#008f6f]">
-                                <Plus className="w-4 h-4" />
-                                Add your first rule
-                            </button>
-                        </div>
-                    ) : (
-                        rules.map((rule, idx) => (
-                            <div key={idx} className="flex flex-col md:flex-row gap-4 p-4 border border-gray-200 rounded-lg bg-gray-50 relative group">
-                                <div className="flex-1 space-y-3">
-                                    <div>
-                                        <label className="block text-xs font-medium text-gray-600 mb-1">Incoming Keyword</label>
-                                        <input
-                                            type="text"
-                                            placeholder="e.g., pricing, hello"
-                                            value={rule.keyword}
-                                            onChange={e => updateRule(idx, 'keyword', e.target.value)}
-                                            className="w-full px-3 py-2 bg-white border border-gray-300 rounded-md focus:outline-none focus:border-[#00a884] focus:ring-1 focus:ring-[#00a884] text-sm text-gray-900"
-                                        />
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <input
-                                            type="checkbox"
-                                            id={`exact-${idx}`}
-                                            checked={rule.exactMatch}
-                                            onChange={e => updateRule(idx, 'exactMatch', e.target.checked)}
-                                            className="rounded border-gray-300 text-[#00a884] focus:ring-[#00a884]"
-                                        />
-                                        <label htmlFor={`exact-${idx}`} className="text-xs text-gray-600 cursor-pointer">
-                                            Exact match only (ignores case and spaces)
-                                        </label>
-                                    </div>
-                                </div>
-                                <div className="flex-[2] space-y-3">
-                                    <div>
-                                        <label className="block text-xs font-medium text-gray-600 mb-1">Auto Response</label>
-                                        <textarea
-                                            placeholder="Type your automated response here..."
-                                            value={rule.response}
-                                            onChange={e => updateRule(idx, 'response', e.target.value)}
-                                            rows={3}
-                                            className="w-full px-3 py-2 bg-white border border-gray-300 rounded-md focus:outline-none focus:border-[#00a884] focus:ring-1 focus:ring-[#00a884] text-sm text-gray-900 resize-none"
-                                        />
-                                    </div>
-                                </div>
-                                <button
-                                    onClick={() => removeRule(idx)}
-                                    className="absolute right-2 top-2 p-1.5 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors opacity-0 group-hover:opacity-100"
-                                    title="Remove rule"
-                                >
-                                    <Trash2 className="w-4 h-4" />
-                                </button>
-                            </div>
-                        ))
-                    )}
-                    {rules.length > 0 && (
-                        <button onClick={addRule} className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-[#00a884] bg-[#00a884]/10 hover:bg-[#00a884]/20 rounded-lg transition-colors">
-                            <Plus className="w-4 h-4" />
-                            Add another rule
-                        </button>
-                    )}
-                </div>
-            )}
-
-            {/* Tab 2: Self-Learning */}
-            {tab === 'learning' && (
-                <div className="space-y-4">
-                    <div className="p-3.5 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center justify-between">
-                        <div>
-                            <h4 className="text-xs font-bold text-emerald-900 uppercase tracking-wide flex items-center gap-1.5">
-                                <Sparkles className="w-4 h-4 text-emerald-600" />
-                                Auto-Learning from Sent Replies
-                            </h4>
-                            <p className="text-xs text-emerald-700 mt-0.5">
-                                When active, the bot remembers how you reply to customers on WhatsApp and re-uses those answers.
-                            </p>
-                        </div>
+                    <div className="flex justify-between items-center">
+                        <p className="text-xs text-gray-500">
+                            Définissez des réponses instantanées automatiques dès qu'un mot ou phrase exacte est reçu.
+                        </p>
                         <button
-                            onClick={toggleLearnSetting}
-                            className={`px-3.5 py-1.5 rounded-full text-xs font-bold transition shadow-sm ${settings.autoLearn ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : 'bg-gray-300 text-gray-700'}`}
+                            onClick={addRule}
+                            className="flex items-center gap-1 px-3 py-1.5 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-xl text-xs font-bold transition border border-emerald-200"
                         >
-                            {settings.autoLearn ? 'ACTIVE' : 'PAUSED'}
+                            <Plus className="w-3.5 h-3.5" /> Ajouter une règle
                         </button>
                     </div>
 
-                    <div className="flex items-center justify-between pt-1">
-                        <span className="text-xs font-bold text-gray-700">{knowledge.length} Learned Conversation Pairs</span>
+                    <div className="space-y-3">
+                        {rules.length === 0 ? (
+                            <div className="p-8 text-center text-xs text-gray-400 border border-dashed border-gray-200 rounded-2xl">
+                                Aucune règle configurée. Cliquez sur "Ajouter une règle" ci-dessus.
+                            </div>
+                        ) : (
+                            rules.map((rule, idx) => (
+                                <div key={idx} className="p-4 bg-gray-50/70 border border-gray-200 rounded-xl space-y-3">
+                                    <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center">
+                                        <div className="flex-1 w-full">
+                                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                                                Mot-clé déclencheur
+                                            </label>
+                                            <input
+                                                type="text"
+                                                value={rule.keyword}
+                                                onChange={e => updateRule(idx, 'keyword', e.target.value)}
+                                                placeholder="ex: prix, tarif, commande, bonjour"
+                                                className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-xs focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-none"
+                                            />
+                                        </div>
+                                        <div className="flex items-center gap-2 pt-4 shrink-0">
+                                            <label className="flex items-center gap-1.5 text-xs text-gray-700 cursor-pointer">
+                                                <input
+                                                    type="checkbox"
+                                                    checked={rule.exactMatch}
+                                                    onChange={e => updateRule(idx, 'exactMatch', e.target.checked)}
+                                                    className="rounded text-emerald-600 focus:ring-emerald-500"
+                                                />
+                                                <span className="text-[11px] font-medium">Correspondance exacte</span>
+                                            </label>
+                                            <button
+                                                onClick={() => removeRule(idx)}
+                                                className="p-1.5 text-gray-400 hover:text-red-500 rounded-lg hover:bg-white transition ml-2"
+                                            >
+                                                <Trash2 className="w-4 h-4" />
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                                            Réponse envoyée automatiquement
+                                        </label>
+                                        <textarea
+                                            value={rule.response}
+                                            onChange={e => updateRule(idx, 'response', e.target.value)}
+                                            placeholder="Tapez le message WhatsApp à envoyer..."
+                                            rows={2}
+                                            className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-xs focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-none resize-none"
+                                        />
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* TAB 2: File Ingestion & RAG (Excel, PDF, Docs, Web) */}
+            {tab === 'rag' && (
+                <div className="space-y-6">
+                    {/* File Upload Hero Card */}
+                    <div className="bg-gradient-to-br from-sky-50 to-indigo-50 border border-sky-200 rounded-2xl p-5 space-y-4 shadow-2xs">
+                        <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center shrink-0">
+                                <FileSpreadsheet className="w-6 h-6" />
+                            </div>
+                            <div>
+                                <h4 className="text-sm font-bold text-gray-900">
+                                    Enseigner l'IA avec vos Fichiers (Excel, PDF, Documents)
+                                </h4>
+                                <p className="text-xs text-gray-600 mt-0.5">
+                                    Importez vos fichiers produits, catalogues de prix, FAQ en PDF ou tableurs Excel (.xlsx/.csv). L'IA extrait les données et apprend à répondre à vos clients avec précision.
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="flex flex-col sm:flex-row items-center gap-3">
+                            <input
+                                ref={fileInputRef}
+                                type="file"
+                                accept=".xlsx,.xls,.csv,.pdf,.docx,.txt"
+                                onChange={handleFileUpload}
+                                className="hidden"
+                                id="ai-file-upload"
+                            />
+                            <label
+                                htmlFor="ai-file-upload"
+                                className={`flex-1 w-full border-2 border-dashed border-sky-300 hover:border-sky-500 bg-white/80 hover:bg-white rounded-xl p-4 flex flex-col sm:flex-row items-center justify-center gap-3 cursor-pointer transition ${
+                                    uploadingFile ? "opacity-50 pointer-events-none" : ""
+                                }`}
+                            >
+                                <Upload className="w-5 h-5 text-sky-600" />
+                                <div className="text-center sm:text-left">
+                                    <span className="text-xs font-bold text-gray-800 block">
+                                        {uploadingFile ? "Analyse & Apprentissage en cours..." : "Cliquez pour importer un fichier Excel, PDF ou Document"}
+                                    </span>
+                                    <span className="text-[10px] text-gray-500">
+                                        Formats acceptés : .xlsx, .xls, .csv, .pdf, .docx, .txt (jusqu'à 25 Mo)
+                                    </span>
+                                </div>
+                            </label>
+                        </div>
+
+                        {uploadFeedback && (
+                            <div className="p-3 rounded-xl text-xs font-semibold bg-white border border-sky-200 text-sky-900 animate-in fade-in">
+                                {uploadFeedback}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* URL Crawling Box */}
+                    <div className="bg-gray-50/70 border border-gray-200 rounded-2xl p-4 space-y-3">
+                        <h4 className="text-xs font-bold text-gray-800 flex items-center gap-2">
+                            <Globe className="w-4 h-4 text-sky-600" /> Ou Extraire depuis une URL de site web
+                        </h4>
+                        <div className="flex gap-2">
+                            <input
+                                type="url"
+                                placeholder="https://votre-site.com/faq ou catalogue"
+                                value={webUrl}
+                                onChange={e => setWebUrl(e.target.value)}
+                                className="flex-1 px-3 py-2 bg-white border border-gray-200 rounded-xl text-xs focus:ring-2 focus:ring-sky-500/20 focus:border-sky-500 outline-none"
+                            />
+                            <button
+                                onClick={handleCrawl}
+                                disabled={crawling || !webUrl.trim()}
+                                className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs font-bold transition disabled:opacity-50 shadow-2xs"
+                            >
+                                {crawling ? "Extraction..." : "Analyser le site"}
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Indexed Sources List */}
+                    <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                            <h4 className="text-xs font-bold text-gray-800">
+                                Documents & Sources Appris par l'IA ({sources.length})
+                            </h4>
+                            <button
+                                onClick={() => setShowDocInput(!showDocInput)}
+                                className="text-xs text-emerald-600 font-bold hover:underline"
+                            >
+                                {showDocInput ? "Masquer" : "+ Ajouter un texte personnalisé"}
+                            </button>
+                        </div>
+
+                        {showDocInput && (
+                            <div className="p-4 bg-gray-50 border border-gray-200 rounded-xl space-y-2.5">
+                                <input
+                                    type="text"
+                                    placeholder="Titre du document (ex: Conditions de livraison)"
+                                    value={docTitle}
+                                    onChange={e => setDocTitle(e.target.value)}
+                                    className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-xs"
+                                />
+                                <textarea
+                                    placeholder="Collez le texte, politiques, ou tarifs ici..."
+                                    value={docContent}
+                                    onChange={e => setDocContent(e.target.value)}
+                                    rows={3}
+                                    className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-xs resize-none"
+                                />
+                                <button
+                                    onClick={handleIngestDoc}
+                                    className="px-4 py-2 bg-emerald-600 text-white text-xs font-bold rounded-xl hover:bg-emerald-700 transition"
+                                >
+                                    Indexer ce texte
+                                </button>
+                            </div>
+                        )}
+
+                        <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+                            {sources.length === 0 ? (
+                                <p className="text-center py-6 text-xs text-gray-400 border border-dashed border-gray-200 rounded-xl">
+                                    Aucun document ni lien web indexé pour le moment. Importez un fichier Excel ou PDF ci-dessus !
+                                </p>
+                            ) : (
+                                sources.map(sItem => (
+                                    <div key={sItem.id} className="p-3 bg-white border border-gray-200 rounded-xl flex items-center justify-between gap-3 text-xs shadow-2xs">
+                                        <div className="flex items-center gap-2.5 min-w-0">
+                                            <FileText className="w-4 h-4 text-sky-600 shrink-0" />
+                                            <div className="truncate">
+                                                <p className="font-bold text-gray-900 truncate">{sItem.title || sItem.url}</p>
+                                                <p className="text-[10px] text-gray-400">
+                                                    {sItem.chunkCount} segments de connaissances indexés • {sItem.createdAt ? new Date(sItem.createdAt).toLocaleDateString() : ''}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <button
+                                            onClick={() => deleteSource(sItem.id)}
+                                            className="text-gray-400 hover:text-red-600 p-1.5 rounded-lg hover:bg-gray-100 transition"
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Simulator / Test Box */}
+                    <div className="p-4 bg-gray-50 border border-gray-200 rounded-2xl space-y-3">
+                        <h4 className="text-xs font-bold text-gray-800">Simulateur de Réponse IA</h4>
+                        <div className="flex gap-2">
+                            <input
+                                type="text"
+                                placeholder="Posez une question pour tester ce que l'IA va répondre..."
+                                value={testQuery}
+                                onChange={e => setTestQuery(e.target.value)}
+                                onKeyDown={e => e.key === 'Enter' && handleTestQuery()}
+                                className="flex-1 px-3 py-2 bg-white border border-gray-200 rounded-xl text-xs focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                            />
+                            <button
+                                onClick={handleTestQuery}
+                                disabled={testingQuery}
+                                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold disabled:opacity-50 transition shadow-2xs"
+                            >
+                                {testingQuery ? "Test..." : "Tester"}
+                            </button>
+                        </div>
+                        {testResult && (
+                            <div className="p-3 bg-white border border-gray-200 rounded-xl text-xs space-y-1">
+                                {testResult.notFound ? (
+                                    <span className="text-amber-600 font-semibold italic">
+                                        Aucune réponse trouvée dans les documents. L'IA passera au modèle LLM (si activé).
+                                    </span>
+                                ) : (
+                                    <>
+                                        <div className="flex items-center justify-between text-[11px] font-bold text-emerald-700">
+                                            <span>Confiance : {testResult.score}% ({testResult.sourceType})</span>
+                                            <span className="text-gray-400 truncate max-w-[160px]">{testResult.sourceTitle}</span>
+                                        </div>
+                                        <p className="text-gray-800 text-xs mt-1 bg-gray-50 p-2 rounded-lg font-medium">
+                                            "{testResult.answer}"
+                                        </p>
+                                    </>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* TAB 3: Self-Learning Q&A */}
+            {tab === 'learning' && (
+                <div className="space-y-4">
+                    <div className="flex justify-between items-center">
+                        <p className="text-xs text-gray-500">
+                            Questions-réponses apprises automatiquement lors de vos échanges avec les clients.
+                        </p>
                         <button
                             onClick={() => setShowAddPair(!showAddPair)}
-                            className="inline-flex items-center gap-1 text-xs font-semibold text-[#00a884] hover:underline"
+                            className="flex items-center gap-1 px-3 py-1.5 bg-purple-50 text-purple-700 hover:bg-purple-100 rounded-xl text-xs font-bold transition border border-purple-200"
                         >
-                            <Plus className="w-3.5 h-3.5" />
-                            {showAddPair ? 'Cancel' : 'Add Manual Pair'}
+                            <Plus className="w-3.5 h-3.5" /> Ajouter manuellement
                         </button>
                     </div>
 
                     {showAddPair && (
-                        <div className="p-3.5 bg-gray-50 border border-gray-200 rounded-lg space-y-2.5">
+                        <div className="p-4 bg-purple-50/50 border border-purple-200 rounded-2xl space-y-2.5">
                             <input
                                 type="text"
-                                placeholder="Customer Question (e.g. When are you open?)"
+                                placeholder="Question du client (ex: Quels sont vos moyens de paiement ?)"
                                 value={newQuestion}
                                 onChange={e => setNewQuestion(e.target.value)}
-                                className="w-full px-3 py-1.5 bg-white border border-gray-300 rounded text-xs focus:outline-none focus:border-[#00a884]"
+                                className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-xs"
                             />
                             <textarea
-                                placeholder="Bot Answer (e.g. We are open Mon-Sat 9AM-7PM)"
+                                placeholder="Réponse que le bot doit donner..."
                                 value={newAnswer}
                                 onChange={e => setNewAnswer(e.target.value)}
                                 rows={2}
-                                className="w-full px-3 py-1.5 bg-white border border-gray-300 rounded text-xs resize-none focus:outline-none focus:border-[#00a884]"
+                                className="w-full px-3 py-2 bg-white border border-gray-200 rounded-xl text-xs resize-none"
                             />
                             <button
-                                onClick={addManualPair}
-                                className="px-3.5 py-1.5 bg-[#00a884] text-white text-xs font-semibold rounded hover:bg-[#008f6f]"
+                                onClick={handleAddManualPair}
+                                className="px-4 py-2 bg-purple-600 text-white text-xs font-bold rounded-xl hover:bg-purple-700 transition"
                             >
-                                Save Pair
+                                Enregistrer la paire
                             </button>
                         </div>
                     )}
 
-                    <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
+                    <div className="space-y-2 max-h-[350px] overflow-y-auto">
                         {knowledge.length === 0 ? (
-                            <p className="text-center py-6 text-xs text-gray-400">
-                                No learned conversation pairs yet. Reply to contacts on WhatsApp to start learning automatically!
+                            <p className="text-center py-8 text-xs text-gray-400 border border-dashed border-gray-200 rounded-xl">
+                                Aucune connaissance apprise pour l'instant.
                             </p>
                         ) : (
-                            knowledge.map(pItem => (
-                                <div key={pItem.id} className="p-3 bg-gray-50 border border-gray-200 rounded-lg flex items-start justify-between gap-3 text-xs">
-                                    <div className="flex-1 space-y-1">
-                                        <p className="font-semibold text-gray-800">Q: {pItem.question}</p>
-                                        <p className="text-gray-600">A: {pItem.answer}</p>
-                                        <span className="text-[10px] text-gray-400 inline-block">
-                                            Used {pItem.uses || 0} times • {pItem.source || 'conversation'}
-                                        </span>
+                            knowledge.map(k => (
+                                <div key={k.id} className="p-3.5 bg-white border border-gray-200 rounded-xl flex items-start justify-between gap-3 text-xs shadow-2xs">
+                                    <div className="space-y-1 flex-1">
+                                        <p className="font-bold text-gray-900">Q : {k.question}</p>
+                                        <p className="text-gray-600 text-[11px] bg-gray-50 p-2 rounded-lg">R : {k.answer}</p>
+                                        <div className="flex items-center gap-2 text-[10px] text-gray-400">
+                                            <span>Source : {k.source}</span>
+                                            {k.uses !== undefined && <span>• Utilisé {k.uses} fois</span>}
+                                        </div>
                                     </div>
-                                    <button onClick={() => deletePair(pItem.id)} className="text-gray-400 hover:text-red-500 p-1">
-                                        <Trash2 className="w-3.5 h-3.5" />
+                                    <button
+                                        onClick={() => deletePair(k.id)}
+                                        className="text-gray-400 hover:text-red-500 p-1"
+                                    >
+                                        <Trash2 className="w-4 h-4" />
                                     </button>
                                 </div>
                             ))
@@ -448,128 +809,96 @@ export function SettingsBot() {
                 </div>
             )}
 
-            {/* Tab 3: Website & RAG */}
-            {tab === 'rag' && (
+            {/* TAB 4: AI Replies Log (Requirement: L'auto reply doit montrer la liste des msg déjà répondus) */}
+            {tab === 'replies_log' && (
                 <div className="space-y-4">
-                    <div className="p-4 bg-sky-50/70 border border-sky-200 rounded-lg space-y-2.5">
-                        <h4 className="text-xs font-bold text-sky-900 uppercase tracking-wide flex items-center gap-1.5">
-                            <Globe className="w-4 h-4 text-sky-600" />
-                            Learn from Website or Documentation Link
-                        </h4>
-                        <div className="flex gap-2">
-                            <input
-                                type="url"
-                                placeholder="https://yourwebsite.com/pricing-or-faq"
-                                value={webUrl}
-                                onChange={e => setWebUrl(e.target.value)}
-                                disabled={crawling}
-                                className="flex-1 px-3 py-2 bg-white border border-sky-300 rounded-md text-xs focus:outline-none focus:ring-1 focus:ring-sky-500"
-                            />
-                            <button
-                                onClick={handleIngestUrl}
-                                disabled={crawling}
-                                className="px-4 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-md text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50"
-                            >
-                                {crawling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Globe className="w-3.5 h-3.5" />}
-                                {crawling ? 'Crawling...' : 'Ingest Website'}
-                            </button>
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                        <div className="flex items-center gap-2">
+                            <Clock className="w-4 h-4 text-indigo-600" />
+                            <h4 className="text-xs font-bold text-gray-900">
+                                Journal d'Audit des Réponses Automatiques IA ({replyLogs.length})
+                            </h4>
                         </div>
-                        <p className="text-[11px] text-sky-700">
-                            Automatically crawls web pages, extracts article text, and indexes semantic chunks for high-precision retrieval.
-                        </p>
-                    </div>
-
-                    <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                            <span className="text-xs font-semibold text-gray-700">Indexed Knowledge Sources ({sources.length})</span>
-                            <button
-                                onClick={() => setShowDocInput(!showDocInput)}
-                                className="text-xs text-[#00a884] font-medium hover:underline"
-                            >
-                                {showDocInput ? 'Hide' : '+ Paste Custom Text'}
-                            </button>
-                        </div>
-
-                        {showDocInput && (
-                            <div className="p-3 bg-gray-50 border border-gray-200 rounded-lg space-y-2">
+                        <div className="flex items-center gap-2 w-full sm:w-auto">
+                            <div className="relative flex-1 sm:w-64">
+                                <Search className="w-3.5 h-3.5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
                                 <input
                                     type="text"
-                                    placeholder="Document / Section Title"
-                                    value={docTitle}
-                                    onChange={e => setDocTitle(e.target.value)}
-                                    className="w-full px-3 py-1.5 bg-white border border-gray-300 rounded text-xs"
+                                    placeholder="Filtrer par numéro, texte ou source..."
+                                    value={logSearch}
+                                    onChange={e => setLogSearch(e.target.value)}
+                                    className="w-full pl-8 pr-3 py-1.5 text-xs rounded-xl border border-gray-200 bg-gray-50 focus:bg-white outline-none"
                                 />
-                                <textarea
-                                    placeholder="Paste content, FAQs, or policies here..."
-                                    value={docContent}
-                                    onChange={e => setDocContent(e.target.value)}
-                                    rows={3}
-                                    className="w-full px-3 py-1.5 bg-white border border-gray-300 rounded text-xs resize-none"
-                                />
-                                <button onClick={handleIngestDoc} className="px-3.5 py-1.5 bg-[#00a884] text-white text-xs font-medium rounded hover:bg-[#008f6f]">
-                                    Index Text
-                                </button>
                             </div>
-                        )}
-
-                        <div className="space-y-2 max-h-[180px] overflow-y-auto pr-1">
-                            {sources.length === 0 ? (
-                                <p className="text-center py-4 text-xs text-gray-400">
-                                    No website links or documents indexed yet. Enter a website above to start!
-                                </p>
-                            ) : (
-                                sources.map(sItem => (
-                                    <div key={sItem.id} className="p-3 bg-white border border-gray-200 rounded-lg flex items-center justify-between gap-3 text-xs shadow-sm">
-                                        <div className="flex-1 truncate">
-                                            <p className="font-semibold text-gray-800 truncate">{sItem.title || sItem.url}</p>
-                                            <p className="text-[10px] text-gray-400 truncate">
-                                                {sItem.url ? `${sItem.url} • ` : ''}{sItem.chunkCount} chunks
-                                            </p>
-                                        </div>
-                                        <button onClick={() => deleteSource(sItem.id)} className="text-gray-400 hover:text-red-500 p-1">
-                                            <Trash2 className="w-3.5 h-3.5" />
-                                        </button>
-                                    </div>
-                                ))
-                            )}
-                        </div>
-                    </div>
-
-                    <div className="p-3.5 bg-gray-50 border border-gray-200 rounded-lg space-y-2">
-                        <h5 className="text-xs font-bold text-gray-700">Test Chatbot Knowledge (Query Simulator)</h5>
-                        <div className="flex gap-2">
-                            <input
-                                type="text"
-                                placeholder="Ask any customer question to test retrieval..."
-                                value={testQuery}
-                                onChange={e => setTestQuery(e.target.value)}
-                                onKeyDown={e => e.key === 'Enter' && handleTestQuery()}
-                                className="flex-1 px-3 py-1.5 bg-white border border-gray-300 rounded text-xs focus:outline-none focus:ring-1 focus:ring-[#00a884]"
-                            />
                             <button
-                                onClick={handleTestQuery}
-                                disabled={testingQuery}
-                                className="px-3.5 py-1.5 bg-[#00a884] hover:bg-[#008f6f] text-white rounded text-xs font-semibold disabled:opacity-50"
+                                onClick={loadReplyLogs}
+                                title="Actualiser"
+                                className="p-1.5 rounded-xl border border-gray-200 text-gray-600 hover:bg-gray-100 transition"
                             >
-                                {testingQuery ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Ask Bot'}
+                                <RefreshCw className="w-4 h-4" />
+                            </button>
+                            <button
+                                onClick={clearReplyLogs}
+                                disabled={replyLogs.length === 0}
+                                className="px-3 py-1.5 rounded-xl bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-xs font-bold transition disabled:opacity-50 flex items-center gap-1.5"
+                            >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>Vider</span>
                             </button>
                         </div>
-                        {testResult && (
-                            <div className="p-2.5 bg-white border border-gray-200 rounded text-xs space-y-1">
-                                {testResult.notFound ? (
-                                    <span className="text-amber-600 italic font-medium">No confident match found. (Threshold: 45%)</span>
-                                ) : (
-                                    <>
-                                        <div className="flex items-center justify-between text-[11px] font-bold text-[#00a884]">
-                                            <span>Confidence: {testResult.score}% ({testResult.sourceType})</span>
-                                            <span className="text-gray-400 font-normal truncate max-w-[150px]">{testResult.sourceTitle}</span>
-                                        </div>
-                                        <p className="text-gray-800 text-xs mt-1">Bot will reply: &quot;{testResult.answer}&quot;</p>
-                                    </>
-                                )}
-                            </div>
-                        )}
                     </div>
+
+                    {loadingLogs ? (
+                        <div className="p-8 text-center text-xs text-gray-400">
+                            Chargement de l'historique...
+                        </div>
+                    ) : filteredLogs.length === 0 ? (
+                        <div className="p-8 text-center text-xs text-gray-400 border border-dashed border-gray-200 rounded-2xl">
+                            Aucune réponse enregistrée dans le journal.
+                        </div>
+                    ) : (
+                        <div className="overflow-x-auto border border-gray-200 rounded-2xl">
+                            <table className="w-full text-left text-xs border-collapse">
+                                <thead>
+                                    <tr className="bg-gray-50 border-b border-gray-200 text-gray-600 font-bold">
+                                        <th className="p-3">Date / Heure</th>
+                                        <th className="p-3">Client</th>
+                                        <th className="p-3">Question Reçue</th>
+                                        <th className="p-3">Réponse IA Envoyée</th>
+                                        <th className="p-3">Source Déclencheur</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-gray-100 bg-white">
+                                    {filteredLogs.map(log => (
+                                        <tr key={log.id} className="hover:bg-gray-50/70 transition">
+                                            <td className="p-3 text-[11px] text-gray-500 whitespace-nowrap">
+                                                {new Date(log.timestamp).toLocaleString()}
+                                            </td>
+                                            <td className="p-3 font-semibold text-gray-900 whitespace-nowrap">
+                                                <div>{log.contactName}</div>
+                                                <div className="text-[10px] text-gray-400 font-normal">+{log.contactNumber}</div>
+                                            </td>
+                                            <td className="p-3 text-gray-700 max-w-[220px]">
+                                                <div className="line-clamp-2 italic bg-gray-50 p-1.5 rounded-lg border border-gray-100">
+                                                    "{log.question}"
+                                                </div>
+                                            </td>
+                                            <td className="p-3 text-gray-900 max-w-[280px]">
+                                                <div className="line-clamp-2 font-medium bg-emerald-50/50 p-1.5 rounded-lg border border-emerald-100 text-emerald-950">
+                                                    {log.reply}
+                                                </div>
+                                            </td>
+                                            <td className="p-3 whitespace-nowrap">
+                                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                                                    {log.source}
+                                                </span>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
                 </div>
             )}
         </div>

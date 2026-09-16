@@ -11,7 +11,7 @@ import {
 
 interface AiSettings {
     enabled: boolean;
-    provider: "openai" | "gemini" | "claude" | "deepseek" | "groq" | "ollama" | "custom";
+    provider: "openai" | "gemini" | "claude" | "deepseek" | "groq" | "ollama" | "openrouter" | "custom";
     apiKey: string;
     model: string;
     endpointUrl: string;
@@ -22,9 +22,10 @@ interface AiSettings {
 }
 
 interface ScraperSettings {
-    mode: "browser" | "google_places" | "serpapi" | "custom_webhook";
+    mode: "serper" | "serpapi" | "browser" | "google_places" | "custom_webhook";
     googlePlacesApiKey: string;
     serpApiKey: string;
+    serperApiKey: string;
     scraperApiKey: string;
     customWebhookUrl: string;
 }
@@ -62,9 +63,10 @@ const DEFAULT_CONFIG: IntegrationsConfig = {
         maxTokens: 350
     },
     scraper: {
-        mode: "browser",
+        mode: "serper",
         googlePlacesApiKey: "",
         serpApiKey: "",
+        serperApiKey: "56b7780f8785c9d26504deca8d2adb9c48546ffd",
         scraperApiKey: "",
         customWebhookUrl: ""
     },
@@ -98,7 +100,8 @@ const COUNTRY_PRESETS = [
 
 const MODEL_PRESETS: Record<string, string[]> = {
     openai: ["gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"],
-    gemini: ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.7-flash"],
+    gemini: ["gemini-2.5-flash", "gemini-3.7-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+    openrouter: ["google/gemini-2.5-flash", "anthropic/claude-3.5-sonnet", "meta-llama/llama-3.3-70b-instruct", "deepseek/deepseek-chat", "qwen/qwen-2.5-72b-instruct"],
     claude: ["claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229"],
     deepseek: ["deepseek-chat", "deepseek-reasoner"],
     groq: ["llama-3.3-70b-versatile", "mixtral-8x7b-32768", "llama-3.1-8b-instant"],
@@ -122,6 +125,15 @@ export function ApiIntegrations() {
     // Webhook Testing state
     const [testingLeadsWebhook, setTestingLeadsWebhook] = useState(false);
     const [testingInboundWebhook, setTestingInboundWebhook] = useState(false);
+
+    // Scraper Testing state
+    const [testingSerper, setTestingSerper] = useState(false);
+    const [serperStatus, setSerperStatus] = useState<{ connected: boolean; message: string } | null>(null);
+    const [showSerperKey, setShowSerperKey] = useState(false);
+
+    const [testingSerpApi, setTestingSerpApi] = useState(false);
+    const [serpApiStatus, setSerpApiStatus] = useState<{ connected: boolean; message: string } | null>(null);
+    const [showSerpKey, setShowSerpKey] = useState(false);
 
     useEffect(() => {
         loadSettings();
@@ -238,6 +250,60 @@ export function ApiIntegrations() {
         } finally {
             setTestingLeadsWebhook(false);
             setTestingInboundWebhook(false);
+        }
+    };
+
+    const handleTestSerper = async () => {
+        const key = config.scraper.serperApiKey?.trim();
+        if (!key) {
+            setSerperStatus({ connected: false, message: "Please enter a Serper.dev API key first" });
+            return;
+        }
+        setTestingSerper(true);
+        setSerperStatus(null);
+        try {
+            const res = await fetch(`${API_URL}/api/integrations/test-serper`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ apiKey: key })
+            });
+            const data = await res.json();
+            if (data.success) {
+                setSerperStatus({ connected: true, message: data.message || "Connected to Serper.dev successfully!" });
+            } else {
+                setSerperStatus({ connected: false, message: data.error || "Connection failed. Check your API key." });
+            }
+        } catch (e: any) {
+            setSerperStatus({ connected: false, message: `Could not reach backend: ${e.message}` });
+        } finally {
+            setTestingSerper(false);
+        }
+    };
+
+    const handleTestSerpApi = async () => {
+        const key = config.scraper.serpApiKey?.trim();
+        if (!key) {
+            setSerpApiStatus({ connected: false, message: "Please enter a SerpApi key first" });
+            return;
+        }
+        setTestingSerpApi(true);
+        setSerpApiStatus(null);
+        try {
+            const res = await fetch(`${API_URL}/api/integrations/test-serpapi`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ apiKey: key })
+            });
+            const data = await res.json();
+            if (data.success) {
+                setSerpApiStatus({ connected: true, message: data.message || "Connected to SerpApi successfully!" });
+            } else {
+                setSerpApiStatus({ connected: false, message: data.error || "Connection failed. Check your API key." });
+            }
+        } catch (e: any) {
+            setSerpApiStatus({ connected: false, message: `Could not reach backend: ${e.message}` });
+        } finally {
+            setTestingSerpApi(false);
         }
     };
 
@@ -392,8 +458,9 @@ export function ApiIntegrations() {
                                         }}
                                         className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500"
                                     >
+                                        <option value="gemini">Google Gemini (Gemini 2.5 Flash / 3.7 Flash / Pro)</option>
+                                        <option value="openrouter">OpenRouter (Multi-Model Gateway: Gemini, Claude, LLaMA, DeepSeek)</option>
                                         <option value="openai">OpenAI (ChatGPT - Official API)</option>
-                                        <option value="gemini">Google Gemini (Gemini 3.6 Flash / 2.5 Pro)</option>
                                         <option value="claude">Anthropic Claude (Claude 3.5 Sonnet / Haiku)</option>
                                         <option value="deepseek">DeepSeek (DeepSeek V3 / R1 Reasoner)</option>
                                         <option value="groq">Groq (Ultra Fast Llama 3.3 / Mixtral)</option>
@@ -584,81 +651,291 @@ export function ApiIntegrations() {
                             Choose between the built-in free browser scraper or connect cloud scraping APIs for high-volume extraction.
                         </p>
 
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-2">
-                            {/* Option 1: Free Browser */}
+                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4 pt-2">
+                            {/* Option 1: Serper.dev (Fastest & Recommended) */}
                             <div
-                                onClick={() => setConfig({ ...config, scraper: { ...config.scraper, mode: "browser" } })}
-                                className={`p-4 rounded-2xl border-2 cursor-pointer transition ${
-                                    config.scraper.mode === "browser"
-                                        ? "border-emerald-600 bg-emerald-50/40"
+                                onClick={() => setConfig({ ...config, scraper: { ...config.scraper, mode: "serper" } })}
+                                className={`p-4 rounded-2xl border-2 cursor-pointer transition flex flex-col justify-between ${
+                                    config.scraper.mode === "serper"
+                                        ? "border-emerald-600 bg-emerald-50/40 ring-2 ring-emerald-500/20"
                                         : "border-gray-200 hover:border-gray-300 bg-white"
                                 }`}
                             >
-                                <div className="flex items-center justify-between mb-2">
-                                    <span className="text-xs font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
-                                        100% FREE
-                                    </span>
-                                    {config.scraper.mode === "browser" && <Check className="w-4 h-4 text-emerald-600" />}
+                                <div>
+                                    <div className="flex items-center justify-between mb-2">
+                                        <span className="text-xs font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full flex items-center gap-1">
+                                            <Sparkles className="w-3 h-3 text-emerald-600" /> RECOMMENDED
+                                        </span>
+                                        {config.scraper.mode === "serper" && <Check className="w-4 h-4 text-emerald-600" />}
+                                    </div>
+                                    <div className="font-bold text-sm text-gray-900 mb-1 flex items-center gap-1.5">
+                                        Serper.dev Maps API
+                                    </div>
+                                    <p className="text-xs text-gray-500">
+                                        Fast cloud Google Maps search with verified telephone numbers and instant extraction.
+                                    </p>
                                 </div>
-                                <div className="font-bold text-sm text-gray-900 mb-1">Built-in Chrome Scraper</div>
-                                <p className="text-xs text-gray-500">
-                                    Headless Puppeteer scraper. Directly navigates Google Maps. Zero API keys required.
-                                </p>
+                                <div className="mt-3 pt-2 border-t border-gray-100 flex items-center gap-1.5 text-[11px]">
+                                    {config.scraper.serperApiKey ? (
+                                        <span className="text-emerald-700 font-semibold flex items-center gap-1">
+                                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                                            Connected & Ready
+                                        </span>
+                                    ) : (
+                                        <span className="text-amber-600 font-medium flex items-center gap-1">
+                                            <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+                                            Key required below
+                                        </span>
+                                    )}
+                                </div>
                             </div>
 
-                            {/* Option 2: Google Places API */}
-                            <div
-                                onClick={() => setConfig({ ...config, scraper: { ...config.scraper, mode: "google_places" } })}
-                                className={`p-4 rounded-2xl border-2 cursor-pointer transition ${
-                                    config.scraper.mode === "google_places"
-                                        ? "border-blue-600 bg-blue-50/40"
-                                        : "border-gray-200 hover:border-gray-300 bg-white"
-                                }`}
-                            >
-                                <div className="flex items-center justify-between mb-2">
-                                    <span className="text-xs font-bold text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full">
-                                        OFFICIAL API
-                                    </span>
-                                    {config.scraper.mode === "google_places" && <Check className="w-4 h-4 text-blue-600" />}
-                                </div>
-                                <div className="font-bold text-sm text-gray-900 mb-1">Google Places API</div>
-                                <p className="text-xs text-gray-500">
-                                    Official Google Cloud Places Text Search & Details. Fast, headless, and verified data.
-                                </p>
-                            </div>
-
-                            {/* Option 3: SerpAPI */}
+                            {/* Option 2: SerpAPI */}
                             <div
                                 onClick={() => setConfig({ ...config, scraper: { ...config.scraper, mode: "serpapi" } })}
-                                className={`p-4 rounded-2xl border-2 cursor-pointer transition ${
+                                className={`p-4 rounded-2xl border-2 cursor-pointer transition flex flex-col justify-between ${
                                     config.scraper.mode === "serpapi"
-                                        ? "border-purple-600 bg-purple-50/40"
+                                        ? "border-purple-600 bg-purple-50/40 ring-2 ring-purple-500/20"
                                         : "border-gray-200 hover:border-gray-300 bg-white"
                                 }`}
                             >
-                                <div className="flex items-center justify-between mb-2">
-                                    <span className="text-xs font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded-full">
-                                        FAST SERP
-                                    </span>
-                                    {config.scraper.mode === "serpapi" && <Check className="w-4 h-4 text-purple-600" />}
+                                <div>
+                                    <div className="flex items-center justify-between mb-2">
+                                        <span className="text-xs font-bold text-purple-700 bg-purple-100 px-2 py-0.5 rounded-full">
+                                            FAST SERP
+                                        </span>
+                                        {config.scraper.mode === "serpapi" && <Check className="w-4 h-4 text-purple-600" />}
+                                    </div>
+                                    <div className="font-bold text-sm text-gray-900 mb-1">SerpAPI Maps Engine</div>
+                                    <p className="text-xs text-gray-500">
+                                        Cloud-rotated search engine API for Google Maps results without proxy overhead.
+                                    </p>
                                 </div>
-                                <div className="font-bold text-sm text-gray-900 mb-1">SerpAPI Maps Engine</div>
-                                <p className="text-xs text-gray-500">
-                                    Cloud-rotated search engine API for Google Maps results without proxy overhead.
-                                </p>
+                                <div className="mt-3 pt-2 border-t border-gray-100 flex items-center gap-1.5 text-[11px]">
+                                    {config.scraper.serpApiKey ? (
+                                        <span className="text-purple-700 font-semibold flex items-center gap-1">
+                                            <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse"></span>
+                                            Connected & Ready
+                                        </span>
+                                    ) : (
+                                        <span className="text-amber-600 font-medium flex items-center gap-1">
+                                            <span className="w-2 h-2 rounded-full bg-amber-400"></span>
+                                            Key required below
+                                        </span>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Option 3: Google Places API */}
+                            <div
+                                onClick={() => setConfig({ ...config, scraper: { ...config.scraper, mode: "google_places" } })}
+                                className={`p-4 rounded-2xl border-2 cursor-pointer transition flex flex-col justify-between ${
+                                    config.scraper.mode === "google_places"
+                                        ? "border-blue-600 bg-blue-50/40 ring-2 ring-blue-500/20"
+                                        : "border-gray-200 hover:border-gray-300 bg-white"
+                                }`}
+                            >
+                                <div>
+                                    <div className="flex items-center justify-between mb-2">
+                                        <span className="text-xs font-bold text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full">
+                                            OFFICIAL API
+                                        </span>
+                                        {config.scraper.mode === "google_places" && <Check className="w-4 h-4 text-blue-600" />}
+                                    </div>
+                                    <div className="font-bold text-sm text-gray-900 mb-1">Google Places API</div>
+                                    <p className="text-xs text-gray-500">
+                                        Official Google Cloud Places Text Search & Details. Fast and verified data.
+                                    </p>
+                                </div>
+                                <div className="mt-3 pt-2 border-t border-gray-100 flex items-center gap-1.5 text-[11px]">
+                                    {config.scraper.googlePlacesApiKey ? (
+                                        <span className="text-blue-700 font-semibold flex items-center gap-1">
+                                            <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                                            Configured
+                                        </span>
+                                    ) : (
+                                        <span className="text-gray-400">Not configured</span>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Option 4: Free Browser */}
+                            <div
+                                onClick={() => setConfig({ ...config, scraper: { ...config.scraper, mode: "browser" } })}
+                                className={`p-4 rounded-2xl border-2 cursor-pointer transition flex flex-col justify-between ${
+                                    config.scraper.mode === "browser"
+                                        ? "border-gray-600 bg-gray-50/70 ring-2 ring-gray-400/20"
+                                        : "border-gray-200 hover:border-gray-300 bg-white"
+                                }`}
+                            >
+                                <div>
+                                    <div className="flex items-center justify-between mb-2">
+                                        <span className="text-xs font-bold text-gray-700 bg-gray-200 px-2 py-0.5 rounded-full">
+                                            100% FREE
+                                        </span>
+                                        {config.scraper.mode === "browser" && <Check className="w-4 h-4 text-gray-700" />}
+                                    </div>
+                                    <div className="font-bold text-sm text-gray-900 mb-1">Built-in Chrome Scraper</div>
+                                    <p className="text-xs text-gray-500">
+                                        Headless Puppeteer scraper. Directly navigates Google Maps. Zero API keys required.
+                                    </p>
+                                </div>
+                                <div className="mt-3 pt-2 border-t border-gray-100 flex items-center gap-1.5 text-[11px] text-gray-500 font-medium">
+                                    <span className="w-2 h-2 rounded-full bg-gray-400"></span>
+                                    Always available
+                                </div>
                             </div>
                         </div>
                     </div>
 
                     {/* Scraper API Credentials Card */}
-                    <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-2xs space-y-4">
+                    <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-2xs space-y-5">
                         <h4 className="text-sm font-bold text-gray-800 border-b pb-2 flex items-center gap-2">
-                            <Key className="w-4 h-4 text-indigo-600" /> Scraper API Keys
+                            <Key className="w-4 h-4 text-indigo-600" /> Scraper API Credentials
                         </h4>
 
-                        <div className="space-y-4 max-w-2xl">
-                            <div>
-                                <label className="block text-xs font-semibold text-gray-700 mb-1">
+                        <div className="space-y-6 max-w-2xl">
+                            {/* 1. Serper.dev API */}
+                            <div className="p-4 bg-emerald-50/30 border border-emerald-200/80 rounded-2xl space-y-3">
+                                <div className="flex items-center justify-between">
+                                    <label className="block text-xs font-bold text-gray-800">
+                                        Serper.dev API Key (Recommended)
+                                    </label>
+                                    <a
+                                        href="https://serper.dev"
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-xs text-emerald-700 hover:text-emerald-800 font-semibold flex items-center gap-1"
+                                    >
+                                        serper.dev <ExternalLink className="w-3 h-3" />
+                                    </a>
+                                </div>
+                                <div className="relative">
+                                    <input
+                                        type={showSerperKey ? "text" : "password"}
+                                        placeholder="56b7780f..."
+                                        value={config.scraper.serperApiKey}
+                                        onChange={(e) => setConfig({ ...config, scraper: { ...config.scraper, serperApiKey: e.target.value } })}
+                                        className="w-full p-2.5 pr-10 bg-white border border-gray-200 rounded-xl text-sm font-mono focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowSerperKey(!showSerperKey)}
+                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                                    >
+                                        {showSerperKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                    </button>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-3 pt-1">
+                                    <button
+                                        type="button"
+                                        onClick={handleTestSerper}
+                                        disabled={testingSerper || !config.scraper.serperApiKey}
+                                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition shadow-2xs"
+                                    >
+                                        {testingSerper ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                                        Test Serper.dev Connection
+                                    </button>
+
+                                    {serperStatus && (
+                                        <div
+                                            className={`text-xs font-semibold px-3 py-1.5 rounded-xl border flex items-center gap-1.5 ${
+                                                serperStatus.connected
+                                                    ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                                    : "bg-red-50 text-red-700 border-red-200"
+                                            }`}
+                                        >
+                                            {serperStatus.connected ? (
+                                                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                                            ) : (
+                                                <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                                            )}
+                                            <span>{serperStatus.message}</span>
+                                        </div>
+                                    )}
+
+                                    {!serperStatus && config.scraper.serperApiKey && (
+                                        <div className="text-xs font-medium text-emerald-700 flex items-center gap-1.5 bg-emerald-50/80 px-2.5 py-1 rounded-lg border border-emerald-100">
+                                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                                            <span>API Key Loaded</span>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* 2. SerpAPI */}
+                            <div className="p-4 bg-purple-50/30 border border-purple-200/80 rounded-2xl space-y-3">
+                                <div className="flex items-center justify-between">
+                                    <label className="block text-xs font-bold text-gray-800">
+                                        SerpAPI Private Key
+                                    </label>
+                                    <a
+                                        href="https://serpapi.com"
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        className="text-xs text-purple-700 hover:text-purple-800 font-semibold flex items-center gap-1"
+                                    >
+                                        serpapi.com <ExternalLink className="w-3 h-3" />
+                                    </a>
+                                </div>
+                                <div className="relative">
+                                    <input
+                                        type={showSerpKey ? "text" : "password"}
+                                        placeholder="Enter your SerpAPI key (64 characters)..."
+                                        value={config.scraper.serpApiKey}
+                                        onChange={(e) => setConfig({ ...config, scraper: { ...config.scraper, serpApiKey: e.target.value } })}
+                                        className="w-full p-2.5 pr-10 bg-white border border-gray-200 rounded-xl text-sm font-mono focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowSerpKey(!showSerpKey)}
+                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                                    >
+                                        {showSerpKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                    </button>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-3 pt-1">
+                                    <button
+                                        type="button"
+                                        onClick={handleTestSerpApi}
+                                        disabled={testingSerpApi || !config.scraper.serpApiKey}
+                                        className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 transition shadow-2xs"
+                                    >
+                                        {testingSerpApi ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+                                        Test SerpAPI Connection
+                                    </button>
+
+                                    {serpApiStatus && (
+                                        <div
+                                            className={`text-xs font-semibold px-3 py-1.5 rounded-xl border flex items-center gap-1.5 ${
+                                                serpApiStatus.connected
+                                                    ? "bg-purple-50 text-purple-700 border-purple-200"
+                                                    : "bg-red-50 text-red-700 border-red-200"
+                                            }`}
+                                        >
+                                            {serpApiStatus.connected ? (
+                                                <CheckCircle2 className="w-4 h-4 text-purple-600 shrink-0" />
+                                            ) : (
+                                                <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                                            )}
+                                            <span>{serpApiStatus.message}</span>
+                                        </div>
+                                    )}
+
+                                    {!serpApiStatus && config.scraper.serpApiKey && (
+                                        <div className="text-xs font-medium text-purple-700 flex items-center gap-1.5 bg-purple-50/80 px-2.5 py-1 rounded-lg border border-purple-100">
+                                            <span className="w-2 h-2 rounded-full bg-purple-500 animate-pulse"></span>
+                                            <span>API Key Loaded</span>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* 3. Google Places API */}
+                            <div className="p-4 bg-gray-50 border border-gray-200 rounded-2xl space-y-3">
+                                <label className="block text-xs font-bold text-gray-800">
                                     Google Places API Key (Google Cloud Console)
                                 </label>
                                 <input
@@ -666,24 +943,11 @@ export function ApiIntegrations() {
                                     placeholder="AIzaSy..."
                                     value={config.scraper.googlePlacesApiKey}
                                     onChange={(e) => setConfig({ ...config, scraper: { ...config.scraper, googlePlacesApiKey: e.target.value } })}
-                                    className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-mono focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+                                    className="w-full p-2.5 bg-white border border-gray-200 rounded-xl text-sm font-mono focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
                                 />
-                                <span className="text-[11px] text-gray-400 mt-1 block">
+                                <span className="text-[11px] text-gray-400 block">
                                     Enable Places API (New) or Places API in Google Cloud Platform.
                                 </span>
-                            </div>
-
-                            <div>
-                                <label className="block text-xs font-semibold text-gray-700 mb-1">
-                                    SerpAPI Private Key
-                                </label>
-                                <input
-                                    type="text"
-                                    placeholder="Enter your SerpAPI key..."
-                                    value={config.scraper.serpApiKey}
-                                    onChange={(e) => setConfig({ ...config, scraper: { ...config.scraper, serpApiKey: e.target.value } })}
-                                    className="w-full p-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-mono focus:ring-2 focus:ring-purple-500/20 focus:border-purple-500"
-                                />
                             </div>
                         </div>
                     </div>

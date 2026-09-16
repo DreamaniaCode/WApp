@@ -1,0 +1,32 @@
+{
+  "ai": {
+    "enabled": false,
+    "provider": "openai",
+    "apiKey": "",
+    "model": "gpt-4o-mini",
+    "endpointUrl": "",
+    "systemPrompt": "You are a courteous, professional customer support assistant on WhatsApp. Answer concisely and clearly in the same language as the user (Arabic/Darija, French, or English).",
+    "useRagContext": true,
+    "temperature": 0.7,
+    "maxTokens": 350
+  },
+  "scraper": {
+    "mode": "serper",
+    "googlePlacesApiKey": "",
+    "serpApiKey": "",
+    "serperApiKey": "56b7780f8785c9d26504deca8d2adb9c48546ffd",
+    "scraperApiKey": "",
+    "customWebhookUrl": ""
+  },
+  "webhooks": {
+    "leadsWebhookUrl": "",
+    "leadsWebhookEnabled": false,
+    "inboundMessageWebhookUrl": "",
+    "inboundMessageWebhookEnabled": false
+  },
+  "phone": {
+    "defaultCountryCode": "212",
+    "autoFormatOnImport": true,
+    "pureDigitsForWhatsApp": true
+  }
+}

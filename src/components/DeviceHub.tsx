@@ -108,21 +108,52 @@ export function DeviceHub({ socket }: DeviceHubProps) {
 
     const activeDevicesCount = devices.filter(d => d.isReady).length;
 
+    const [addSuccessMessage, setAddSuccessMessage] = useState<string | null>(null);
+    const [isAdding, setIsAdding] = useState(false);
+
     const handleAddDevice = async () => {
-        if (!modalLabel.trim()) return;
+        if (!modalLabel.trim() || isAdding) return;
+        setIsAdding(true);
+        setAddSuccessMessage(null);
         try {
             const res = await fetch(`${API_URL}/api/devices`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ label: modalLabel })
+                body: JSON.stringify({ label: modalLabel.trim() })
             });
             const data = await res.json();
-            if (data.id) {
-                setActiveDeviceId(data.id);
-                // The new device will be polled shortly, but we can also handle local update if needed
+            const targetId = data.id || data.deviceId;
+            if (targetId) {
+                setActiveDeviceId(targetId);
+                setAddSuccessMessage(`Appareil "${modalLabel.trim()}" ajouté avec succès !`);
+                // Optimistically add to devices list if not already present
+                setDevices(prev => {
+                    if (prev.some(d => d.id === targetId)) return prev;
+                    return [...prev, {
+                        id: targetId,
+                        label: modalLabel.trim(),
+                        phoneNumber: "",
+                        isReady: false,
+                        isAuthenticated: false,
+                        qrCode: "",
+                        isDefault: prev.length === 0,
+                        warmingStatus: 'off',
+                        warmingDay: 1,
+                        warmingMaxDay: 14,
+                        messagesSentToday: 0,
+                        dailyLimit: 10,
+                        createdAt: new Date().toISOString()
+                    }];
+                });
+                setTimeout(() => setAddSuccessMessage(null), 4000);
+            } else {
+                alert(data.error || "Échec de l'ajout de l'appareil");
             }
         } catch (error) {
             console.error("Failed to add device", error);
+            alert("Erreur réseau lors de l'ajout de l'appareil");
+        } finally {
+            setIsAdding(false);
         }
     };
 
@@ -379,27 +410,42 @@ export function DeviceHub({ socket }: DeviceHubProps) {
                         </div>
 
                         <div className="p-6">
+                            {addSuccessMessage && (
+                                <div className="mb-4 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-xl p-3 flex items-center gap-2 animate-in fade-in">
+                                    <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                                    <span className="font-semibold">{addSuccessMessage}</span>
+                                </div>
+                            )}
+
                             {!activeDeviceId ? (
                                 <div className="space-y-4">
                                     <div>
                                         <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2">
-                                            Device Label
+                                            Nom / Label de l'Appareil
                                         </label>
                                         <input
                                             type="text"
                                             value={modalLabel}
                                             onChange={e => setModalLabel(e.target.value)}
-                                            placeholder="e.g. Sales Number, Support 1"
+                                            placeholder="ex: Support Client 1, Ventes Maroc"
                                             className="w-full px-4 py-3 rounded-xl border border-gray-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                                             autoFocus
+                                            onKeyDown={e => { if (e.key === 'Enter') handleAddDevice(); }}
                                         />
                                     </div>
                                     <button
                                         onClick={handleAddDevice}
-                                        disabled={!modalLabel.trim()}
-                                        className="w-full py-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm font-semibold hover:opacity-90 transition disabled:opacity-50"
+                                        disabled={!modalLabel.trim() || isAdding}
+                                        className="w-full py-3 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm font-semibold hover:opacity-90 transition disabled:opacity-50 flex items-center justify-center gap-2"
                                     >
-                                        Continue
+                                        {isAdding ? (
+                                            <>
+                                                <Loader2 className="w-4 h-4 animate-spin" />
+                                                Initialisation du client WhatsApp...
+                                            </>
+                                        ) : (
+                                            "Continuer & Obtenir QR Code"
+                                        )}
                                     </button>
                                 </div>
                             ) : (

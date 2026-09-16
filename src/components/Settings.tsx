@@ -1,10 +1,14 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Save, Clock, AlertTriangle } from "lucide-react";
+import { Save, Clock, AlertTriangle, ShieldCheck, Key } from "lucide-react";
 import { useLanguage } from "@/contexts/LanguageContext";
 
-export function Settings() {
+interface SettingsProps {
+    onOpenLicenseModal?: () => void;
+}
+
+export function Settings({ onOpenLicenseModal }: SettingsProps) {
     const { t } = useLanguage();
     const [minDelay, setMinDelay] = useState(1000);
     const [maxDelay, setMaxDelay] = useState(3000);
@@ -84,6 +88,29 @@ export function Settings() {
                     {saved ? t("settingsSaved") : t("saveSettings")}
                     <Save className="w-4 h-4" />
                 </button>
+            </div>
+
+            {/* License & Device Identification */}
+            <div className="mt-8 pt-6 border-t border-gray-100">
+                <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                        <ShieldCheck className="w-5 h-5 text-indigo-600" />
+                        <h3 className="text-base font-bold text-gray-800">License & Software Edition</h3>
+                    </div>
+                    {onOpenLicenseModal && (
+                        <button
+                            type="button"
+                            onClick={onOpenLicenseModal}
+                            className="px-3.5 py-1.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl text-xs font-semibold shadow-xs transition flex items-center gap-1.5 cursor-pointer"
+                        >
+                            <Key className="w-3.5 h-3.5" />
+                            <span>View / Change / Reset License</span>
+                        </button>
+                    )}
+                </div>
+                <p className="text-xs text-gray-500">
+                    Manage your software license, view hardware Machine ID, upgrade activation key, or reset the installation.
+                </p>
             </div>
         </div>
     );
