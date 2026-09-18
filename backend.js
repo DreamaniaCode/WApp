@@ -683,34 +683,66 @@ async function ensureWWebJSInjected(client) {
             try {
                 const wrapModuleGetters = (mod) => {
                     if (!mod || typeof mod !== 'object') return;
-                    for (const key of Object.keys(mod)) {
-                        const fn = mod[key];
-                        if (typeof fn === 'function' && !fn._memoizeGuarded) {
-                            const orig = fn;
-                            const guarded = function(...args) {
-                                try {
-                                    const target = args[0];
-                                    if (args.length > 0 && (!target || typeof target !== 'object' || !target.id)) {
-                                        return false;
-                                    }
-                                    return orig.apply(this, args);
-                                } catch (err) {
-                                    if (err && err.message && err.message.includes('Data passed to getter must include an id property')) {
-                                        return false;
-                                    }
-                                    throw err;
+                    const keys = [...new Set([...Object.getOwnPropertyNames(mod), ...Object.keys(mod)])];
+                    for (const key of keys) {
+                        try {
+                            let fn = null;
+                            const desc = Object.getOwnPropertyDescriptor(mod, key);
+                            if (desc) {
+                                if (typeof desc.value === 'function') fn = desc.value;
+                                else if (typeof desc.get === 'function') {
+                                    try { fn = desc.get(); } catch (_) {}
                                 }
-                            };
-                            guarded._memoizeGuarded = true;
-                            mod[key] = guarded;
-                        }
+                            }
+                            if (!fn && typeof mod[key] === 'function') fn = mod[key];
+                            if (typeof fn === 'function' && !fn._memoizeGuarded) {
+                                const orig = fn;
+                                const guarded = function(...args) {
+                                    try {
+                                        const target = args[0];
+                                        if (args.length > 0 && (!target || typeof target !== 'object' || !target.id)) {
+                                            return false;
+                                        }
+                                        return orig.apply(this, args);
+                                    } catch (err) {
+                                        if (err && err.message && (err.message.includes('Data passed to getter') || err.message.includes('how we memoize'))) {
+                                            return false;
+                                        }
+                                        throw err;
+                                    }
+                                };
+                                guarded._memoizeGuarded = true;
+                                try {
+                                    Object.defineProperty(mod, key, {
+                                        value: guarded,
+                                        writable: true,
+                                        configurable: true,
+                                        enumerable: true
+                                    });
+                                } catch (_) {
+                                    try { mod[key] = guarded; } catch (_) {}
+                                }
+                            }
+                        } catch (_) {}
                     }
+                };
+
+                const safeReq = (m) => {
+                    try { return window.require(m); } catch (_) { return null; }
                 };
 
                 if (window.Store) {
                     if (window.Store.ChatGetters) wrapModuleGetters(window.Store.ChatGetters);
                     if (window.Store.ContactMethods) wrapModuleGetters(window.Store.ContactMethods);
                     if (window.Store.EphemeralFields) wrapModuleGetters(window.Store.EphemeralFields);
+                    wrapModuleGetters(safeReq('WAWebContactGetters'));
+                    wrapModuleGetters(safeReq('WAWebFrontendContactGetters'));
+                    wrapModuleGetters(safeReq('WAWebAddressbookContactGetters'));
+                    wrapModuleGetters(safeReq('WAWebBusinessProfileGetters'));
+                    wrapModuleGetters(safeReq('WAWebGroupGetters'));
+                    wrapModuleGetters(safeReq('WAWebEphemeralFieldsGetters'));
+                    wrapModuleGetters(safeReq('WAWebGetEphemeralFieldsMsgActionsUtils'));
+                    wrapModuleGetters(safeReq('WAWebChatGetters'));
 
                     const protectCol = (col) => {
                         if (!col || typeof col.get !== 'function' || col.get._guarded) return;
@@ -751,9 +783,12 @@ async function ensureWWebJSInjected(client) {
                         const origFindOrCreate = window.Store.FindOrCreateChat.findOrCreateLatestChat.bind(window.Store.FindOrCreateChat);
                         const guardedFindOrCreate = async function(wid) {
                             try {
+                                if (window.Store.Contact && typeof window.Store.Contact.gadd === 'function') {
+                                    try { window.Store.Contact.gadd(wid, { silent: true }); } catch (_) {}
+                                }
                                 return await origFindOrCreate(wid);
                             } catch (err) {
-                                if (err && err.message && err.message.includes('Data passed to getter must include an id property')) {
+                                if (err && err.message && (err.message.includes('Data passed to getter') || err.message.includes('how we memoize'))) {
                                     let chat = window.Store.Chat && window.Store.Chat.get ? window.Store.Chat.get(wid) : null;
                                     if (!chat && window.Store.Chat && window.Store.Chat.find) {
                                         try { chat = await window.Store.Chat.find(wid); } catch (_) {}
@@ -1054,9 +1089,14 @@ async function resolveWhatsAppNumber(rawNumber, client) {
             if (client && typeof client.getNumberId === 'function') {
                 const contactId = await client.getNumberId(num);
                 if (contactId && contactId._serialized) {
-                    console.log(`[resolveWhatsAppNumber] Resolved ${rawNumber} -> ${contactId._serialized}`);
+                    let targetJid = contactId._serialized;
+                    if (targetJid.includes('@lid')) {
+                        const phoneNum = contactId.user || num;
+                        targetJid = `${phoneNum}@c.us`;
+                    }
+                    console.log(`[resolveWhatsAppNumber] Resolved ${rawNumber} -> ${targetJid}`);
                     return {
-                        jid: contactId._serialized,
+                        jid: targetJid,
                         number: contactId.user || num
                     };
                 }
@@ -2375,8 +2415,12 @@ async function sendCartRecoveryMessage(cart) {
     const phone = cart.customerPhone.replace(/[^0-9]/g, "");
     const numberId = await client.getNumberId(phone);
     if (!numberId) throw new Error("Number not on WhatsApp");
+    let targetJid = numberId._serialized;
+    if (targetJid.includes("@lid")) {
+        targetJid = `${phone}@c.us`;
+    }
     await ensureWWebJSInjected(client);
-    await client.sendMessage(numberId._serialized, message, { sendSeen: false });
+    await client.sendMessage(targetJid, message, { sendSeen: false });
     cart.status = "contacted";
     cart.contactedAt = new Date().toISOString();
     cart.followUpCount = (cart.followUpCount || 0) + 1;
@@ -3060,7 +3104,7 @@ async function runBulkCampaign() {
             if (!resolved || !resolved.jid) {
                 throw new Error("Number not registered on WhatsApp");
             }
-            const formattedNumber = resolved.jid;
+            let formattedNumber = resolved.jid;
             let personalizedMessage = session.message ? session.message.replace(/{{name}}/g, recipientName) : "";
             if (personalizedMessage && recipient.variables && typeof recipient.variables === "object") {
                 for (const [k, v] of Object.entries(recipient.variables)) {
@@ -3096,6 +3140,10 @@ async function runBulkCampaign() {
                 if (sendErr.message && (sendErr.message.includes("memoize") || sendErr.message.includes("getter") || sendErr.message.includes("getChat") || sendErr.message.includes("WWebJS"))) {
                     console.warn(`[BulkCampaign] Retrying message to ${number} after injecting guards...`, sendErr.message);
                     await ensureWWebJSInjected(client);
+                    if (formattedNumber.includes('@lid')) {
+                        const cleanNum = (resolved.number || number).replace(/[^\d]/g, '');
+                        if (cleanNum) formattedNumber = `${cleanNum}@c.us`;
+                    }
                     await new Promise(r => setTimeout(r, 600));
                     await doBulkSend();
                 } else {
@@ -5885,7 +5933,7 @@ app.post("/api/send-single", async (req, res) => {
             return res.status(400).json({ error: "Invalid phone number." });
         }
 
-        const formattedNumber = resolved.jid;
+        let formattedNumber = resolved.jid;
         let sentResult;
 
         const doSend = async () => {
@@ -5909,6 +5957,10 @@ app.post("/api/send-single", async (req, res) => {
             if (sendErr.message && (sendErr.message.includes("getChat") || sendErr.message.includes("WWebJS") || sendErr.message.includes("memoize") || sendErr.message.includes("getter"))) {
                 console.warn("[/api/send-single] Retrying after injecting WWebJS utils...", sendErr.message);
                 await ensureWWebJSInjected(activeClient);
+                if (formattedNumber.includes('@lid')) {
+                    const cleanNum = (resolved.number || recipient).replace(/[^\d]/g, '');
+                    if (cleanNum) formattedNumber = `${cleanNum}@c.us`;
+                }
                 await new Promise(r => setTimeout(r, 800));
                 sentResult = await doSend();
             } else {
