@@ -39,7 +39,7 @@ interface DashboardMetrics {
 
 const NAV = [
   { id: "dashboard",    icon: LayoutDashboard, label: "Dashboard",        sub: "Overview & Analytics" },
-  { id: "devices",      icon: Smartphone,      label: "Devices",          sub: "Multi-Number WhatsApp Hub" },
+  { id: "devices",      icon: Smartphone,      label: "Compte WhatsApp",  sub: "Connexion & Numéro Unique" },
   { id: "livechat",     icon: MessageCircle,   label: "Live Chat",        sub: "Direct Chat & Human Takeover" },
   { id: "bulk",         icon: MessageSquare,   label: "Bulk Messages",    sub: "Mass Messaging" },
   { id: "contacts",     icon: Users,           label: "Contacts",         sub: "Contact Management & Import" },

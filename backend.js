@@ -863,7 +863,9 @@ function loadDeviceRegistry() {
 
 // Campaign state
 let isBulkRunning = false;
+let isBulkPaused = false;
 let currentBulkResults = [];
+let currentBulkSession = null;
 const HISTORY_PATH = path_1.default.join(DATA_DIR, "history.json");
 
 // ─── Auto Responses State ───────────────────────────────────────────────────
@@ -1967,7 +1969,29 @@ app.get("/api/status", async (_req, res) => {
             }
         } catch (_) {}
     }
-    res.json({ isReady, isAuthenticated, authenticated: isAuthenticated, qr: qrCodeData || null });
+    const defDev = getDefaultDevice();
+    res.json({
+        isReady,
+        isAuthenticated,
+        authenticated: isAuthenticated,
+        qr: qrCodeData || defDev?.qrCodeData || null,
+        phoneNumber: defDev?.phoneNumber || "",
+        label: defDev?.label || "Compte WhatsApp Principal",
+        deviceId: defDev?.id || "device-1"
+    });
+});
+
+app.get("/api/whatsapp/account", (_req, res) => {
+    const defDev = getDefaultDevice();
+    res.json({
+        success: true,
+        isReady,
+        isAuthenticated,
+        phoneNumber: defDev?.phoneNumber || "",
+        label: defDev?.label || "Compte WhatsApp Principal",
+        deviceId: defDev?.id || "device-1",
+        qr: qrCodeData || defDev?.qrCodeData || null
+    });
 });
 
 // ─── Device Management API ─────────────────────────────────────────────────────
@@ -2858,11 +2882,234 @@ app.get("/api/whatsapp/check-number", async (req, res) => {
     }
 });
 
-// ─── Bulk send ────────────────────────────────────────────────────────────────
+// ─── Bulk Campaign Engine with Pause, Resume & Anti-Duplicate Resume ────────
+async function runBulkCampaign() {
+    if (!currentBulkSession) return;
+    const session = currentBulkSession;
+    const total = session.recipients.length;
+    let deviceIndex = 0;
+
+    for (let i = 0; i < session.recipients.length; i++) {
+        const recipient = session.recipients[i];
+
+        // 1. Wait while paused
+        while (isBulkPaused && isBulkRunning) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+
+        // 2. Break if stopped
+        if (!isBulkRunning) {
+            console.log("[BulkSender] Campaign stopped by user");
+            break;
+        }
+
+        // 3. Skip if already sent successfully (ANTI-DUPLICATE / SANS REDOUBLER)
+        if (recipient.status === "success") {
+            continue;
+        }
+
+        recipient.status = "sending";
+
+        // Refresh available ready devices
+        let targetDeviceSessions = [];
+        if (Array.isArray(session.deviceIds) && session.deviceIds.length > 0) {
+            targetDeviceSessions = session.deviceIds.map(id => devices.get(id)).filter(d => d && d.isReady && d.client);
+        }
+        if (targetDeviceSessions.length === 0) {
+            targetDeviceSessions = getReadyDevices();
+        }
+        if (targetDeviceSessions.length === 0) {
+            console.error("[BulkSender] No ready devices available during campaign!");
+            recipient.status = "error";
+            recipient.error = "No ready devices available";
+            session.failCount++;
+            break;
+        }
+
+        // Choose device considering warming limits
+        let chosenDev = null;
+        let attempts = 0;
+        while (attempts < targetDeviceSessions.length) {
+            const candidate = targetDeviceSessions[deviceIndex % targetDeviceSessions.length];
+            deviceIndex++;
+            attempts++;
+            if (candidate.warmingStatus === "warming" && candidate.messagesSentToday >= candidate.dailyLimit) {
+                continue;
+            }
+            chosenDev = candidate;
+            break;
+        }
+        if (!chosenDev) chosenDev = targetDeviceSessions[0];
+
+        const client = chosenDev.client;
+        const number = recipient.number || "";
+        const recipientName = recipient.name || "";
+
+        try {
+            const resolved = await resolveWhatsAppNumber(number, client);
+            if (!resolved || !resolved.jid) {
+                throw new Error("Number not registered on WhatsApp");
+            }
+            const formattedNumber = resolved.jid;
+            let personalizedMessage = session.message ? session.message.replace(/{{name}}/g, recipientName) : "";
+            if (personalizedMessage && recipient.variables && typeof recipient.variables === "object") {
+                for (const [k, v] of Object.entries(recipient.variables)) {
+                    personalizedMessage = personalizedMessage.replace(new RegExp(`{{${k}}}`, 'g'), v || "");
+                }
+            }
+
+            if (!chosenDev.isReady) throw new Error(`Device ${chosenDev.label} disconnected during campaign`);
+            await ensureWWebJSInjected(client);
+
+            if (session.attachments && session.attachments.length > 0) {
+                const { mimetype, data, filename } = session.attachments[0];
+                const media = new whatsapp_web_js_1.MessageMedia(mimetype, data, filename);
+                const sendOptions = personalizedMessage && personalizedMessage.trim() ? { caption: personalizedMessage } : {};
+                await client.sendMessage(formattedNumber, media, sendOptions);
+                for (let j = 1; j < session.attachments.length; j++) {
+                    const { mimetype: mt, data: d, filename: fn } = session.attachments[j];
+                    await client.sendMessage(formattedNumber, new whatsapp_web_js_1.MessageMedia(mt, d, fn));
+                }
+            } else if (personalizedMessage && personalizedMessage.trim()) {
+                await client.sendMessage(formattedNumber, personalizedMessage);
+            }
+
+            recipient.status = "success";
+            recipient.sentAt = new Date().toISOString();
+            session.sentCount++;
+            chosenDev.messagesSentToday++;
+            saveDeviceRegistry();
+
+            const resultItem = {
+                number,
+                name: recipientName,
+                status: "success",
+                deviceId: chosenDev.id,
+                deviceLabel: chosenDev.label,
+                fromNumber: chosenDev.phoneNumber,
+                timestamp: new Date().toISOString()
+            };
+            const exIdx = currentBulkResults.findIndex(r => r.number === number);
+            if (exIdx >= 0) currentBulkResults[exIdx] = resultItem;
+            else currentBulkResults.push(resultItem);
+
+            const delay = Math.floor(Math.random() * (session.maxDelay - session.minDelay + 1)) + session.minDelay;
+            const progressPayload = {
+                current: session.sentCount + session.failCount,
+                total,
+                success: session.sentCount,
+                failed: session.failCount,
+                lastNumber: number,
+                lastResult: resultItem,
+                status: isBulkPaused ? "Paused" : "Sending...",
+                isPaused: isBulkPaused,
+                activeDevice: chosenDev.label,
+                nextSendAt: (session.sentCount + session.failCount) < total && isBulkRunning && !isBulkPaused ? Date.now() + delay : null,
+                results: currentBulkResults
+            };
+            io.emit("bulkProgress", progressPayload);
+            io.emit("bulk_progress", progressPayload);
+
+            if ((session.sentCount + session.failCount) < total && isBulkRunning && !isBulkPaused) {
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        } catch (e) {
+            console.error(`Failed to send to ${recipient.number} from device ${chosenDev.label}`, e);
+            recipient.status = "error";
+            let errMsg = e.message || "Failed to send";
+            if (errMsg.includes("No LID for user") || errMsg.includes("wid error") || errMsg.includes("not registered")) {
+                errMsg = "Number not registered on WhatsApp";
+            }
+            recipient.error = errMsg;
+            session.failCount++;
+
+            const failItem = {
+                number: recipient.number,
+                name: recipientName,
+                status: "error",
+                error: errMsg,
+                deviceId: chosenDev.id,
+                deviceLabel: chosenDev.label,
+                timestamp: new Date().toISOString()
+            };
+            const exIdx = currentBulkResults.findIndex(r => r.number === recipient.number);
+            if (exIdx >= 0) currentBulkResults[exIdx] = failItem;
+            else currentBulkResults.push(failItem);
+
+            const progressPayload = {
+                current: session.sentCount + session.failCount,
+                total,
+                success: session.sentCount,
+                failed: session.failCount,
+                lastNumber: recipient.number,
+                lastResult: failItem,
+                status: isBulkPaused ? "Paused" : "Sending...",
+                isPaused: isBulkPaused,
+                activeDevice: chosenDev.label,
+                nextSendAt: (session.sentCount + session.failCount) < total && isBulkRunning && !isBulkPaused ? Date.now() + 500 : null,
+                results: currentBulkResults
+            };
+            io.emit("bulkProgress", progressPayload);
+            io.emit("bulk_progress", progressPayload);
+
+            if ((session.sentCount + session.failCount) < total && isBulkRunning && !isBulkPaused) {
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+        }
+    }
+
+    const wasPaused = isBulkPaused;
+    if (!wasPaused) {
+        isBulkRunning = false;
+        isBulkPaused = false;
+    }
+    const endTime = Date.now();
+
+    // Save history
+    const historyItem = {
+        id: session.startTime.toString(),
+        timestamp: new Date().toISOString(),
+        total,
+        sentCount: session.sentCount,
+        failCount: session.failCount,
+        message: session.message || (session.attachments.length > 0 ? `[${session.attachments.length} File(s)]` : ""),
+        attachmentCount: session.attachments.length,
+        duration: Math.floor((endTime - session.startTime) / 1000),
+        results: currentBulkResults
+    };
+    try {
+        const historyPath = path_1.default.join(DATA_DIR, 'history.json');
+        let history = [];
+        if (fs_1.default.existsSync(historyPath)) {
+            history = JSON.parse(fs_1.default.readFileSync(historyPath, 'utf8'));
+        }
+        history.unshift(historyItem);
+        fs_1.default.writeFileSync(historyPath, JSON.stringify(history.slice(0, 100), null, 2));
+    } catch (err) {
+        console.error("Failed to save history:", err);
+    }
+
+    const completePayload = {
+        total,
+        current: session.sentCount + session.failCount,
+        sentCount: session.sentCount,
+        failCount: session.failCount,
+        success: session.sentCount,
+        failed: session.failCount,
+        status: (session.sentCount + session.failCount >= total) ? "Completed" : (wasPaused ? "Paused" : "Stopped"),
+        isPaused: wasPaused,
+        results: currentBulkResults
+    };
+    io.emit("bulkProgress", completePayload);
+    io.emit("bulk_progress", completePayload);
+    if (!wasPaused) {
+        io.emit("bulkComplete", completePayload);
+    }
+}
+
 app.post("/api/send-bulk", async (req, res) => {
     const { recipients = [], message, minDelay = 1000, maxDelay = 3000, attachments = [], deviceIds = [] } = req.body;
-    
-    // Determine target devices
+
     let targetDeviceSessions = [];
     if (Array.isArray(deviceIds) && deviceIds.length > 0) {
         targetDeviceSessions = deviceIds.map(id => devices.get(id)).filter(d => d && d.isReady && d.client);
@@ -2872,221 +3119,170 @@ app.post("/api/send-bulk", async (req, res) => {
     }
 
     if (targetDeviceSessions.length === 0) {
-        // @ts-ignore
-        return res.status(503).json({ error: "No WhatsApp devices connected and ready" });
+        return res.status(503).json({ error: "Aucun compte WhatsApp connecté et prêt." });
     }
     if (isBulkRunning) {
-        // @ts-ignore
-        return res.status(400).json({ error: "A campaign is already running" });
+        return res.status(400).json({ error: "Une campagne est déjà en cours d'exécution." });
     }
 
-    isBulkRunning = true;
     currentBulkResults = [];
-    // Process in background
-    (async () => {
-        let sentCount = 0;
-        let failCount = 0;
-        const total = recipients.length;
-        const startTime = Date.now();
-        let deviceIndex = 0;
+    currentBulkSession = {
+        id: `bulk-${Date.now()}`,
+        recipients: recipients.map((r, idx) => ({
+            index: idx,
+            number: r.number || "",
+            name: r.name || (r.variables && r.variables.name) || "",
+            variables: r.variables || {},
+            status: "pending",
+            error: null,
+            sentAt: null
+        })),
+        message,
+        minDelay: Number(minDelay) || 1000,
+        maxDelay: Number(maxDelay) || 3000,
+        attachments: attachments || [],
+        deviceIds: deviceIds || [],
+        startTime: Date.now(),
+        sentCount: 0,
+        failCount: 0,
+        total: recipients.length,
+        isPaused: false
+    };
 
-        for (const recipient of recipients) {
-            if (!isBulkRunning) {
-                console.log("Campaign stopped by user");
-                break;
-            }
+    isBulkRunning = true;
+    isBulkPaused = false;
 
-            // Refresh available ready devices in case of disconnects mid-campaign
-            const availableDevices = targetDeviceSessions.filter(d => d && d.isReady && d.client);
-            if (availableDevices.length === 0) {
-                console.error("[BulkSender] All devices disconnected during campaign!");
-                break;
-            }
+    runBulkCampaign().catch(err => console.error("[BulkSender] Execution error:", err));
 
-            // Find next eligible device (considering warming limits)
-            let chosenDev = null;
-            let attempts = 0;
-            while (attempts < availableDevices.length) {
-                const candidate = availableDevices[deviceIndex % availableDevices.length];
-                deviceIndex++;
-                attempts++;
-
-                if (candidate.warmingStatus === "warming" && candidate.messagesSentToday >= candidate.dailyLimit) {
-                    console.warn(`[Warming] Device ${candidate.label} (${candidate.id}) reached daily limit (${candidate.dailyLimit}). Skipping.`);
-                    continue;
-                }
-                chosenDev = candidate;
-                break;
-            }
-
-            if (!chosenDev) {
-                console.warn("[BulkSender] All target devices have reached their daily warming limits.");
-                // Fallback to first available device anyway or stop
-                chosenDev = availableDevices[0];
-            }
-
-            const client = chosenDev.client;
-            const number = recipient.number || "";
-            const recipientName = recipient.name || (recipient.variables && recipient.variables.name) || "";
-            try {
-                console.log(`[Device ${chosenDev.label}] Resolving contact number on WhatsApp: ${number}`);
-                const resolved = await resolveWhatsAppNumber(number, client);
-                if (!resolved || !resolved.jid) {
-                    console.warn(`Number ${number} could not be resolved on WhatsApp`);
-                    throw new Error("Number not registered on WhatsApp");
-                }
-                const formattedNumber = resolved.jid;
-                let personalizedMessage = message ? message.replace(/{{name}}/g, recipientName) : "";
-                if (personalizedMessage && recipient.variables && typeof recipient.variables === "object") {
-                    for (const [k, v] of Object.entries(recipient.variables)) {
-                        personalizedMessage = personalizedMessage.replace(new RegExp(`{{${k}}}`, 'g'), v || "");
-                    }
-                }
-                if (!chosenDev.isReady)
-                    throw new Error(`Device ${chosenDev.label} disconnected during campaign`);
-                
-                await ensureWWebJSInjected(client);
-                if (attachments.length > 0) {
-                    const { mimetype, data, filename } = attachments[0];
-                    const media = new whatsapp_web_js_1.MessageMedia(mimetype, data, filename);
-                    const sendOptions = personalizedMessage && personalizedMessage.trim() ? { caption: personalizedMessage } : {};
-                    console.log(`[Device ${chosenDev.label}] Sending media to ${formattedNumber}...`);
-                    await client.sendMessage(formattedNumber, media, sendOptions);
-                    for (let i = 1; i < attachments.length; i++) {
-                        const { mimetype: mt, data: d, filename: fn } = attachments[i];
-                        await client.sendMessage(formattedNumber, new whatsapp_web_js_1.MessageMedia(mt, d, fn));
-                    }
-                }
-                else if (personalizedMessage && personalizedMessage.trim()) {
-                    console.log(`[Device ${chosenDev.label}] Sending message to ${formattedNumber}...`);
-                    await client.sendMessage(formattedNumber, personalizedMessage);
-                }
-                
-                sentCount++;
-                chosenDev.messagesSentToday++;
-                saveDeviceRegistry();
-                if (chosenDev.warmingStatus === "warming") {
-                    io.emit("device:warming_update", {
-                        deviceId: chosenDev.id,
-                        warmingStatus: chosenDev.warmingStatus,
-                        warmingDay: chosenDev.warmingDay,
-                        messagesSentToday: chosenDev.messagesSentToday,
-                        dailyLimit: chosenDev.dailyLimit
-                    });
-                }
-
-                const resultItem = {
-                    number,
-                    name: recipientName,
-                    status: "success",
-                    deviceId: chosenDev.id,
-                    deviceLabel: chosenDev.label,
-                    fromNumber: chosenDev.phoneNumber,
-                    timestamp: new Date().toISOString()
-                };
-                currentBulkResults.push(resultItem);
-                console.log(`[Device ${chosenDev.label}] Sent to ${number} (${sentCount}/${total})`);
-                const delay = Math.floor(Math.random() * (maxDelay - minDelay + 1)) + minDelay;
-                const nextSendAt = Date.now() + delay;
-                const progressPayload = {
-                    current: sentCount + failCount,
-                    total,
-                    success: sentCount,
-                    failed: failCount,
-                    lastNumber: number,
-                    lastResult: resultItem,
-                    status: "Sending...",
-                    activeDevice: chosenDev.label,
-                    nextSendAt: (sentCount + failCount) < total && isBulkRunning ? nextSendAt : null,
-                    results: currentBulkResults
-                };
-                io.emit("bulkProgress", progressPayload);
-                io.emit("bulk_progress", progressPayload);
-                if ((sentCount + failCount) < total && isBulkRunning) {
-                    await new Promise(resolve => setTimeout(resolve, delay));
-                }
-            }
-            catch (e) {
-                console.error(`Failed to send to ${recipient.number} from device ${chosenDev.label}`, e);
-                failCount++;
-                let errMsg = e.message || "Failed to send";
-                if (errMsg.includes("No LID for user") || errMsg.includes("wid error") || errMsg.includes("not registered")) {
-                    errMsg = "Number not registered on WhatsApp";
-                }
-                const failItem = {
-                    number: recipient.number,
-                    name: recipientName,
-                    status: "error",
-                    error: errMsg,
-                    deviceId: chosenDev.id,
-                    deviceLabel: chosenDev.label,
-                    timestamp: new Date().toISOString()
-                };
-                currentBulkResults.push(failItem);
-                const progressPayload = {
-                    current: sentCount + failCount,
-                    total,
-                    success: sentCount,
-                    failed: failCount,
-                    lastNumber: recipient.number,
-                    lastResult: failItem,
-                    status: "Sending...",
-                    activeDevice: chosenDev.label,
-                    nextSendAt: (sentCount + failCount) < total && isBulkRunning ? Date.now() + 500 : null,
-                    results: currentBulkResults
-                };
-                io.emit("bulkProgress", progressPayload);
-                io.emit("bulk_progress", progressPayload);
-                if ((sentCount + failCount) < total && isBulkRunning) {
-                    await new Promise(resolve => setTimeout(resolve, 500)); // Short delay after error
-                }
-            }
-        }
-        isBulkRunning = false;
-        const endTime = Date.now();
-        const historyItem = {
-            id: startTime.toString(),
-            timestamp: new Date().toISOString(),
-            total,
-            sentCount,
-            failCount,
-            message: message || (attachments.length > 0 ? `[${attachments.length} File(s)]` : ""),
-            attachmentCount: attachments.length,
-            duration: Math.floor((endTime - startTime) / 1000),
-            results: currentBulkResults
-        };
-        try {
-            const historyPath = path_1.default.join(DATA_DIR, 'history.json');
-            let history = [];
-            if (fs_1.default.existsSync(historyPath)) {
-                history = JSON.parse(fs_1.default.readFileSync(historyPath, 'utf8'));
-            }
-            history.unshift(historyItem);
-            fs_1.default.writeFileSync(historyPath, JSON.stringify(history.slice(0, 100), null, 2));
-        }
-        catch (err) {
-            console.error("Failed to save history:", err);
-        }
-        const completePayload = {
-            total,
-            current: total,
-            sentCount,
-            failCount,
-            success: sentCount,
-            failed: failCount,
-            status: "Completed",
-            results: currentBulkResults
-        };
-        io.emit("bulkProgress", completePayload);
-        io.emit("bulk_progress", completePayload);
-        io.emit("bulkComplete", completePayload);
-    })();
-    // @ts-ignore
-    res.json({ success: true, message: "Bulk sending started" });
+    res.json({ success: true, message: "Campagne démarrée avec succès", total: recipients.length });
 });
+
+app.post("/api/bulk/pause", (_req, res) => {
+    if (!isBulkRunning) return res.status(400).json({ error: "Aucune campagne en cours d'envoi." });
+    isBulkPaused = true;
+    if (currentBulkSession) currentBulkSession.isPaused = true;
+    const payload = {
+        isPaused: true,
+        status: "Paused",
+        current: currentBulkSession ? (currentBulkSession.sentCount + currentBulkSession.failCount) : 0,
+        total: currentBulkSession ? currentBulkSession.total : 0,
+        success: currentBulkSession ? currentBulkSession.sentCount : 0,
+        failed: currentBulkSession ? currentBulkSession.failCount : 0,
+        results: currentBulkResults
+    };
+    io.emit("bulkProgress", payload);
+    io.emit("bulk_progress", payload);
+    io.emit("bulk:paused", { isPaused: true });
+    res.json({ success: true, message: "Campagne mise en pause." });
+});
+
+app.post("/api/bulk/resume", (_req, res) => {
+    if (isBulkRunning && isBulkPaused) {
+        isBulkPaused = false;
+        if (currentBulkSession) currentBulkSession.isPaused = false;
+        const payload = {
+            isPaused: false,
+            status: "Sending...",
+            current: currentBulkSession ? (currentBulkSession.sentCount + currentBulkSession.failCount) : 0,
+            total: currentBulkSession ? currentBulkSession.total : 0,
+            success: currentBulkSession ? currentBulkSession.sentCount : 0,
+            failed: currentBulkSession ? currentBulkSession.failCount : 0,
+            results: currentBulkResults
+        };
+        io.emit("bulkProgress", payload);
+        io.emit("bulk_progress", payload);
+        io.emit("bulk:resumed", { isPaused: false });
+        return res.json({ success: true, message: "Campagne reprise." });
+    }
+
+    if (!isBulkRunning && currentBulkSession && Array.isArray(currentBulkSession.recipients)) {
+        const remaining = currentBulkSession.recipients.filter(r => r.status !== "success");
+        if (remaining.length > 0) {
+            remaining.forEach(r => {
+                r.status = "pending";
+                r.error = null;
+            });
+            isBulkRunning = true;
+            isBulkPaused = false;
+            currentBulkSession.isPaused = false;
+            runBulkCampaign().catch(err => console.error("[BulkSender] Resume error:", err));
+            return res.json({
+                success: true,
+                message: `Campagne reprise pour ${remaining.length} destinataire(s) non-envoyé(s) (sans doublon)`,
+                remainingCount: remaining.length
+            });
+        }
+    }
+
+    res.status(400).json({ error: "Aucune campagne en pause ou incomplète à reprendre." });
+});
+
+app.post("/api/bulk/resume-unsent", (_req, res) => {
+    if (isBulkRunning) {
+        return res.status(400).json({ error: "Une campagne est déjà en cours d'exécution." });
+    }
+    if (!currentBulkSession || !Array.isArray(currentBulkSession.recipients)) {
+        return res.status(400).json({ error: "Aucune session de campagne précédente trouvée." });
+    }
+    const remaining = currentBulkSession.recipients.filter(r => r.status !== "success");
+    if (remaining.length === 0) {
+        return res.status(400).json({ error: "Tous les destinataires ont déjà reçu le message avec succès !" });
+    }
+
+    remaining.forEach(r => {
+        r.status = "pending";
+        r.error = null;
+    });
+
+    isBulkRunning = true;
+    isBulkPaused = false;
+    currentBulkSession.isPaused = false;
+
+    runBulkCampaign().catch(err => console.error("[BulkSender] Resume unsent error:", err));
+
+    res.json({
+        success: true,
+        message: `Reprise lancée pour ${remaining.length} destinataire(s) non-envoyé(s) (sans doublon)`,
+        remainingCount: remaining.length,
+        alreadySentCount: currentBulkSession.sentCount
+    });
+});
+
+app.get("/api/bulk/session", (_req, res) => {
+    res.json({
+        success: true,
+        isBulkRunning,
+        isBulkPaused,
+        session: currentBulkSession ? {
+            id: currentBulkSession.id,
+            total: currentBulkSession.total,
+            sentCount: currentBulkSession.sentCount,
+            failCount: currentBulkSession.failCount,
+            remainingCount: currentBulkSession.recipients.filter(r => r.status !== 'success').length,
+            message: currentBulkSession.message,
+            isPaused: isBulkPaused,
+            results: currentBulkResults
+        } : null
+    });
+});
+
 app.post("/api/stop-bulk", (_req, res) => {
     isBulkRunning = false;
-    res.json({ success: true, message: "Campaign stopping..." });
+    isBulkPaused = false;
+    if (currentBulkSession) currentBulkSession.isPaused = false;
+    const payload = {
+        isPaused: false,
+        status: "Stopped",
+        current: currentBulkSession ? (currentBulkSession.sentCount + currentBulkSession.failCount) : 0,
+        total: currentBulkSession ? currentBulkSession.total : 0,
+        success: currentBulkSession ? currentBulkSession.sentCount : 0,
+        failed: currentBulkSession ? currentBulkSession.failCount : 0,
+        results: currentBulkResults
+    };
+    io.emit("bulkProgress", payload);
+    io.emit("bulk_progress", payload);
+    io.emit("bulk:stopped", { status: "Stopped" });
+    res.json({ success: true, message: "Arrêt de la campagne effectué." });
 });
 // ─── History ──────────────────────────────────────────────────────────────────
 app.get("/api/history", (_req, res) => {
@@ -3660,16 +3856,137 @@ app.get("/api/chat/conversations", (_req, res) => {
     res.json(list);
 });
 
-app.get("/api/chat/messages/:chatId", (req, res) => {
-    const chatId = req.params.chatId;
-    const cleanId = chatId.includes('@') ? chatId : `${chatId}@c.us`;
-    const conv = conversationsMap.get(cleanId) || conversationsMap.get(chatId);
-    if (conv) {
-        conv.unreadCount = 0;
+// Synchronize all active WhatsApp chats directly from device
+app.get("/api/chat/sync", async (_req, res) => {
+    try {
+        if (!isReady || !activeClient) {
+            return res.status(503).json({ error: "WhatsApp non connecté. Veuillez scanner le QR code." });
+        }
+        await ensureWWebJSInjected(activeClient);
+        const chats = await activeClient.getChats();
+        let syncedCount = 0;
+
+        for (const chat of (chats || []).slice(0, 60)) {
+            const chatId = chat.id?._serialized;
+            if (!chatId) continue;
+            const cleanId = chatId;
+            const name = chat.name || chat.formattedTitle || chatId.split('@')[0];
+            const number = chatId.split('@')[0];
+            const lastMsgBody = chat.lastMessage?.body || (chat.lastMessage?.hasMedia ? "[Média]" : "");
+            const rawTs = chat.timestamp || chat.lastMessage?.timestamp;
+            const lastTimestamp = rawTs ? (rawTs > 1e11 ? rawTs : rawTs * 1000) : Date.now();
+            const unreadCount = chat.unreadCount || 0;
+            const state = conversationsState[cleanId] || { mode: "ai", requestedAgent: false };
+
+            let conv = conversationsMap.get(cleanId);
+            if (!conv) {
+                conv = {
+                    id: cleanId,
+                    name,
+                    number,
+                    lastMessage: lastMsgBody,
+                    lastTimestamp,
+                    unreadCount,
+                    mode: state.mode || "ai",
+                    requestedAgent: !!state.requestedAgent,
+                    agentRequestTimestamp: state.agentRequestTimestamp || null,
+                    isGroup: !!chat.isGroup,
+                    messages: []
+                };
+                conversationsMap.set(cleanId, conv);
+            } else {
+                if (name && (conv.name === conv.number || !conv.name)) conv.name = name;
+                conv.number = number;
+                if (lastMsgBody) conv.lastMessage = lastMsgBody;
+                if (lastTimestamp && lastTimestamp > (conv.lastTimestamp || 0)) conv.lastTimestamp = lastTimestamp;
+                conv.unreadCount = unreadCount;
+                conv.isGroup = !!chat.isGroup;
+            }
+            syncedCount++;
+        }
+
         saveConversations();
-        res.json({ success: true, conversation: conv, messages: conv.messages || [] });
-    } else {
-        res.json({ success: true, conversation: null, messages: [] });
+        const list = Array.from(conversationsMap.values()).map(c => ({
+            ...c,
+            messages: undefined
+        })).sort((a, b) => (b.lastTimestamp || 0) - (a.lastTimestamp || 0));
+
+        io.emit("chat:synced", list);
+        res.json({ success: true, count: syncedCount, conversations: list });
+    } catch (e) {
+        console.error("[/api/chat/sync] Error:", e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.get("/api/chat/messages/:chatId", async (req, res) => {
+    try {
+        const chatId = req.params.chatId;
+        const cleanId = chatId.includes('@') ? chatId : `${chatId}@c.us`;
+        let conv = conversationsMap.get(cleanId) || conversationsMap.get(chatId);
+
+        // Attempt live fetch directly from WhatsApp device if available
+        if (isReady && activeClient) {
+            try {
+                await ensureWWebJSInjected(activeClient);
+                const chat = await activeClient.getChatById(cleanId);
+                if (chat && typeof chat.fetchMessages === 'function') {
+                    const fetched = await chat.fetchMessages({ limit: 40 });
+                    if (Array.isArray(fetched) && fetched.length > 0) {
+                        const parsedMsgs = fetched.map(m => {
+                            const ts = m.timestamp ? (m.timestamp > 1e11 ? m.timestamp : m.timestamp * 1000) : Date.now();
+                            return {
+                                id: m.id?._serialized || m.id?.id || `msg-${ts}`,
+                                fromMe: !!m.fromMe,
+                                body: m.body || (m.hasMedia ? "[Média]" : ""),
+                                timestamp: ts,
+                                source: m.fromMe ? "manual" : "incoming"
+                            };
+                        });
+
+                        if (!conv) {
+                            conv = {
+                                id: cleanId,
+                                name: chat.name || cleanId.split('@')[0],
+                                number: cleanId.split('@')[0],
+                                lastMessage: parsedMsgs[parsedMsgs.length - 1]?.body || "",
+                                lastTimestamp: parsedMsgs[parsedMsgs.length - 1]?.timestamp || Date.now(),
+                                unreadCount: 0,
+                                mode: conversationsState[cleanId]?.mode || "ai",
+                                requestedAgent: !!conversationsState[cleanId]?.requestedAgent,
+                                messages: parsedMsgs
+                            };
+                            conversationsMap.set(cleanId, conv);
+                        } else {
+                            // Preserve any AI metadata from existing messages
+                            const existingMap = new Map((conv.messages || []).map(m => [m.id, m]));
+                            parsedMsgs.forEach(pm => {
+                                if (existingMap.has(pm.id)) {
+                                    const ex = existingMap.get(pm.id);
+                                    pm.isAiReply = ex.isAiReply;
+                                    pm.confidence = ex.confidence;
+                                    pm.source = ex.source || pm.source;
+                                }
+                            });
+                            conv.messages = parsedMsgs;
+                        }
+                    }
+                }
+            } catch (liveErr) {
+                console.warn("[/api/chat/messages] Live messages fetch fallback:", liveErr.message);
+            }
+        }
+
+        if (conv) {
+            conv.unreadCount = 0;
+            saveConversations();
+            res.json({ success: true, conversation: conv, messages: conv.messages || [] });
+        } else {
+            res.json({ success: true, conversation: null, messages: [] });
+        }
+    } catch (e) {
+        console.error("[/api/chat/messages] Error:", e);
+        res.status(500).json({ error: e.message });
     }
 });
 
@@ -3745,14 +4062,24 @@ app.post("/api/chat/resolve-agent-request", (req, res) => {
     }
 });
 
-// ─── Contacts Endpoints ──────────────────────────────────────────────────────
+// ─── Contacts & Contact Groups Endpoints ─────────────────────────────────────
 app.get("/api/contacts", (_req, res) => {
     res.json(savedContacts);
 });
 
+app.get("/api/contacts/groups", (_req, res) => {
+    const groupMap = new Map();
+    for (const c of savedContacts) {
+        const gName = (c.group && String(c.group).trim()) ? String(c.group).trim() : "Général";
+        groupMap.set(gName, (groupMap.get(gName) || 0) + 1);
+    }
+    const groups = Array.from(groupMap.entries()).map(([name, count]) => ({ name, count }));
+    res.json({ success: true, groups, totalContacts: savedContacts.length });
+});
+
 app.post("/api/contacts", (req, res) => {
     try {
-        const { name, number, email, company, city, tags } = req.body;
+        const { name, number, email, company, city, tags, group } = req.body;
         if (!number) return res.status(400).json({ error: "Numéro de téléphone requis" });
         const clean = String(number).replace(/\D/g, '');
         const existingIdx = savedContacts.findIndex(c => c.number.replace(/\D/g, '') === clean);
@@ -3764,6 +4091,7 @@ app.post("/api/contacts", (req, res) => {
             company: company || "",
             city: city || "",
             tags: tags || "",
+            group: group ? String(group).trim() : "Général",
             createdAt: new Date().toISOString()
         };
         if (existingIdx !== -1) {
@@ -3780,16 +4108,34 @@ app.post("/api/contacts", (req, res) => {
 
 app.post("/api/contacts/import", (req, res) => {
     try {
-        const { contacts = [] } = req.body;
+        const { contacts = [], group } = req.body;
         if (!Array.isArray(contacts)) return res.status(400).json({ error: "Format invalide" });
+        const targetGroup = (group && String(group).trim()) ? String(group).trim() : "Général";
         let added = 0;
+        let updated = 0;
+
         for (const item of contacts) {
             const rawNum = item.number || item.phone || item.telephone || item.tel || item["Téléphone"] || item["Telephone"];
             if (!rawNum) continue;
             const clean = String(rawNum).replace(/\D/g, '');
             if (clean.length < 6) continue;
-            const exists = savedContacts.some(c => c.number.replace(/\D/g, '') === clean);
-            if (!exists) {
+
+            const existingIdx = savedContacts.findIndex(c => c.number.replace(/\D/g, '') === clean);
+            const contactGroup = (item.group && String(item.group).trim()) ? String(item.group).trim() : targetGroup;
+
+            if (existingIdx !== -1) {
+                // Update existing contact's group and details
+                savedContacts[existingIdx] = {
+                    ...savedContacts[existingIdx],
+                    name: item.name || item.nom || item["Nom"] || savedContacts[existingIdx].name,
+                    email: item.email || item["Email"] || savedContacts[existingIdx].email,
+                    company: item.company || item.entreprise || item["Entreprise"] || savedContacts[existingIdx].company,
+                    city: item.city || item.ville || item["Ville"] || savedContacts[existingIdx].city,
+                    tags: item.tags || item.note || item["Tags"] || savedContacts[existingIdx].tags,
+                    group: contactGroup
+                };
+                updated++;
+            } else {
                 savedContacts.push({
                     id: `cnt-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
                     name: item.name || item.nom || item["Nom"] || "Contact",
@@ -3798,13 +4144,54 @@ app.post("/api/contacts/import", (req, res) => {
                     company: item.company || item.entreprise || item["Entreprise"] || "",
                     city: item.city || item.ville || item["Ville"] || "",
                     tags: item.tags || item.note || item["Tags"] || "",
+                    group: contactGroup,
                     createdAt: new Date().toISOString()
                 });
                 added++;
             }
         }
         fs_1.default.writeFileSync(CONTACTS_PATH, JSON.stringify(savedContacts, null, 2));
-        res.json({ success: true, added, total: savedContacts.length, contacts: savedContacts });
+        res.json({
+            success: true,
+            added,
+            updated,
+            group: targetGroup,
+            total: savedContacts.length,
+            contacts: savedContacts
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+app.post("/api/contacts/delete-bulk", (req, res) => {
+    try {
+        const { ids, group, all } = req.body;
+        const initialCount = savedContacts.length;
+
+        if (all === true) {
+            savedContacts = [];
+        } else if (group && typeof group === "string") {
+            const targetGroup = group.trim().toLowerCase();
+            savedContacts = savedContacts.filter(c => {
+                const g = ((c.group && String(c.group).trim()) || "Général").toLowerCase();
+                return g !== targetGroup;
+            });
+        } else if (Array.isArray(ids) && ids.length > 0) {
+            const idSet = new Set(ids.map(String));
+            savedContacts = savedContacts.filter(c => !idSet.has(String(c.id)));
+        } else {
+            return res.status(400).json({ error: "Critère de suppression requis (ids, group, ou all: true)" });
+        }
+
+        const deletedCount = initialCount - savedContacts.length;
+        fs_1.default.writeFileSync(CONTACTS_PATH, JSON.stringify(savedContacts, null, 2));
+        res.json({
+            success: true,
+            deletedCount,
+            remainingCount: savedContacts.length,
+            contacts: savedContacts
+        });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }

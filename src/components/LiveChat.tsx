@@ -20,6 +20,7 @@ import {
     Bell
 } from "lucide-react";
 import { soundEffects } from "@/utils/soundEffects";
+import { API_URL } from "@/lib/config";
 
 interface ChatMessage {
     id: string;
@@ -58,6 +59,7 @@ export function LiveChat({ socket, isReady = true }: LiveChatProps) {
     const [loadingConvs, setLoadingConvs] = useState(true);
     const [loadingMsgs, setLoadingMsgs] = useState(false);
     const [sending, setSending] = useState(false);
+    const [isSyncing, setIsSyncing] = useState(false);
     const [agentAlert, setAgentAlert] = useState<{ name: string; number: string; body: string } | null>(null);
     const [copiedPhone, setCopiedPhone] = useState(false);
 
@@ -69,7 +71,7 @@ export function LiveChat({ socket, isReady = true }: LiveChatProps) {
 
     const fetchConversations = async () => {
         try {
-            const res = await fetch("/api/chat/conversations");
+            const res = await fetch(`${API_URL}/api/chat/conversations`);
             const data = await res.json();
             if (Array.isArray(data)) {
                 setConversations(data);
@@ -84,10 +86,32 @@ export function LiveChat({ socket, isReady = true }: LiveChatProps) {
         }
     };
 
+    const syncWhatsAppChats = async () => {
+        setIsSyncing(true);
+        try {
+            const res = await fetch(`${API_URL}/api/chat/sync`);
+            const data = await res.json();
+            if (data.success && Array.isArray(data.conversations)) {
+                setConversations(data.conversations);
+                soundEffects.playSuccessSound();
+                if (!selectedChatId && data.conversations.length > 0) {
+                    setSelectedChatId(data.conversations[0].id);
+                }
+            } else if (data.error) {
+                alert(data.error);
+            }
+        } catch (e) {
+            console.error("Failed to sync chats", e);
+            alert("Erreur lors de la synchronisation des conversations");
+        } finally {
+            setIsSyncing(false);
+        }
+    };
+
     const fetchMessages = async (chatId: string) => {
         setLoadingMsgs(true);
         try {
-            const res = await fetch(`/api/chat/messages/${encodeURIComponent(chatId)}`);
+            const res = await fetch(`${API_URL}/api/chat/messages/${encodeURIComponent(chatId)}`);
             const data = await res.json();
             if (data.success) {
                 setMessages(data.messages || []);
@@ -188,12 +212,19 @@ export function LiveChat({ socket, isReady = true }: LiveChatProps) {
             );
         };
 
+        const onChatSynced = (list: any) => {
+            if (Array.isArray(list)) {
+                setConversations(list);
+            }
+        };
+
         socket.on("incoming_message", onIncoming);
         socket.on("outgoing_message", onOutgoing);
         socket.on("chat:message_added", onMessageAdded);
         socket.on("agent_requested", onAgentRequested);
         socket.on("chat:mode_changed", onModeChanged);
         socket.on("chat:agent_request_resolved", onAgentResolved);
+        socket.on("chat:synced", onChatSynced);
 
         return () => {
             socket.off("incoming_message", onIncoming);
@@ -202,6 +233,7 @@ export function LiveChat({ socket, isReady = true }: LiveChatProps) {
             socket.off("agent_requested", onAgentRequested);
             socket.off("chat:mode_changed", onModeChanged);
             socket.off("chat:agent_request_resolved", onAgentResolved);
+            socket.off("chat:synced", onChatSynced);
         };
     }, [socket, selectedChatId]);
 
@@ -214,7 +246,7 @@ export function LiveChat({ socket, isReady = true }: LiveChatProps) {
         setSending(true);
 
         try {
-            const res = await fetch("/api/chat/send", {
+            const res = await fetch(`${API_URL}/api/chat/send`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -253,7 +285,7 @@ export function LiveChat({ socket, isReady = true }: LiveChatProps) {
         const targetMode = currentConv?.mode === "manual" ? "ai" : "manual";
 
         try {
-            const res = await fetch("/api/chat/mode", {
+            const res = await fetch(`${API_URL}/api/chat/mode`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ chatId: selectedChatId, mode: targetMode })
@@ -272,7 +304,7 @@ export function LiveChat({ socket, isReady = true }: LiveChatProps) {
     const handleResolveAgent = async () => {
         if (!selectedChatId) return;
         try {
-            await fetch("/api/chat/resolve-agent-request", {
+            await fetch(`${API_URL}/api/chat/resolve-agent-request`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ chatId: selectedChatId })
@@ -372,13 +404,24 @@ export function LiveChat({ socket, isReady = true }: LiveChatProps) {
                                 <MessageCircle className="w-5 h-5 text-emerald-600" />
                                 <h2 className="font-bold text-gray-900 text-sm">Live Chat WhatsApp</h2>
                             </div>
-                            <button
-                                onClick={fetchConversations}
-                                title="Actualiser les conversations"
-                                className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition"
-                            >
-                                <RefreshCw className="w-4 h-4" />
-                            </button>
+                            <div className="flex items-center gap-1.5">
+                                <button
+                                    onClick={syncWhatsAppChats}
+                                    disabled={isSyncing}
+                                    title="Synchroniser avec WhatsApp (récupérer les discussions du téléphone)"
+                                    className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 transition disabled:opacity-50"
+                                >
+                                    <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? "animate-spin text-emerald-600" : ""}`} />
+                                    <span className="hidden sm:inline">{isSyncing ? "Sync..." : "Sync WhatsApp"}</span>
+                                </button>
+                                <button
+                                    onClick={fetchConversations}
+                                    title="Actualiser la liste locale"
+                                    className="p-1.5 rounded-lg text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition"
+                                >
+                                    <RefreshCw className="w-3.5 h-3.5" />
+                                </button>
+                            </div>
                         </div>
 
                         {/* Search Bar */}

@@ -241,17 +241,18 @@ export function DeviceHub({ socket }: DeviceHubProps) {
     };
 
     const activeDevice = devices.find(d => d.id === activeDeviceId);
+    const primaryDevice = devices.find(d => d.isReady && d.isDefault) || devices.find(d => d.isReady);
 
     return (
         <div className="space-y-6">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
-                    <h2 className="text-xl font-bold text-gray-900">WhatsApp Devices</h2>
-                    <p className="text-sm text-gray-500">Manage multiple WhatsApp accounts</p>
+                    <h2 className="text-xl font-bold text-gray-900">Numéro WhatsApp & Appareils</h2>
+                    <p className="text-sm text-gray-500">Connexion WhatsApp pour le Live Chat, l&apos;Auto-Répondeur IA et les Envois</p>
                 </div>
-                <div className="flex items-center gap-4">
+                <div className="flex items-center gap-3">
                     <span className="px-3 py-1 bg-blue-50 text-blue-700 text-xs font-bold rounded-full border border-blue-200">
-                        {activeDevicesCount}/5 Connected
+                        {activeDevicesCount > 0 ? `${activeDevicesCount} Connecté` : "Non Connecté"}
                     </span>
                     <button
                         onClick={() => {
@@ -264,15 +265,60 @@ export function DeviceHub({ socket }: DeviceHubProps) {
                             setShowModal(true);
                         }}
                         disabled={devices.length >= 5}
-                        className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm font-semibold rounded-xl hover:opacity-90 transition disabled:opacity-50 shadow-sm"
+                        className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm font-semibold rounded-xl hover:opacity-90 transition disabled:opacity-50 shadow-sm cursor-pointer"
                     >
                         <Plus className="w-4 h-4" />
-                        Add Number
+                        Connecter un Numéro
                     </button>
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {/* Primary WhatsApp Account Banner */}
+            {primaryDevice && (
+                <div className="p-4 rounded-2xl bg-gradient-to-r from-emerald-500/10 via-teal-500/10 to-indigo-500/10 border border-emerald-500/20 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-fade-in-up">
+                    <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+                            <CheckCircle className="w-5 h-5" />
+                        </div>
+                        <div>
+                            <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold uppercase tracking-wider text-emerald-800">Numéro WhatsApp Principal Actif</span>
+                                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                            </div>
+                            <div className="text-sm font-bold text-gray-900 font-mono">
+                                +{primaryDevice.phoneNumber || "Connecté"} &bull; {primaryDevice.label}
+                            </div>
+                        </div>
+                    </div>
+                    <span className="text-xs text-emerald-800 font-medium bg-emerald-100/70 px-3 py-1 rounded-full border border-emerald-200">
+                        Synchronisé avec Live Chat, Envois &amp; IA
+                    </span>
+                </div>
+            )}
+
+            {devices.length === 0 ? (
+                <div className="bg-white rounded-2xl border border-dashed border-gray-300 p-12 text-center flex flex-col items-center justify-center">
+                    <div className="w-16 h-16 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mb-4">
+                        <Smartphone className="w-8 h-8" />
+                    </div>
+                    <h3 className="text-base font-bold text-gray-900 mb-1">Aucun numéro WhatsApp connecté</h3>
+                    <p className="text-xs text-gray-500 max-w-md mb-6">
+                        Connectez votre numéro WhatsApp pour synchroniser vos discussions en direct dans le Live Chat, lancer des campagnes et activer le répondeur intelligent.
+                    </p>
+                    <button
+                        onClick={() => {
+                            setModalLabel("");
+                            setActiveDeviceId(null);
+                            setShowModal(true);
+                        }}
+                        className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm font-semibold rounded-xl hover:opacity-90 transition shadow-sm cursor-pointer"
+                    >
+                        <Plus className="w-4 h-4" />
+                        Connecter mon numéro WhatsApp
+                    </button>
+                </div>
+            ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
                 {devices.map(device => (
                     <div key={device.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden flex flex-col">
                         <div className={`h-1.5 w-full ${
@@ -396,6 +442,7 @@ export function DeviceHub({ socket }: DeviceHubProps) {
                     </div>
                 ))}
             </div>
+            )}
 
             {showModal && (
                 <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">

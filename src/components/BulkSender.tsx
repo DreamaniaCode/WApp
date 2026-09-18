@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import {
     Send, Upload, Clock, AlertCircle, FileText, X, FileSpreadsheet, Plus, Download,
     CheckCircle2, XCircle, Square, RotateCw, Filter, Search, Users, Loader2, CheckSquare, Sparkles,
-    Smartphone, CheckCheck, Bookmark, BookmarkPlus, ChevronDown
+    Smartphone, CheckCheck, Bookmark, BookmarkPlus, ChevronDown, Play, Pause, Folder
 } from "lucide-react";
 import Papa from "papaparse";
 import { MessagePreview } from "./MessagePreview";
@@ -61,6 +61,10 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
     const [activeTab, setActiveTab] = useState<"compose" | "results">("compose");
     const [searchFilter, setSearchFilter] = useState("");
     const [statusFilter, setStatusFilter] = useState<"all" | "success" | "error">("all");
+    const [isPaused, setIsPaused] = useState(false);
+    const [showContactGroupModal, setShowContactGroupModal] = useState(false);
+    const [contactGroupsList, setContactGroupsList] = useState<{ name: string; count: number }[]>([]);
+    const [loadingContactGroups, setLoadingContactGroups] = useState(false);
 
     // Modals for importing from Groups and Contacts
     const [showGroupModal, setShowGroupModal] = useState(false);
@@ -342,6 +346,16 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
             console.log("Bulk Progress Event:", data);
             setProgress(data);
 
+            if (data.isPaused !== undefined) {
+                setIsPaused(!!data.isPaused);
+            }
+            if (data.status === "Paused") {
+                setIsPaused(true);
+            } else if (data.status === "Sending...") {
+                setIsPaused(false);
+                setIsLoading(true);
+            }
+
             if (data.results && Array.isArray(data.results)) {
                 setResultsList(data.results);
             } else if (data.lastResult) {
@@ -356,47 +370,201 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
                 });
             }
 
-            if (data.status === "Completed" || (data.current >= data.total && data.total > 0)) {
+            if (data.status === "Completed" || (data.current >= data.total && data.total > 0 && !data.isPaused)) {
                 setIsLoading(false);
+                setIsPaused(false);
                 playSuccessSound();
                 setStatus({
                     type: "success",
-                    msg: `Campaign finished: ${data.success || data.sentCount || 0} sent successfully, ${data.failed || data.failCount || 0} failed.`
+                    msg: `Campagne terminée: ${data.success || data.sentCount || 0} envoyé(s), ${data.failed || data.failCount || 0} échec(s).`
                 });
             }
         };
 
         const handleComplete = (data: any) => {
             setIsLoading(false);
+            setIsPaused(false);
             playSuccessSound();
             if (data.results && Array.isArray(data.results)) {
                 setResultsList(data.results);
             }
             setStatus({
                 type: "success",
-                msg: `Campaign Completed: ${data.sentCount || 0} sent, ${data.failCount || 0} failed.`
+                msg: `Campagne terminée: ${data.sentCount || 0} envoyé(s), ${data.failCount || 0} échec(s).`
             });
+        };
+
+        const onBulkPaused = () => {
+            setIsPaused(true);
+        };
+
+        const onBulkResumed = () => {
+            setIsPaused(false);
+            setIsLoading(true);
+        };
+
+        const onBulkStopped = () => {
+            setIsLoading(false);
+            setIsPaused(false);
         };
 
         socket.on("bulkProgress", handleProgress);
         socket.on("bulk_progress", handleProgress);
         socket.on("bulkComplete", handleComplete);
+        socket.on("bulk:paused", onBulkPaused);
+        socket.on("bulk:resumed", onBulkResumed);
+        socket.on("bulk:stopped", onBulkStopped);
 
         return () => {
             socket.off("bulkProgress", handleProgress);
             socket.off("bulk_progress", handleProgress);
             socket.off("bulkComplete", handleComplete);
+            socket.off("bulk:paused", onBulkPaused);
+            socket.off("bulk:resumed", onBulkResumed);
+            socket.off("bulk:stopped", onBulkStopped);
         };
     }, [socket]);
+
+    useEffect(() => {
+        const restoreSession = async () => {
+            try {
+                const res = await fetch(`${API_URL}/api/bulk/session`);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.isBulkRunning) {
+                        setIsLoading(true);
+                        setIsPaused(!!data.isBulkPaused);
+                    }
+                    if (data.session) {
+                        if (Array.isArray(data.session.results)) setResultsList(data.session.results);
+                        setProgress({
+                            total: data.session.total,
+                            current: data.session.sentCount + data.session.failCount,
+                            success: data.session.sentCount,
+                            failed: data.session.failCount,
+                            status: data.isBulkPaused ? "Paused" : (data.isBulkRunning ? "Sending..." : "Completed")
+                        });
+                    }
+                }
+            } catch (_) {}
+        };
+        restoreSession();
+    }, []);
+
+    const pauseCampaign = async () => {
+        try {
+            await fetch(`${API_URL}/api/bulk/pause`, { method: "POST" });
+            setIsPaused(true);
+            setStatus({ type: "success", msg: "Campagne mise en pause." });
+        } catch {
+            setStatus({ type: "error", msg: "Échec de la mise en pause." });
+        }
+    };
+
+    const resumeCampaign = async () => {
+        try {
+            await fetch(`${API_URL}/api/bulk/resume`, { method: "POST" });
+            setIsPaused(false);
+            setIsLoading(true);
+            setStatus({ type: "success", msg: "Reprise de la campagne..." });
+        } catch {
+            setStatus({ type: "error", msg: "Échec de la reprise." });
+        }
+    };
+
+    const resumeUnsentCampaign = async () => {
+        try {
+            setIsLoading(true);
+            setIsPaused(false);
+            const res = await fetch(`${API_URL}/api/bulk/resume-unsent`, { method: "POST" });
+            const data = await res.json();
+            if (data.success) {
+                playSuccessSound();
+                setStatus({
+                    type: "success",
+                    msg: data.message || `Reprise lancée pour les contacts non-envoyés (sans doublon).`
+                });
+            } else {
+                setIsLoading(false);
+                setStatus({ type: "error", msg: data.error || "Impossible de reprendre les non-envoyés." });
+            }
+        } catch (e: any) {
+            setIsLoading(false);
+            setStatus({ type: "error", msg: "Erreur réseau: " + e.message });
+        }
+    };
 
     const stopCampaign = async () => {
         try {
             await fetch(`${API_URL}/api/stop-bulk`, { method: "POST" });
             setIsLoading(false);
+            setIsPaused(false);
             playErrorSound();
-            setStatus({ type: "error", msg: "Campaign stopping requested..." });
+            setStatus({ type: "error", msg: "Arrêt de la campagne demandé." });
         } catch {
-            setStatus({ type: "error", msg: "Failed to request stopping campaign." });
+            setStatus({ type: "error", msg: "Échec de l'arrêt de la campagne." });
+        }
+    };
+
+    const openContactGroupModal = async () => {
+        setLoadingContactGroups(true);
+        setShowContactGroupModal(true);
+        try {
+            const res = await fetch(`${API_URL}/api/contacts/groups`);
+            if (res.ok) {
+                const data = await res.json();
+                if (data.success && Array.isArray(data.groups)) {
+                    setContactGroupsList(data.groups);
+                }
+            }
+        } catch (err) {
+            console.warn("Failed to load contact groups:", err);
+        } finally {
+            setLoadingContactGroups(false);
+        }
+    };
+
+    const importFromContactGroup = async (groupName: string) => {
+        try {
+            const res = await fetch(`${API_URL}/api/contacts`);
+            if (!res.ok) return;
+            const allContacts = await res.json();
+            if (!Array.isArray(allContacts)) return;
+
+            const targetContacts = groupName === "all"
+                ? allContacts
+                : allContacts.filter((c: any) => (c.group || "Général").trim().toLowerCase() === groupName.trim().toLowerCase());
+
+            if (targetContacts.length === 0) {
+                setStatus({ type: "error", msg: `Aucun contact trouvé dans le groupe "${groupName}".` });
+                setShowContactGroupModal(false);
+                return;
+            }
+
+            const mapped: Recipient[] = targetContacts.map((c: any) => ({
+                number: formatPhoneNumber(c.number),
+                name: c.name || "Contact",
+                variables: {
+                    name: c.name || "Contact",
+                    group: c.group || "Général",
+                    company: c.company || "",
+                    city: c.city || "",
+                    email: c.email || ""
+                }
+            }));
+
+            const existing = new Set(recipients.map(r => r.number));
+            const merged = [...recipients, ...mapped.filter(r => !existing.has(r.number))];
+            setRecipients(merged);
+            setTextInput(merged.map(r => r.number).join("\n"));
+            setShowContactGroupModal(false);
+            playSuccessSound();
+            setStatus({
+                type: "success",
+                msg: `${mapped.length} contacts importés depuis le groupe "${groupName}" ! Total: ${merged.length} destinataires.`
+            });
+        } catch (e: any) {
+            setStatus({ type: "error", msg: "Erreur lors de l'import: " + e.message });
         }
     };
 
@@ -735,14 +903,34 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
                     </button>
                 </div>
 
-                {isLoading && (
-                    <button
-                        onClick={stopCampaign}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 transition"
-                    >
-                        <Square className="w-3.5 h-3.5 fill-red-600" />
-                        Stop Campaign
-                    </button>
+                {(isLoading || isPaused) && (
+                    <div className="flex items-center gap-2">
+                        {isLoading && !isPaused && (
+                            <button
+                                onClick={pauseCampaign}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 transition cursor-pointer"
+                            >
+                                <Pause className="w-3.5 h-3.5" />
+                                Pause
+                            </button>
+                        )}
+                        {isPaused && (
+                            <button
+                                onClick={resumeCampaign}
+                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-white bg-green-600 hover:bg-green-700 shadow-sm transition cursor-pointer"
+                            >
+                                <Play className="w-3.5 h-3.5" />
+                                Reprendre
+                            </button>
+                        )}
+                        <button
+                            onClick={stopCampaign}
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 transition cursor-pointer"
+                        >
+                            <Square className="w-3.5 h-3.5 fill-red-600" />
+                            Arrêter
+                        </button>
+                    </div>
                 )}
             </div>
 
@@ -756,7 +944,7 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
                     {resultsList.length > 0 && (
                         <button
                             onClick={downloadReport}
-                            className="flex items-center gap-1 text-xs bg-white border border-gray-300 px-3 py-1.5 rounded-lg font-semibold text-gray-700 hover:bg-gray-50 shadow-xs shrink-0"
+                            className="flex items-center gap-1 text-xs bg-white border border-gray-300 px-3 py-1.5 rounded-lg font-semibold text-gray-700 hover:bg-gray-50 shadow-xs shrink-0 cursor-pointer"
                         >
                             <Download className="w-3.5 h-3.5" />
                             Download CSV Report
@@ -767,33 +955,74 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
 
             {/* Live Progress Bar Widget */}
             {progress && (
-                <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-4 rounded-2xl border border-blue-100 shadow-xs">
-                    <div className="flex items-center justify-between text-xs font-bold text-blue-900 mb-2">
+                <div className="bg-gradient-to-r from-blue-50 to-indigo-50 p-4 rounded-2xl border border-blue-100 shadow-xs space-y-3">
+                    <div className="flex items-center justify-between text-xs font-bold text-blue-900">
                         <div className="flex items-center gap-2">
-                            {isLoading ? <RotateCw className="w-3.5 h-3.5 animate-spin text-blue-600" /> : <CheckCircle2 className="w-4 h-4 text-green-600" />}
-                            <span>{progress.status}</span>
+                            {isPaused ? (
+                                <Pause className="w-4 h-4 text-amber-600" />
+                            ) : isLoading ? (
+                                <RotateCw className="w-3.5 h-3.5 animate-spin text-blue-600" />
+                            ) : (
+                                <CheckCircle2 className="w-4 h-4 text-green-600" />
+                            )}
+                            <span>{isPaused ? "En Pause" : progress.status}</span>
                         </div>
                         <span className="font-mono text-sm">
                             {progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0}%
                         </span>
                     </div>
-                    <div className="w-full bg-blue-200/60 rounded-full h-3 overflow-hidden mb-2">
+                    <div className="w-full bg-blue-200/60 rounded-full h-3 overflow-hidden">
                         <div
-                            className="bg-gradient-to-r from-blue-600 to-indigo-600 h-3 rounded-full transition-all duration-300"
+                            className={`h-3 rounded-full transition-all duration-300 ${
+                                isPaused
+                                    ? "bg-amber-500"
+                                    : "bg-gradient-to-r from-blue-600 to-indigo-600"
+                            }`}
                             style={{ width: `${progress.total > 0 ? (progress.current / progress.total) * 100 : 0}%` }}
                         />
                     </div>
                     <div className="flex items-center justify-between text-xs text-blue-700">
-                        <span>Progress: <strong>{progress.current} / {progress.total}</strong></span>
+                        <span>Progression: <strong>{progress.current} / {progress.total}</strong></span>
                         <div className="flex gap-4">
                             <span className="text-green-700 font-semibold flex items-center gap-1">
-                                <CheckCircle2 className="w-3.5 h-3.5" /> {progress.success || successCount} Sent
+                                <CheckCircle2 className="w-3.5 h-3.5" /> {progress.success || successCount} Envoyés
                             </span>
                             <span className="text-red-700 font-semibold flex items-center gap-1">
-                                <XCircle className="w-3.5 h-3.5" /> {progress.failed || errorCount} Failed
+                                <XCircle className="w-3.5 h-3.5" /> {progress.failed || errorCount} Échecs
                             </span>
                         </div>
                     </div>
+
+                    {/* Resume Unsent / Resume from Pause Buttons */}
+                    {(progress.failed > 0 || (progress.current < progress.total && !isLoading && !isPaused)) && (
+                        <div className="pt-2 border-t border-blue-200/60 flex flex-col sm:flex-row items-center justify-between gap-2">
+                            <span className="text-xs text-indigo-900 font-medium">
+                                Contacts non-envoyés ou interrompus disponibles à la reprise sans doublon.
+                            </span>
+                            <button
+                                onClick={resumeUnsentCampaign}
+                                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 shadow-sm transition cursor-pointer shrink-0"
+                            >
+                                <RotateCw className="w-3.5 h-3.5" />
+                                Reprendre les non-envoyés (sans doublon)
+                            </button>
+                        </div>
+                    )}
+
+                    {isPaused && (
+                        <div className="pt-2 border-t border-amber-200 flex items-center justify-between">
+                            <span className="text-xs text-amber-800 font-bold">
+                                Campagne en pause. Les prochains messages sont temporairement suspendus.
+                            </span>
+                            <button
+                                onClick={resumeCampaign}
+                                className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl text-xs font-bold text-white bg-green-600 hover:bg-green-700 shadow-sm transition cursor-pointer"
+                            >
+                                <Play className="w-3.5 h-3.5" />
+                                Continuer l'envoi
+                            </button>
+                        </div>
+                    )}
                 </div>
             )}
 
@@ -840,6 +1069,14 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
                                         title="Import from saved contacts list"
                                     >
                                         <Users className="w-3.5 h-3.5" /> Contacts
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={openContactGroupModal}
+                                        className="text-xs flex items-center gap-1 text-indigo-700 hover:text-indigo-800 font-semibold bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1.5 rounded-lg border border-indigo-200 transition"
+                                        title="Importer directement depuis un groupe d'envoi ciblé"
+                                    >
+                                        <Users className="w-3.5 h-3.5" /> 👥 Groupes d&apos;envoi
                                     </button>
                                     <input type="file" ref={csvInputRef} className="hidden" accept=".csv" onChange={handleCSVUpload} />
                                     <button
@@ -1481,6 +1718,88 @@ export function BulkSender({ socket, initialRecipients, initialMessage, onClearI
                                 className="px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-xs"
                             >
                                 Import All {savedContacts.length} Contacts
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Contact Group Selection Modal */}
+            {showContactGroupModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-xs p-4">
+                    <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full border border-gray-200 overflow-hidden animate-fade-in-up">
+                        <div className="p-5 border-b border-gray-100 flex items-center justify-between">
+                            <div className="flex items-center gap-2.5">
+                                <div className="w-9 h-9 rounded-xl bg-indigo-50 flex items-center justify-center border border-indigo-100">
+                                    <Users className="w-5 h-5 text-indigo-600" />
+                                </div>
+                                <div>
+                                    <h3 className="font-bold text-gray-900 text-sm">Groupes d&apos;envoi de contacts</h3>
+                                    <p className="text-xs text-gray-500">Sélectionnez un groupe pour charger ses contacts</p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => setShowContactGroupModal(false)}
+                                className="text-gray-400 hover:text-gray-600 p-1 cursor-pointer"
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+
+                        <div className="p-5 max-h-[340px] overflow-y-auto space-y-2">
+                            {loadingContactGroups ? (
+                                <div className="py-8 flex flex-col items-center justify-center text-gray-400 text-xs gap-2">
+                                    <Loader2 className="w-5 h-5 animate-spin text-indigo-600" />
+                                    Chargement des groupes...
+                                </div>
+                            ) : contactGroupsList.length === 0 ? (
+                                <div className="py-8 text-center text-gray-400 text-xs">
+                                    Aucun groupe de contacts trouvé. Importez des contacts avec un nom de groupe dans l&apos;onglet Contacts.
+                                </div>
+                            ) : (
+                                <div className="space-y-2">
+                                    {contactGroupsList.map((g) => (
+                                        <div
+                                            key={g.name}
+                                            onClick={() => importFromContactGroup(g.name)}
+                                            className="p-3 border border-gray-100 hover:border-indigo-200 hover:bg-indigo-50/50 rounded-xl transition cursor-pointer flex items-center justify-between group"
+                                        >
+                                            <div className="flex items-center gap-2.5">
+                                                <div className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-xs">
+                                                    {g.name.charAt(0).toUpperCase()}
+                                                </div>
+                                                <div>
+                                                    <h4 className="text-xs font-bold text-gray-800 group-hover:text-indigo-900">{g.name}</h4>
+                                                    <p className="text-[11px] text-gray-500">{g.count} contact{g.count > 1 ? "s" : ""}</p>
+                                                </div>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                className="text-xs px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white font-medium rounded-lg shadow-xs transition cursor-pointer"
+                                            >
+                                                Charger
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="p-4 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
+                            <button
+                                type="button"
+                                onClick={() => setShowContactGroupModal(false)}
+                                className="px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-200 rounded-lg transition cursor-pointer"
+                            >
+                                Annuler
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => importFromContactGroup("all")}
+                                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-xs cursor-pointer"
+                            >
+                                <Users className="w-3.5 h-3.5" />
+                                Charger tous les groupes
                             </button>
                         </div>
                     </div>
