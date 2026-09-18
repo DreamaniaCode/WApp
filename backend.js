@@ -51,6 +51,7 @@ function findChrome() {
         return process.env.CHROME_PATH;
     }
     const candidates = [
+        // Windows
         process.env.LOCALAPPDATA && path_1.default.join(process.env.LOCALAPPDATA, "Google", "Chrome", "Application", "chrome.exe"),
         process.env.PROGRAMFILES && path_1.default.join(process.env.PROGRAMFILES, "Google", "Chrome", "Application", "chrome.exe"),
         process.env["PROGRAMFILES(X86)"] && path_1.default.join(process.env["PROGRAMFILES(X86)"], "Google", "Chrome", "Application", "chrome.exe"),
@@ -58,6 +59,16 @@ function findChrome() {
         "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
         process.env.PROGRAMFILES && path_1.default.join(process.env.PROGRAMFILES, "Microsoft", "Edge", "Application", "msedge.exe"),
         "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+        // macOS (Intel & Apple Silicon)
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        path_1.default.join(os_1.default.homedir(), "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        // Linux
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium"
     ].filter(Boolean);
     for (const candidate of candidates) {
         if (fs_1.default.existsSync(candidate)) {
@@ -596,7 +607,12 @@ function killStaleBrowserProcesses() {
                 resolve();
             }
         } else {
-            resolve();
+            try {
+                const { exec } = require('child_process');
+                exec("pkill -f 'wwebjs_auth' 2>/dev/null || true", { timeout: 4000 }, () => resolve());
+            } catch (_) {
+                resolve();
+            }
         }
     });
 }

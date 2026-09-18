@@ -13,7 +13,9 @@
     "electron:start": "electron .",
     "postinstall": "node patch-wwebjs.js",
     "build": "node patch-wwebjs.js && next build && node fix-paths.js",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac"
   },
   "build": {
     "asar": true,
@@ -24,6 +26,34 @@
     "appId": "com.dreamaniacode.wappmanagerleadspro",
     "productName": "WApp Manager Leads Pro",
     "copyright": "Copyright © 2026 DreamaniaCode",
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.business",
+      "icon": "build/icon.png",
+      "artifactName": "WApp Manager Leads Pro Mac ${version}.${ext}",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "identity": null
+    },
+    "dmg": {
+      "title": "WApp Manager Leads Pro ${version}",
+      "icon": "build/icon.png",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
     "win": {
       "target": "nsis",
       "icon": "public/icon.ico",

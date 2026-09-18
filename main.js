@@ -159,12 +159,23 @@ function createWindow() {
 
 function findBrowser() {
     const candidates = [
+        // Windows
         process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, "Google/Chrome/Application/chrome.exe"),
         process.env["PROGRAMFILES(X86)"] && path.join(process.env["PROGRAMFILES(X86)"], "Google/Chrome/Application/chrome.exe"),
         "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
         "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
         process.env.PROGRAMFILES && path.join(process.env.PROGRAMFILES, "Microsoft/Edge/Application/msedge.exe"),
         "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+        // macOS
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        path.join(require('os').homedir(), "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+        // Linux
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium-browser",
+        "/usr/bin/chromium"
     ].filter(Boolean);
 
     for (const candidate of candidates) {
@@ -198,7 +209,7 @@ function startBackend() {
     let backendArgs;
 
     if (process.env.NODE_ENV === 'development') {
-        backendCmd = 'npm.cmd'; // Use .cmd for Windows
+        backendCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
         backendArgs = ['run', 'backend'];
     } else {
         backendCmd = process.execPath;
@@ -266,6 +277,11 @@ function killStalePortProcesses(targetPort = 3001) {
             const backendPid = backendProcess ? backendProcess.pid : 0;
             execSync(`powershell -NoProfile -NonInteractive -Command "Get-NetTCPConnection -LocalPort ${targetPort} -ErrorAction SilentlyContinue | Where-Object { $_.OwningProcess -ne ${myPid} -and $_.OwningProcess -ne ${backendPid} } | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }"`, { timeout: 4000 });
         } catch (_) {}
+    } else {
+        try {
+            const { execSync } = require('child_process');
+            execSync(`lsof -ti :${targetPort} | xargs kill -9 2>/dev/null || true`, { timeout: 4000 });
+        } catch (_) {}
     }
 }
 
@@ -321,8 +337,11 @@ app.on('quit', () => {
     isAppQuitting = true;
     if (backendProcess && backendProcess.pid) {
         try {
-            // Kill the process tree on Windows
-            spawn('taskkill', ['/F', '/T', '/PID', backendProcess.pid]);
+            if (process.platform === 'win32') {
+                spawn('taskkill', ['/F', '/T', '/PID', backendProcess.pid]);
+            } else {
+                backendProcess.kill('SIGKILL');
+            }
         } catch (e) {
             try { backendProcess.kill(); } catch (_) {}
         }
@@ -331,6 +350,11 @@ app.on('quit', () => {
         try {
             const { exec } = require('child_process');
             exec('powershell -NoProfile -NonInteractive -Command "Get-CimInstance Win32_Process -Filter \\"name = \'chrome.exe\'\\" | Where-Object { $_.CommandLine -like \'*wwebjs_auth*\' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"', () => {});
+        } catch (_) {}
+    } else {
+        try {
+            const { exec } = require('child_process');
+            exec("pkill -f 'wwebjs_auth' 2>/dev/null || true", () => {});
         } catch (_) {}
     }
 });
