@@ -429,15 +429,15 @@ app.post("/api/send-bulk", async (req, res) => {
                     if (attachments.length > 0) {
                         const firstAtt = attachments[0];
                         const media = new MessageMedia(firstAtt.mimetype, firstAtt.data, firstAtt.filename);
-                        const options: any = {};
+                        const options: any = { sendSeen: false };
                         if (personalizedMessage?.trim()) options.caption = personalizedMessage;
                         await device.client.sendMessage(formattedNumber, media, options);
                         for (let j = 1; j < attachments.length; j++) {
                             const att = attachments[j];
-                            await device.client.sendMessage(formattedNumber, new MessageMedia(att.mimetype, att.data, att.filename));
+                            await device.client.sendMessage(formattedNumber, new MessageMedia(att.mimetype, att.data, att.filename), { sendSeen: false });
                         }
                     } else if (personalizedMessage?.trim()) {
-                        await device.client.sendMessage(formattedNumber, personalizedMessage);
+                        await device.client.sendMessage(formattedNumber, personalizedMessage, { sendSeen: false });
                     }
                 }
 

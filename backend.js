@@ -678,6 +678,98 @@ function safeClearFolder(dirPath, maxRetries = 5, delayMs = 500) {
 async function ensureWWebJSInjected(client) {
     if (!client || !client.pupPage || client.pupPage.isClosed()) return false;
     try {
+        // Ensure runtime memoize getter guards and Contact.get fallbacks are active on the page
+        await client.pupPage.evaluate(() => {
+            try {
+                const wrapModuleGetters = (mod) => {
+                    if (!mod || typeof mod !== 'object') return;
+                    for (const key of Object.keys(mod)) {
+                        const fn = mod[key];
+                        if (typeof fn === 'function' && !fn._memoizeGuarded) {
+                            const orig = fn;
+                            const guarded = function(...args) {
+                                try {
+                                    const target = args[0];
+                                    if (args.length > 0 && (!target || typeof target !== 'object' || !target.id)) {
+                                        return false;
+                                    }
+                                    return orig.apply(this, args);
+                                } catch (err) {
+                                    if (err && err.message && err.message.includes('Data passed to getter must include an id property')) {
+                                        return false;
+                                    }
+                                    throw err;
+                                }
+                            };
+                            guarded._memoizeGuarded = true;
+                            mod[key] = guarded;
+                        }
+                    }
+                };
+
+                if (window.Store) {
+                    if (window.Store.ChatGetters) wrapModuleGetters(window.Store.ChatGetters);
+                    if (window.Store.ContactMethods) wrapModuleGetters(window.Store.ContactMethods);
+                    if (window.Store.EphemeralFields) wrapModuleGetters(window.Store.EphemeralFields);
+
+                    const protectCol = (col) => {
+                        if (!col || typeof col.get !== 'function' || col.get._guarded) return;
+                        const origGet = col.get.bind(col);
+                        const guardedGet = function(wid) {
+                            const found = origGet(wid);
+                            if (found) return found;
+                            if (wid) {
+                                const serialized = typeof wid === 'string' ? wid : (wid._serialized || (typeof wid.toString === 'function' ? wid.toString() : ''));
+                                return {
+                                    id: wid,
+                                    userid: serialized ? serialized.split('@')[0] : '',
+                                    isContact: false,
+                                    isUser: true,
+                                    isGroup: false,
+                                    isBroadcast: false,
+                                    isPSA: false,
+                                    isBusiness: false,
+                                    isEnterprise: false,
+                                    isSmb: false,
+                                    shortName: '',
+                                    name: '',
+                                    pushname: '',
+                                    verifiedName: '',
+                                    type: 'in'
+                                };
+                            }
+                            return found;
+                        };
+                        guardedGet._guarded = true;
+                        col.get = guardedGet;
+                    };
+
+                    if (window.Store.Contact) protectCol(window.Store.Contact);
+                    if (window.Store.ContactCollection) protectCol(window.Store.ContactCollection);
+
+                    if (window.Store.FindOrCreateChat && typeof window.Store.FindOrCreateChat.findOrCreateLatestChat === 'function' && !window.Store.FindOrCreateChat.findOrCreateLatestChat._guarded) {
+                        const origFindOrCreate = window.Store.FindOrCreateChat.findOrCreateLatestChat.bind(window.Store.FindOrCreateChat);
+                        const guardedFindOrCreate = async function(wid) {
+                            try {
+                                return await origFindOrCreate(wid);
+                            } catch (err) {
+                                if (err && err.message && err.message.includes('Data passed to getter must include an id property')) {
+                                    let chat = window.Store.Chat && window.Store.Chat.get ? window.Store.Chat.get(wid) : null;
+                                    if (!chat && window.Store.Chat && window.Store.Chat.find) {
+                                        try { chat = await window.Store.Chat.find(wid); } catch (_) {}
+                                    }
+                                    if (chat) return { chat };
+                                }
+                                throw err;
+                            }
+                        };
+                        guardedFindOrCreate._guarded = true;
+                        window.Store.FindOrCreateChat.findOrCreateLatestChat = guardedFindOrCreate;
+                    }
+                }
+            } catch (_) {}
+        }).catch(() => {});
+
         const alreadyInjected = await client.pupPage.evaluate(() => {
             return typeof window.WWebJS !== 'undefined' && typeof window.WWebJS.getChat === 'function';
         }).catch(() => false);
@@ -1869,7 +1961,8 @@ function registerDeviceEvents(deviceId, client) {
                     if (callResponderConfig.replyMessage && callResponderConfig.replyMessage.trim()) {
                         await new Promise(r => setTimeout(r, callResponderConfig.autoReplyDelayMs || 1200));
                         try {
-                            await client.sendMessage(call.from, callResponderConfig.replyMessage.trim());
+                            await ensureWWebJSInjected(client);
+                            await client.sendMessage(call.from, callResponderConfig.replyMessage.trim(), { sendSeen: false });
                             callResponderConfig.stats.repliesSent = (callResponderConfig.stats.repliesSent || 0) + 1;
                             sentAutoReply = true;
                         } catch (msgErr) {
@@ -1933,12 +2026,12 @@ io.on("connection", (socket) => {
             await ensureWWebJSInjected(activeClient);
             const formattedNumber = number.includes("@c.us") ? number : `${number}@c.us`;
             try {
-                await activeClient.sendMessage(formattedNumber, message);
+                await activeClient.sendMessage(formattedNumber, message, { sendSeen: false });
             } catch (firstErr) {
-                if (firstErr.message && (firstErr.message.includes("getChat") || firstErr.message.includes("WWebJS"))) {
+                if (firstErr.message && (firstErr.message.includes("getChat") || firstErr.message.includes("WWebJS") || firstErr.message.includes("memoize") || firstErr.message.includes("getter"))) {
                     await ensureWWebJSInjected(activeClient);
                     await new Promise(r => setTimeout(r, 600));
-                    await activeClient.sendMessage(formattedNumber, message);
+                    await activeClient.sendMessage(formattedNumber, message, { sendSeen: false });
                 } else {
                     throw firstErr;
                 }
@@ -2282,7 +2375,8 @@ async function sendCartRecoveryMessage(cart) {
     const phone = cart.customerPhone.replace(/[^0-9]/g, "");
     const numberId = await client.getNumberId(phone);
     if (!numberId) throw new Error("Number not on WhatsApp");
-    await client.sendMessage(numberId._serialized, message);
+    await ensureWWebJSInjected(client);
+    await client.sendMessage(numberId._serialized, message, { sendSeen: false });
     cart.status = "contacted";
     cart.contactedAt = new Date().toISOString();
     cart.followUpCount = (cart.followUpCount || 0) + 1;
@@ -2977,17 +3071,36 @@ async function runBulkCampaign() {
             if (!chosenDev.isReady) throw new Error(`Device ${chosenDev.label} disconnected during campaign`);
             await ensureWWebJSInjected(client);
 
-            if (session.attachments && session.attachments.length > 0) {
-                const { mimetype, data, filename } = session.attachments[0];
-                const media = new whatsapp_web_js_1.MessageMedia(mimetype, data, filename);
-                const sendOptions = personalizedMessage && personalizedMessage.trim() ? { caption: personalizedMessage } : {};
-                await client.sendMessage(formattedNumber, media, sendOptions);
-                for (let j = 1; j < session.attachments.length; j++) {
-                    const { mimetype: mt, data: d, filename: fn } = session.attachments[j];
-                    await client.sendMessage(formattedNumber, new whatsapp_web_js_1.MessageMedia(mt, d, fn));
+            const sendOptions = {
+                sendSeen: false,
+                ...(personalizedMessage && personalizedMessage.trim() ? { caption: personalizedMessage } : {})
+            };
+
+            const doBulkSend = async () => {
+                if (session.attachments && session.attachments.length > 0) {
+                    const { mimetype, data, filename } = session.attachments[0];
+                    const media = new whatsapp_web_js_1.MessageMedia(mimetype, data, filename);
+                    await client.sendMessage(formattedNumber, media, sendOptions);
+                    for (let j = 1; j < session.attachments.length; j++) {
+                        const { mimetype: mt, data: d, filename: fn } = session.attachments[j];
+                        await client.sendMessage(formattedNumber, new whatsapp_web_js_1.MessageMedia(mt, d, fn), { sendSeen: false });
+                    }
+                } else if (personalizedMessage && personalizedMessage.trim()) {
+                    await client.sendMessage(formattedNumber, personalizedMessage, { sendSeen: false });
                 }
-            } else if (personalizedMessage && personalizedMessage.trim()) {
-                await client.sendMessage(formattedNumber, personalizedMessage);
+            };
+
+            try {
+                await doBulkSend();
+            } catch (sendErr) {
+                if (sendErr.message && (sendErr.message.includes("memoize") || sendErr.message.includes("getter") || sendErr.message.includes("getChat") || sendErr.message.includes("WWebJS"))) {
+                    console.warn(`[BulkCampaign] Retrying message to ${number} after injecting guards...`, sendErr.message);
+                    await ensureWWebJSInjected(client);
+                    await new Promise(r => setTimeout(r, 600));
+                    await doBulkSend();
+                } else {
+                    throw sendErr;
+                }
             }
 
             recipient.status = "success";
@@ -3035,6 +3148,8 @@ async function runBulkCampaign() {
             let errMsg = e.message || "Failed to send";
             if (errMsg.includes("No LID for user") || errMsg.includes("wid error") || errMsg.includes("not registered")) {
                 errMsg = "Number not registered on WhatsApp";
+            } else if (errMsg.includes("Data passed to getter") || errMsg.includes("how we memoize")) {
+                errMsg = "Recipient initialization error (WhatsApp Web memoize)";
             }
             recipient.error = errMsg;
             session.failCount++;
@@ -4014,7 +4129,7 @@ app.post("/api/chat/send", async (req, res) => {
 
         const targetJid = chatId.includes("@") ? chatId : `${chatId}@c.us`;
         await ensureWWebJSInjected(activeClient);
-        await activeClient.sendMessage(targetJid, message.trim());
+        await activeClient.sendMessage(targetJid, message.trim(), { sendSeen: false });
 
         recordChatMessage({
             id: `msg-${Date.now()}`,
@@ -5776,10 +5891,13 @@ app.post("/api/send-single", async (req, res) => {
         const doSend = async () => {
             if (attachment && attachment.data && attachment.mimetype) {
                 const media = new whatsapp_web_js_1.MessageMedia(attachment.mimetype, attachment.data, attachment.filename || 'file');
-                const options = message && message.trim() ? { caption: message.trim() } : {};
+                const options = {
+                    sendSeen: false,
+                    ...(message && message.trim() ? { caption: message.trim() } : {})
+                };
                 return await activeClient.sendMessage(formattedNumber, media, options);
             } else if (message && message.trim()) {
-                return await activeClient.sendMessage(formattedNumber, message.trim());
+                return await activeClient.sendMessage(formattedNumber, message.trim(), { sendSeen: false });
             } else {
                 throw new Error("Message text or media attachment is required.");
             }
@@ -5788,7 +5906,7 @@ app.post("/api/send-single", async (req, res) => {
         try {
             sentResult = await doSend();
         } catch (sendErr) {
-            if (sendErr.message && (sendErr.message.includes("getChat") || sendErr.message.includes("WWebJS"))) {
+            if (sendErr.message && (sendErr.message.includes("getChat") || sendErr.message.includes("WWebJS") || sendErr.message.includes("memoize") || sendErr.message.includes("getter"))) {
                 console.warn("[/api/send-single] Retrying after injecting WWebJS utils...", sendErr.message);
                 await ensureWWebJSInjected(activeClient);
                 await new Promise(r => setTimeout(r, 800));

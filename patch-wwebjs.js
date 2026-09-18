@@ -1,8 +1,21 @@
 /**
  * patch-wwebjs.js
  * Automatically patches whatsapp-web.js to handle WhatsApp Web updates gracefully:
- * 1. Makes Store.js use safeRequire to prevent "Cannot read properties of undefined (reading 'setPushname')".
- * 2. Hardens Client.js post-auth loop against undefined properties and adds UI fallback for ready event.
+ * 1. Hardens Store.js:
+ *    - Uses safeReq to prevent "Cannot read properties of undefined (reading 'setPushname')".
+ *    - Wraps memoized getters (ChatGetters, ContactMethods, EphemeralFields, etc.) with safe fallbacks
+ *      to prevent "Data passed to getter must include an id property (it's how we memoize) but got undefined".
+ *    - Guards Store.Contact and Store.ContactCollection to return synthetic contact models for new/unsaved numbers.
+ * 2. Hardens Utils.js:
+ *    - Guards isChannel / isStatus checks in sendMessage against missing chat or missing id.
+ *    - Protects ephemeralFields retrieval with try/catch.
+ *    - Makes sendSeen resilient with try/catch.
+ *    - Adds multi-stage fallback in getChat for findOrCreateLatestChat.
+ * 3. Hardens Client.js:
+ *    - Wraps sendSeen in sendMessage evaluate with try/catch.
+ *    - Hardens ClientInfo construction against undefined properties.
+ *    - Adds UI fallback for ready event.
+ *    - Persists storage permissions and guards against spurious logouts.
  */
 
 const fs = require('fs');
@@ -16,8 +29,8 @@ function patchStore() {
     }
 
     const content = fs.readFileSync(storePath, 'utf8');
-    if (content.includes('safeReq')) {
-        console.log('[patch-wwebjs] Store.js already patched with safeReq.');
+    if (content.includes('wrapMemoizedGetters')) {
+        console.log('[patch-wwebjs] Store.js already patched with memoized getter guards.');
         return true;
     }
 
@@ -69,6 +82,32 @@ exports.ExposeStore = () => {
         }
     };
 
+    const wrapMemoizedGetters = (mod) => {
+        if (!mod || typeof mod !== 'object') return mod;
+        for (const [key, fn] of Object.entries(mod)) {
+            if (typeof fn === 'function' && !fn._memoizeGuarded) {
+                const origFn = fn;
+                const guarded = function(...args) {
+                    try {
+                        const target = args[0];
+                        if (args.length > 0 && (!target || typeof target !== 'object' || !target.id)) {
+                            return false;
+                        }
+                        return origFn.apply(this, args);
+                    } catch (err) {
+                        if (err && err.message && err.message.includes('Data passed to getter must include an id property')) {
+                            return false;
+                        }
+                        throw err;
+                    }
+                };
+                guarded._memoizeGuarded = true;
+                mod[key] = guarded;
+            }
+        }
+        return mod;
+    };
+
     window.Store = Object.assign({}, safeReq('WAWebCollections') || {});
     window.Store.AppState = (safeReq('WAWebSocketModel') || {}).Socket;
     window.Store.BlockContact = safeReq('WAWebBlockContactAction');
@@ -96,10 +135,16 @@ exports.ExposeStore = () => {
     window.Store.BlobCache = safeReq('WAWebMediaInMemoryBlobCache');
     window.Store.SendSeen = safeReq('WAWebUpdateUnreadChatAction');
     window.Store.User = safeReq('WAWebUserPrefsMeUser');
-    window.Store.ContactMethods = {
+    window.Store.ContactMethods = wrapMemoizedGetters({
         ...(safeReq('WAWebContactGetters') || {}),
         ...(safeReq('WAWebFrontendContactGetters') || {})
-    };
+    });
+    wrapMemoizedGetters(safeReq('WAWebContactGetters'));
+    wrapMemoizedGetters(safeReq('WAWebFrontendContactGetters'));
+    wrapMemoizedGetters(safeReq('WAWebAddressbookContactGetters'));
+    wrapMemoizedGetters(safeReq('WAWebBusinessProfileGetters'));
+    wrapMemoizedGetters(safeReq('WAWebGroupGetters'));
+    wrapMemoizedGetters(safeReq('WAWebEphemeralFieldsGetters'));
     window.Store.UserConstructor = safeReq('WAWebWid');
     window.Store.Validators = safeReq('WALinkify');
     window.Store.WidFactory = safeReq('WAWebWidFactory');
@@ -110,7 +155,7 @@ exports.ExposeStore = () => {
     window.Store.ConversationMsgs = safeReq('WAWebChatLoadMessages');
     window.Store.sendReactionToMsg = (safeReq('WAWebSendReactionMsgAction') || {}).sendReactionToMsg;
     window.Store.createOrUpdateReactionsModule = safeReq('WAWebDBCreateOrUpdateReactions');
-    window.Store.EphemeralFields = safeReq('WAWebGetEphemeralFieldsMsgActionsUtils');
+    window.Store.EphemeralFields = wrapMemoizedGetters(safeReq('WAWebGetEphemeralFieldsMsgActionsUtils'));
     window.Store.MsgActionChecks = safeReq('WAWebMsgActionCapability');
     window.Store.QuotedMsg = safeReq('WAWebQuotedMsgModelUtils');
     window.Store.LinkPreview = safeReq('WAWebLinkPreviewChatAction');
@@ -131,7 +176,7 @@ exports.ExposeStore = () => {
     window.Store.HistorySync = safeReq('WAWebSendNonMessageDataRequest');
     window.Store.AddonReactionTable = (safeReq('WAWebAddonReactionTableMode') || {}).reactionTableMode;
     window.Store.AddonPollVoteTable = (safeReq('WAWebAddonPollVoteTableMode') || {}).pollVoteTableMode;
-    window.Store.ChatGetters = safeReq('WAWebChatGetters');
+    window.Store.ChatGetters = wrapMemoizedGetters(safeReq('WAWebChatGetters'));
     window.Store.UploadUtils = safeReq('WAWebUploadManager');
     window.Store.WAWebStreamModel = safeReq('WAWebStreamModel');
     window.Store.FindOrCreateChat = safeReq('WAWebFindChatAction');
@@ -237,6 +282,60 @@ exports.ExposeStore = () => {
         ...(safeReq('WAWebStatusGatingUtils') || {})
     };
 
+    const protectContactCollection = (col) => {
+        if (!col || typeof col.get !== 'function' || col.get._guarded) return;
+        const origGet = col.get.bind(col);
+        const guardedGet = function(wid) {
+            const existing = origGet(wid);
+            if (existing) return existing;
+            if (wid) {
+                const serialized = typeof wid === 'string' ? wid : (wid._serialized || (typeof wid.toString === 'function' ? wid.toString() : ''));
+                return {
+                    id: wid,
+                    userid: serialized ? serialized.split('@')[0] : '',
+                    isContact: false,
+                    isUser: true,
+                    isGroup: false,
+                    isBroadcast: false,
+                    isPSA: false,
+                    isBusiness: false,
+                    isEnterprise: false,
+                    isSmb: false,
+                    shortName: '',
+                    name: '',
+                    pushname: '',
+                    verifiedName: '',
+                    type: 'in'
+                };
+            }
+            return existing;
+        };
+        guardedGet._guarded = true;
+        col.get = guardedGet;
+    };
+
+    if (window.Store.Contact) protectContactCollection(window.Store.Contact);
+    if (window.Store.ContactCollection) protectContactCollection(window.Store.ContactCollection);
+
+    if (window.Store.FindOrCreateChat && typeof window.Store.FindOrCreateChat.findOrCreateLatestChat === 'function') {
+        const origFindOrCreate = window.Store.FindOrCreateChat.findOrCreateLatestChat.bind(window.Store.FindOrCreateChat);
+        window.Store.FindOrCreateChat.findOrCreateLatestChat = async function(wid) {
+            try {
+                return await origFindOrCreate(wid);
+            } catch (err) {
+                if (err && err.message && err.message.includes('Data passed to getter must include an id property')) {
+                    console.warn('[WWebJS] findOrCreateLatestChat caught memoize getter error, attempting fallback chat');
+                    let chat = window.Store.Chat && window.Store.Chat.get ? window.Store.Chat.get(wid) : null;
+                    if (!chat && window.Store.Chat && window.Store.Chat.find) {
+                        try { chat = await window.Store.Chat.find(wid); } catch (_) {}
+                    }
+                    if (chat) return { chat };
+                }
+                throw err;
+            }
+        };
+    }
+
     if (window.Store.Chat && (!window.Store.Chat._find || !window.Store.Chat.findImpl)) {
         window.Store.Chat._find = e => {
             const target = window.Store.Chat.get ? window.Store.Chat.get(e) : null;
@@ -283,7 +382,56 @@ exports.ExposeStore = () => {
 `;
 
     fs.writeFileSync(storePath, patchedStore, 'utf8');
-    console.log('[patch-wwebjs] Successfully patched Store.js with safeReq.');
+    console.log('[patch-wwebjs] Successfully patched Store.js with safeReq & memoized getter guards.');
+    return true;
+}
+
+function patchUtils() {
+    const utilsPath = path.join(__dirname, 'node_modules', 'whatsapp-web.js', 'src', 'util', 'Injected', 'Utils.js');
+    if (!fs.existsSync(utilsPath)) {
+        console.log('[patch-wwebjs] Utils.js not found at:', utilsPath);
+        return false;
+    }
+
+    let content = fs.readFileSync(utilsPath, 'utf8');
+
+    // 1. Patch isChannel and isStatus in sendMessage
+    const targetChannelStatus = `        const isChannel = window.Store.ChatGetters.getIsNewsletter(chat);\n        const isStatus = window.Store.ChatGetters.getIsBroadcast(chat);`;
+    const safeChannelStatus = `        const isChannel = Boolean(chat && chat.id && window.Store.ChatGetters && typeof window.Store.ChatGetters.getIsNewsletter === 'function' && window.Store.ChatGetters.getIsNewsletter(chat));\n        const isStatus = Boolean(chat && chat.id && window.Store.ChatGetters && typeof window.Store.ChatGetters.getIsBroadcast === 'function' && window.Store.ChatGetters.getIsBroadcast(chat));`;
+
+    if (content.includes(targetChannelStatus)) {
+        content = content.replace(targetChannelStatus, safeChannelStatus);
+        console.log('[patch-wwebjs] Patched isChannel/isStatus in Utils.js sendMessage.');
+    }
+
+    // 2. Patch ephemeralFields in sendMessage
+    const targetEphemeral = `        const ephemeralFields = window.Store.EphemeralFields.getEphemeralFields(chat);`;
+    const safeEphemeral = `        let ephemeralFields = {};\n        try {\n            if (window.Store.EphemeralFields && typeof window.Store.EphemeralFields.getEphemeralFields === 'function' && chat && chat.id) {\n                ephemeralFields = window.Store.EphemeralFields.getEphemeralFields(chat) || {};\n            }\n        } catch (_) {\n            ephemeralFields = {};\n        }`;
+
+    if (content.includes(targetEphemeral)) {
+        content = content.replace(targetEphemeral, safeEphemeral);
+        console.log('[patch-wwebjs] Patched ephemeralFields in Utils.js sendMessage.');
+    }
+
+    // 3. Patch sendSeen in Utils.js
+    const targetSendSeen = `    window.WWebJS.sendSeen = async (chatId) => {\n        const chat = await window.WWebJS.getChat(chatId, { getAsModel: false });\n        if (chat) {\n            window.Store.WAWebStreamModel.Stream.markAvailable();\n            await window.Store.SendSeen.sendSeen({\n                chat: chat,\n                threadId: undefined\n            });         \n            window.Store.WAWebStreamModel.Stream.markUnavailable();\n            return true;\n        }\n        return false;\n    };`;
+    const safeSendSeen = `    window.WWebJS.sendSeen = async (chatId) => {\n        try {\n            const chat = await window.WWebJS.getChat(chatId, { getAsModel: false });\n            if (chat && window.Store.SendSeen && window.Store.SendSeen.sendSeen) {\n                if (window.Store.WAWebStreamModel && window.Store.WAWebStreamModel.Stream) {\n                    window.Store.WAWebStreamModel.Stream.markAvailable();\n                }\n                await window.Store.SendSeen.sendSeen({\n                    chat: chat,\n                    threadId: undefined\n                });         \n                if (window.Store.WAWebStreamModel && window.Store.WAWebStreamModel.Stream) {\n                    window.Store.WAWebStreamModel.Stream.markUnavailable();\n                }\n                return true;\n            }\n        } catch (_) {}\n        return false;\n    };`;
+
+    if (content.includes(targetSendSeen)) {
+        content = content.replace(targetSendSeen, safeSendSeen);
+        console.log('[patch-wwebjs] Patched sendSeen in Utils.js.');
+    }
+
+    // 4. Patch getChat fallback in Utils.js
+    const targetGetChat = `        } else {\n            chat = window.Store.Chat.get(chatWid) || (await window.Store.FindOrCreateChat.findOrCreateLatestChat(chatWid))?.chat;\n        }`;
+    const safeGetChat = `        } else {\n            try {\n                chat = window.Store.Chat.get(chatWid);\n            } catch (_) {}\n            if (!chat) {\n                try {\n                    if (window.Store.FindOrCreateChat && typeof window.Store.FindOrCreateChat.findOrCreateLatestChat === 'function') {\n                        const res = await window.Store.FindOrCreateChat.findOrCreateLatestChat(chatWid);\n                        chat = res ? (res.chat || res) : null;\n                    }\n                } catch (err) {\n                    console.warn('[WWebJS] findOrCreateLatestChat fallback:', err?.message || err);\n                }\n            }\n            if (!chat) {\n                try { chat = window.Store.Chat.get(chatWid); } catch (_) {}\n            }\n            if (!chat && window.Store.Chat && typeof window.Store.Chat.find === 'function') {\n                try { chat = await window.Store.Chat.find(chatWid); } catch (_) {}\n            }\n        }`;
+
+    if (content.includes(targetGetChat)) {
+        content = content.replace(targetGetChat, safeGetChat);
+        console.log('[patch-wwebjs] Patched getChat findOrCreateLatestChat in Utils.js.');
+    }
+
+    fs.writeFileSync(utilsPath, content, 'utf8');
     return true;
 }
 
@@ -358,10 +506,19 @@ function patchClient() {
         console.log('[patch-wwebjs] Patched framenavigated logout guard to prevent premature session wipe.');
     }
 
+    // Patch sendSeen in pupPage.evaluate of sendMessage
+    const targetEvalSendSeen = `if (sendSeen) {\n                await window.WWebJS.sendSeen(chatId);\n            }`;
+    const safeEvalSendSeen = `if (sendSeen) {\n                try { await window.WWebJS.sendSeen(chatId); } catch (_) {}\n            }`;
+    if (content.includes(targetEvalSendSeen)) {
+        content = content.replace(targetEvalSendSeen, safeEvalSendSeen);
+        console.log('[patch-wwebjs] Patched sendSeen try/catch in Client.js sendMessage.');
+    }
+
     fs.writeFileSync(clientPath, content, 'utf8');
     return true;
 }
 
 patchStore();
+patchUtils();
 patchClient();
 console.log('[patch-wwebjs] Completed all patches.');
