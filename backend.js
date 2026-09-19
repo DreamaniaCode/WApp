@@ -934,6 +934,9 @@ async function ensureWWebJSInjected(client) {
                                             }
                                         } catch (_) {}
                                     }
+                                    if (typeof window.WWebJS !== 'undefined' && typeof window.WWebJS.ensureChatQueues === 'function') {
+                                        try { window.WWebJS.ensureChatQueues(chat); } catch (_) {}
+                                    }
                                     return { chat };
                                 }
                                 throw err;
@@ -942,6 +945,72 @@ async function ensureWWebJSInjected(client) {
                         guardedFindOrCreate._guardedV6 = true;
                         window.Store.FindOrCreateChat.findOrCreateLatestChat = guardedFindOrCreate;
                     }
+
+                    const createPromiseQueue = () => {
+                        try {
+                            if (typeof window.require === 'function') {
+                                const mod = window.require('WAInOrderPromiseQueue');
+                                const Cls = mod && (mod.default || mod);
+                                if (typeof Cls === 'function') return new Cls();
+                            }
+                        } catch (_) {}
+                        let chain = Promise.resolve();
+                        return {
+                            enqueue(promiseOrFn) {
+                                const p = (promiseOrFn && typeof promiseOrFn.then === 'function') ? promiseOrFn : Promise.resolve(promiseOrFn);
+                                p.catch(() => {});
+                                const next = () => p;
+                                const res = chain.then(next, next);
+                                chain = res.catch(() => {});
+                                return res;
+                            },
+                            cancelAll() {}
+                        };
+                    };
+
+                    const ensureChatQueues = (c) => {
+                        if (!c) return;
+                        if (!c.addQueue || typeof c.addQueue.enqueue !== 'function') {
+                            c.addQueue = createPromiseQueue();
+                        }
+                        if (!c.sendQueue || typeof c.sendQueue.enqueue !== 'function') {
+                            c.sendQueue = createPromiseQueue();
+                        }
+                    };
+
+                    if (typeof window.WWebJS !== 'undefined') {
+                        window.WWebJS.createPromiseQueue = createPromiseQueue;
+                        window.WWebJS.ensureChatQueues = ensureChatQueues;
+                    }
+
+                    try {
+                        const ChatModel = (window.Store && window.Store.Chat && window.Store.Chat._modelClass)
+                            || (window.Store && window.Store.Chat && window.Store.Chat.models && window.Store.Chat.models[0] && window.Store.Chat.models[0].constructor);
+                        if (ChatModel && ChatModel.prototype) {
+                            if (!Object.getOwnPropertyDescriptor(ChatModel.prototype, 'addQueue')) {
+                                Object.defineProperty(ChatModel.prototype, 'addQueue', {
+                                    get() {
+                                        if (!this._addQueue) ensureChatQueues(this);
+                                        return this._addQueue;
+                                    },
+                                    set(v) { this._addQueue = v; },
+                                    configurable: true,
+                                    enumerable: true
+                                });
+                            }
+                            if (!Object.getOwnPropertyDescriptor(ChatModel.prototype, 'sendQueue')) {
+                                Object.defineProperty(ChatModel.prototype, 'sendQueue', {
+                                    get() {
+                                        if (!this._sendQueue) ensureChatQueues(this);
+                                        return this._sendQueue;
+                                    },
+                                    set(v) { this._sendQueue = v; },
+                                    configurable: true,
+                                    enumerable: true
+                                });
+                            }
+                        }
+                    } catch (_) {}
                 }
             } catch (_) {}
         }).catch(() => {});
@@ -2206,13 +2275,13 @@ io.on("connection", (socket) => {
             const formattedNumber = (resolved && resolved.jid) ? resolved.jid : (number.includes("@") ? number : `${number}@c.us`);
             let sentResult;
             try {
-                sentResult = await activeClient.sendMessage(formattedNumber, message, { sendSeen: false });
+                sentResult = await activeClient.sendMessage(formattedNumber, message, { sendSeen: false, waitUntilMsgSent: true });
                 if (!sentResult || !sentResult.id) throw new Error("WhatsApp Web did not confirm message dispatch");
             } catch (firstErr) {
-                if (firstErr.message && (firstErr.message.includes("getChat") || firstErr.message.includes("WWebJS") || firstErr.message.includes("memoize") || firstErr.message.includes("getter"))) {
+                if (firstErr.message && (firstErr.message.includes("getChat") || firstErr.message.includes("WWebJS") || firstErr.message.includes("memoize") || firstErr.message.includes("getter") || firstErr.message.includes("enqueue"))) {
                     await ensureWWebJSInjected(activeClient);
                     await new Promise(r => setTimeout(r, 600));
-                    sentResult = await activeClient.sendMessage(formattedNumber, message, { sendSeen: false });
+                    sentResult = await activeClient.sendMessage(formattedNumber, message, { sendSeen: false, waitUntilMsgSent: true });
                     if (!sentResult || !sentResult.id) throw new Error("WhatsApp Web did not confirm message dispatch on retry");
                 } else {
                     throw firstErr;
@@ -3286,15 +3355,15 @@ async function runBulkCampaign() {
                 if (session.attachments && session.attachments.length > 0) {
                     const { mimetype, data, filename } = session.attachments[0];
                     const media = new whatsapp_web_js_1.MessageMedia(mimetype, data, filename);
-                    lastSent = await client.sendMessage(formattedNumber, media, sendOptions);
+                    lastSent = await client.sendMessage(formattedNumber, media, { ...sendOptions, waitUntilMsgSent: true });
                     if (!lastSent || !lastSent.id) throw new Error("Attachment send dispatch failed: no confirmation from WhatsApp Web");
                     for (let j = 1; j < session.attachments.length; j++) {
                         const { mimetype: mt, data: d, filename: fn } = session.attachments[j];
-                        const extraSent = await client.sendMessage(formattedNumber, new whatsapp_web_js_1.MessageMedia(mt, d, fn), { sendSeen: false });
+                        const extraSent = await client.sendMessage(formattedNumber, new whatsapp_web_js_1.MessageMedia(mt, d, fn), { sendSeen: false, waitUntilMsgSent: true });
                         if (!extraSent || !extraSent.id) throw new Error(`Extra attachment ${j} dispatch failed`);
                     }
                 } else if (personalizedMessage && personalizedMessage.trim()) {
-                    lastSent = await client.sendMessage(formattedNumber, personalizedMessage, { sendSeen: false });
+                    lastSent = await client.sendMessage(formattedNumber, personalizedMessage, { sendSeen: false, waitUntilMsgSent: true });
                     if (!lastSent || !lastSent.id) throw new Error("Message send dispatch failed: no confirmation from WhatsApp Web");
                 } else {
                     throw new Error("Cannot send empty message with no attachments");
@@ -6127,11 +6196,12 @@ app.post("/api/send-single", async (req, res) => {
                 const media = new whatsapp_web_js_1.MessageMedia(attachment.mimetype, attachment.data, attachment.filename || 'file');
                 const options = {
                     sendSeen: false,
+                    waitUntilMsgSent: true,
                     ...(message && message.trim() ? { caption: message.trim() } : {})
                 };
                 sent = await activeClient.sendMessage(formattedNumber, media, options);
             } else if (message && message.trim()) {
-                sent = await activeClient.sendMessage(formattedNumber, message.trim(), { sendSeen: false });
+                sent = await activeClient.sendMessage(formattedNumber, message.trim(), { sendSeen: false, waitUntilMsgSent: true });
             } else {
                 throw new Error("Message text or media attachment is required.");
             }
@@ -6144,7 +6214,7 @@ app.post("/api/send-single", async (req, res) => {
         try {
             sentResult = await doSend();
         } catch (sendErr) {
-            if (sendErr.message && (sendErr.message.includes("getChat") || sendErr.message.includes("WWebJS") || sendErr.message.includes("memoize") || sendErr.message.includes("getter"))) {
+            if (sendErr.message && (sendErr.message.includes("getChat") || sendErr.message.includes("WWebJS") || sendErr.message.includes("memoize") || sendErr.message.includes("getter") || sendErr.message.includes("enqueue"))) {
                 console.warn("[/api/send-single] Retrying after injecting WWebJS utils...", sendErr.message);
                 await ensureWWebJSInjected(activeClient);
                 if (formattedNumber.includes('@lid')) {

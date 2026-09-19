@@ -92,7 +92,7 @@ const SPLASH_HTML = `data:text/html;charset=utf-8,${encodeURIComponent(`
     <div class="spinner"></div>
     <h1>WApp Manager Leads Pro</h1>
     <p>Starting WhatsApp engine &amp; UI services...</p>
-    <div class="badge">Enterprise Edition v2026.17.0</div>
+    <div class="badge">Enterprise Edition v2026.18.0</div>
   </div>
 </body>
 </html>
@@ -125,7 +125,7 @@ function createWindow() {
         },
         icon: appIcon || (fs.existsSync(icoPath) ? icoPath : pngPath),
         titleBarStyle: 'default',
-        title: 'WApp Manager Leads Pro v2026.17.0 – Enterprise Edition [ DreamaniaCode ]'
+        title: 'WApp Manager Leads Pro v2026.18.0 – Enterprise Edition [ DreamaniaCode ]'
     });
 
     // Show beautiful branded dark-theme splash card while backend boots
