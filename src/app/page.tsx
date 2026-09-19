@@ -667,7 +667,7 @@ export default function Home() {
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
         <header className={`h-14 flex items-center gap-3 px-4 border-b shrink-0 ${darkMode ? "bg-gray-900 border-gray-800" : "bg-white border-gray-200"}`}>
           <button onClick={() => setSidebarOpen(!sidebarOpen)} className={`p-1.5 rounded-lg transition ${darkMode ? "text-gray-400 hover:bg-gray-800" : "text-gray-500 hover:bg-gray-100"}`}><div className="space-y-1"><div className={`w-4 h-0.5 rounded ${darkMode ? "bg-gray-400" : "bg-gray-600"}`} /><div className={`w-4 h-0.5 rounded ${darkMode ? "bg-gray-400" : "bg-gray-600"}`} /><div className={`w-4 h-0.5 rounded ${darkMode ? "bg-gray-400" : "bg-gray-600"}`} /></div></button>
-          <div className="flex items-center gap-1.5"><span className={`text-sm font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>{currentNav?.label}</span><span className="text-xs font-mono px-2 py-0.5 rounded-full bg-gradient-to-r from-blue-600 to-purple-600 text-white font-semibold">v2026.16.0</span></div>
+          <div className="flex items-center gap-1.5"><span className={`text-sm font-bold ${darkMode ? "text-white" : "text-gray-900"}`}>{currentNav?.label}</span><span className="text-xs font-mono px-2 py-0.5 rounded-full bg-gradient-to-r from-blue-600 to-purple-600 text-white font-semibold">v2026.17.0</span></div>
           <div className={`flex-1 max-w-xs flex items-center gap-2 px-3 py-1.5 rounded-xl text-sm ${darkMode ? "bg-gray-800 text-gray-400" : "bg-gray-100 text-gray-500"}`}><Search className="w-4 h-4 shrink-0" /><input className="bg-transparent flex-1 outline-none text-sm" placeholder="Search features..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} /></div>
           <div className="flex items-center gap-2 ml-auto">
             {!isElectronEnv && (
@@ -731,7 +731,7 @@ export default function Home() {
                       </button>
                     </div>
                     <div className="p-2.5 rounded-xl bg-purple-50/50 dark:bg-purple-950/20 border border-purple-100 dark:border-purple-900/30">
-                      <div className="font-semibold text-purple-900 dark:text-purple-300">WApp Manager Pro v2026.16.0</div>
+                      <div className="font-semibold text-purple-900 dark:text-purple-300">WApp Manager Pro v2026.17.0</div>
                       <div className="text-[10px] text-purple-700 dark:text-purple-400 mt-0.5">Serper.dev &amp; SerpAPI, Multi-Device &amp; Cart Recovery Active</div>
                     </div>
                   </div>

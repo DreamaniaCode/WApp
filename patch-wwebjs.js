@@ -620,23 +620,56 @@ function patchUtils() {
     }
 
     // 5. Patch addAndSendMsgToChat execution in sendMessage to set chat.contact & safely handle memoize errors
-    const targetAddAndSendOrig = `        const [msgPromise, sendMsgResultPromise] = window.Store.SendMessage.addAndSendMsgToChat(chat, message);\n        await msgPromise;\n\n        if (options.waitUntilMsgSent) await sendMsgResultPromise;\n\n        return window.Store.Msg.get(newMsgKey._serialized);`;
-    const safeAddAndSend = `        if (chat && !chat.contact) {\n            try {\n                chat.contact = (window.Store.Contact && window.Store.Contact.get(chat.id)) || (window.WWebJS && window.WWebJS.createSyntheticContact && window.WWebJS.createSyntheticContact(chat.id, window.Store.Contact));\n            } catch (_) {}\n        }\n\n        let msgPromise, sendMsgResultPromise;\n        try {\n            [msgPromise, sendMsgResultPromise] = window.Store.SendMessage.addAndSendMsgToChat(chat, message);\n        } catch (addErr) {\n            if (addErr && addErr.message && (addErr.message.includes('memoize') || addErr.message.includes('id property') || addErr.message.includes('getter'))) {\n                console.warn('[WWebJS] addAndSendMsgToChat caught memoize error, pre-seeding contact and retrying...', addErr.message);\n                try {\n                    if (window.Store.Contact && typeof window.Store.Contact.gadd === 'function') {\n                        window.Store.Contact.gadd({ id: chat.id, phoneNumber: chat.id }, { silent: true });\n                    }\n                } catch (_) {}\n                [msgPromise, sendMsgResultPromise] = window.Store.SendMessage.addAndSendMsgToChat(chat, message);\n            } else {\n                throw addErr;\n            }\n        }\n\n        let resMsg = await msgPromise;\n\n        if (options.waitUntilMsgSent) {\n            await sendMsgResultPromise;\n        }\n\n        let sentMsg = (window.Store.Msg && typeof window.Store.Msg.get === 'function')\n            ? window.Store.Msg.get(newMsgKey._serialized)\n            : null;\n        if (!sentMsg) sentMsg = resMsg;\n        if (!sentMsg) sentMsg = message;\n\n        return sentMsg;`;
-
-    // Match either original or previous patched version
-    const existingAddAndSendRegex = /const \[msgPromise, sendMsgResultPromise\] = window\.Store\.SendMessage\.addAndSendMsgToChat\(chat, message\);[\s\S]*?return sentMsg;/m;
-
-    if (existingAddAndSendRegex.test(content)) {
-        content = content.replace(existingAddAndSendRegex, safeAddAndSend.replace(/^\s+if \(chat && !chat\.contact\) \{[\s\S]*?let sentMsg = /m, 'let sentMsg = ').replace('let sentMsg = ', '').trim());
-        // Do a clean replacement of the whole block around addAndSendMsgToChat
-        const wholeBlockRegex = /(?:if \(chat && !chat\.contact\) \{[\s\S]*?\}\s*)?const \[msgPromise, sendMsgResultPromise\] = window\.Store\.SendMessage\.addAndSendMsgToChat\(chat, message\);[\s\S]*?return (?:window\.Store\.Msg\.get\(newMsgKey\._serialized\)|sentMsg);/m;
-        if (wholeBlockRegex.test(content)) {
-            content = content.replace(wholeBlockRegex, safeAddAndSend);
-            console.log('[patch-wwebjs] Updated addAndSendMsgToChat with chat.contact pre-seed and error recovery in Utils.js.');
+    const safeAddAndSend = `        if (chat && !chat.contact) {
+            try {
+                chat.contact = (window.Store.Contact && window.Store.Contact.get(chat.id)) || (window.WWebJS && window.WWebJS.createSyntheticContact && window.WWebJS.createSyntheticContact(chat.id, window.Store.Contact));
+            } catch (_) {}
         }
-    } else if (content.includes(targetAddAndSendOrig)) {
-        content = content.replace(targetAddAndSendOrig, safeAddAndSend);
-        console.log('[patch-wwebjs] Patched original addAndSendMsgToChat in Utils.js.');
+
+        let msgPromise, sendMsgResultPromise;
+        try {
+            [msgPromise, sendMsgResultPromise] = window.Store.SendMessage.addAndSendMsgToChat(chat, message);
+        } catch (addErr) {
+            if (addErr && addErr.message && (addErr.message.includes('memoize') || addErr.message.includes('id property') || addErr.message.includes('getter'))) {
+                console.warn('[WWebJS] addAndSendMsgToChat caught memoize error, pre-seeding contact and retrying...', addErr.message);
+                try {
+                    if (window.Store.Contact && typeof window.Store.Contact.gadd === 'function') {
+                        window.Store.Contact.gadd({ id: chat.id, phoneNumber: chat.id }, { silent: true });
+                    }
+                } catch (_) {}
+                [msgPromise, sendMsgResultPromise] = window.Store.SendMessage.addAndSendMsgToChat(chat, message);
+            } else {
+                throw addErr;
+            }
+        }
+
+        let resMsg = await msgPromise;
+
+        if (options.waitUntilMsgSent) {
+            await sendMsgResultPromise;
+        }
+
+        let sentMsg = (window.Store.Msg && typeof window.Store.Msg.get === 'function')
+            ? window.Store.Msg.get(newMsgKey._serialized)
+            : null;
+        if (!sentMsg) sentMsg = resMsg;
+        if (!sentMsg) sentMsg = message;
+
+        return sentMsg;`;
+
+    // Check if already cleanly patched
+    if (content.includes('let sentMsg = (window.Store.Msg && typeof window.Store.Msg.get === \'function\')') &&
+        content.includes('[msgPromise, sendMsgResultPromise] = window.Store.SendMessage.addAndSendMsgToChat(chat, message);')) {
+        console.log('[patch-wwebjs] addAndSendMsgToChat is already cleanly patched in Utils.js.');
+    } else {
+        // Regex matching any previous/broken/original implementation of the final send block in sendMessage
+        const sendBlockRegex = /(?:[ \t]*if \(chat && !chat\.contact\) \{[\s\S]*?return sentMsg;)|(?:[ \t]*const \[msgPromise, sendMsgResultPromise\] = window\.Store\.SendMessage\.addAndSendMsgToChat[\s\S]*?return (?:window\.Store\.Msg\.get\(newMsgKey\._serialized\)|sentMsg);)|(?:[ \t]*if \(!sentMsg\) sentMsg = resMsg;[\s\S]*?return sentMsg;)/m;
+        if (sendBlockRegex.test(content)) {
+            content = content.replace(sendBlockRegex, safeAddAndSend);
+            console.log('[patch-wwebjs] Patched addAndSendMsgToChat cleanly in Utils.js.');
+        } else {
+            console.warn('[patch-wwebjs] Could not find target send block to patch in Utils.js');
+        }
     }
 
     // 6. Patch getContactModel in Utils.js: wrap all 14 ContactMethods getters with safeGetter fallbacks
