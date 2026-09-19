@@ -2287,7 +2287,31 @@ io.on("connection", (socket) => {
                     throw firstErr;
                 }
             }
-            socket.emit("messageSent", { number, status: "success", messageId: sentResult?.id?._serialized });
+
+            const socketMsgId = sentResult?.id?._serialized || `smsg-${Date.now()}`;
+            const socketTs = Date.now();
+
+            // Record in LiveChat store so Live Chat stays in sync
+            recordChatMessage({
+                id: socketMsgId,
+                chatId: formattedNumber,
+                from: "me",
+                to: formattedNumber,
+                fromMe: true,
+                body: message,
+                senderName: "Vous",
+                number: formattedNumber.split("@")[0],
+                timestamp: socketTs,
+                source: "manual"
+            });
+            io.emit("outgoing_message", {
+                id: socketMsgId,
+                to: formattedNumber,
+                body: message,
+                timestamp: socketTs
+            });
+
+            socket.emit("messageSent", { number, status: "success", messageId: socketMsgId });
         }
         catch (error) {
             console.error("Error sending message:", error);
@@ -3374,7 +3398,7 @@ async function runBulkCampaign() {
             try {
                 await doBulkSend();
             } catch (sendErr) {
-                if (sendErr.message && (sendErr.message.includes("memoize") || sendErr.message.includes("getter") || sendErr.message.includes("getChat") || sendErr.message.includes("WWebJS"))) {
+                if (sendErr.message && (sendErr.message.includes("memoize") || sendErr.message.includes("getter") || sendErr.message.includes("getChat") || sendErr.message.includes("WWebJS") || sendErr.message.includes("enqueue"))) {
                     console.warn(`[BulkCampaign] Retrying message to ${number} after injecting guards...`, sendErr.message);
                     await ensureWWebJSInjected(client);
                     try {
@@ -4429,12 +4453,35 @@ app.post("/api/chat/send", async (req, res) => {
         if (!chatId || !message) return res.status(400).json({ error: "ChatId et message requis" });
         if (!isReady || !activeClient) return res.status(503).json({ error: "WhatsApp non connecté. Veuillez connecter un appareil." });
 
+        await ensureWWebJSInjected(activeClient);
+
         const targetJid = chatId.includes("@") ? chatId : `${chatId}@c.us`;
-        const sent = await activeClient.sendMessage(targetJid, message.trim(), { sendSeen: false });
-        if (!sent || !sent.id) throw new Error("Échec d'envoi du message : non confirmé par WhatsApp Web");
+
+        const doSend = async () => {
+            const sent = await activeClient.sendMessage(targetJid, message.trim(), { sendSeen: false, waitUntilMsgSent: true });
+            if (!sent || !sent.id) throw new Error("Échec d'envoi du message : non confirmé par WhatsApp Web");
+            return sent;
+        };
+
+        let sent;
+        try {
+            sent = await doSend();
+        } catch (sendErr) {
+            if (sendErr.message && (sendErr.message.includes("enqueue") || sendErr.message.includes("getChat") || sendErr.message.includes("WWebJS") || sendErr.message.includes("memoize") || sendErr.message.includes("getter"))) {
+                console.warn("[/api/chat/send] Retrying after injecting WWebJS utils...", sendErr.message);
+                await ensureWWebJSInjected(activeClient);
+                await new Promise(r => setTimeout(r, 600));
+                sent = await doSend();
+            } else {
+                throw sendErr;
+            }
+        }
+
+        const msgId = sent?.id?._serialized || `msg-${Date.now()}`;
+        const ts = Date.now();
 
         recordChatMessage({
-            id: `msg-${Date.now()}`,
+            id: msgId,
             chatId: targetJid,
             from: "me",
             to: targetJid,
@@ -4442,11 +4489,19 @@ app.post("/api/chat/send", async (req, res) => {
             body: message.trim(),
             senderName: "Vous",
             number: targetJid.split("@")[0],
-            timestamp: Date.now(),
+            timestamp: ts,
             source: "manual"
         });
 
-        res.json({ success: true, message: "Message envoyé avec succès" });
+        // Emit outgoing_message so LiveChat and ChatInterface update in real-time
+        io.emit("outgoing_message", {
+            id: msgId,
+            to: targetJid,
+            body: message.trim(),
+            timestamp: ts
+        });
+
+        res.json({ success: true, message: "Message envoyé avec succès", messageId: msgId });
     } catch (e) {
         console.error("[/api/chat/send] Error:", e);
         res.status(500).json({ error: e.message });
@@ -6229,9 +6284,32 @@ app.post("/api/send-single", async (req, res) => {
         }
 
         console.log(`[/api/send-single] Message successfully sent to ${formattedNumber}`);
+
+        // Record in LiveChat store so Live Chat panel stays in sync
+        const singleMsgId = sentResult?.id?._serialized || Date.now().toString();
+        const singleTs = Date.now();
+        recordChatMessage({
+            id: singleMsgId,
+            chatId: formattedNumber,
+            from: "me",
+            to: formattedNumber,
+            fromMe: true,
+            body: message ? message.trim() : (attachment ? "[Média]" : ""),
+            senderName: "Vous",
+            number: formattedNumber.split("@")[0],
+            timestamp: singleTs,
+            source: "manual"
+        });
+        io.emit("outgoing_message", {
+            id: singleMsgId,
+            to: formattedNumber,
+            body: message ? message.trim() : (attachment ? "[Média]" : ""),
+            timestamp: singleTs
+        });
+
         res.json({
             success: true,
-            messageId: sentResult?.id?._serialized || Date.now().toString(),
+            messageId: singleMsgId,
             to: formattedNumber,
             resolvedNumber: resolved.number
         });
