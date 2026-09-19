@@ -695,7 +695,7 @@ async function ensureWWebJSInjected(client) {
                                 }
                             }
                             if (!fn && typeof mod[key] === 'function') fn = mod[key];
-                            if (typeof fn === 'function' && !fn._memoizeGuarded) {
+                            if (typeof fn === 'function' && !fn._memoizeGuardedV5) {
                                 const orig = fn;
                                 const guarded = function(...args) {
                                     try {
@@ -707,7 +707,7 @@ async function ensureWWebJSInjected(client) {
                                         throw err;
                                     }
                                 };
-                                guarded._memoizeGuarded = true;
+                                guarded._memoizeGuardedV5 = true;
                                 try {
                                     Object.defineProperty(mod, key, {
                                         value: guarded,
@@ -739,38 +739,103 @@ async function ensureWWebJSInjected(client) {
                     wrapModuleGetters(safeReq('WAWebEphemeralFieldsGetters'));
                     wrapModuleGetters(safeReq('WAWebGetEphemeralFieldsMsgActionsUtils'));
                     wrapModuleGetters(safeReq('WAWebChatGetters'));
+                    wrapModuleGetters(safeReq('WAWebFrontendChatGetters'));
+                    wrapModuleGetters(safeReq('WAWebWidUtils'));
+
+                    const syntheticContactCache = new Map();
+                    const createSyntheticContact = (wid, col) => {
+                        const serialized = typeof wid === 'string'
+                            ? wid
+                            : (wid && wid._serialized ? wid._serialized : (typeof wid?.toString === 'function' ? wid.toString() : String(wid || '')));
+                        if (serialized && syntheticContactCache.has(serialized)) {
+                            return syntheticContactCache.get(serialized);
+                        }
+                        const userPart = serialized ? serialized.split('@')[0] : '';
+                        const synthetic = {
+                            id: wid,
+                            userid: userPart,
+                            isContact: false,
+                            isUser: true,
+                            isGroup: false,
+                            isBroadcast: false,
+                            isPSA: false,
+                            isBusiness: false,
+                            isEnterprise: false,
+                            isSmb: false,
+                            shortName: '',
+                            name: '',
+                            pushname: '',
+                            verifiedName: '',
+                            type: 'in',
+                            isLid: () => Boolean(wid && (typeof wid.isLid === 'function' ? wid.isLid() : (serialized && serialized.endsWith('@lid')))),
+                            isMe: () => false,
+                            getCollection: () => col,
+                            serialize: () => ({ id: wid, name: '', pushname: '', isBusiness: false }),
+                            trigger: () => {},
+                            on: () => {},
+                            off: () => {},
+                            listenTo: () => {},
+                            hasChanged: () => false,
+                            get: (prop) => synthetic[prop],
+                            set: () => synthetic
+                        };
+                        if (serialized) {
+                            syntheticContactCache.set(serialized, synthetic);
+                        }
+                        return synthetic;
+                    };
 
                     const protectCol = (col) => {
-                        if (!col || typeof col.get !== 'function' || col.get._guarded) return;
+                        if (!col || typeof col.get !== 'function' || col.get._guardedV5) return;
                         const origGet = col.get.bind(col);
                         const guardedGet = function(wid) {
-                            const found = origGet(wid);
+                            if (!wid) return origGet(wid);
+                            let found = origGet(wid);
                             if (found) return found;
-                            if (wid && typeof col.gadd === 'function') {
-                                try {
-                                    col.gadd(wid, { silent: true });
-                                    return origGet(wid);
-                                } catch (_) {}
-                            }
-                            return found;
+
+                            try {
+                                if (col._modelClass) {
+                                    const model = new col._modelClass({ id: wid });
+                                    if (typeof col.add === 'function') col.add(model);
+                                    found = origGet(wid);
+                                    if (found) return found;
+                                }
+                            } catch (_) {}
+
+                            try {
+                                if (typeof col.gadd === 'function') {
+                                    col.gadd({ id: wid }, { silent: true });
+                                    found = origGet(wid);
+                                    if (found) return found;
+                                }
+                            } catch (_) {}
+
+                            const syn = createSyntheticContact(wid, col);
+                            try {
+                                if (typeof col.add === 'function') col.add(syn);
+                            } catch (_) {}
+                            return syn;
                         };
-                        guardedGet._guarded = true;
+                        guardedGet._guardedV5 = true;
                         col.get = guardedGet;
                     };
 
                     if (window.Store.Contact) protectCol(window.Store.Contact);
                     if (window.Store.ContactCollection) protectCol(window.Store.ContactCollection);
 
-                    if (window.Store.FindOrCreateChat && typeof window.Store.FindOrCreateChat.findOrCreateLatestChat === 'function' && !window.Store.FindOrCreateChat.findOrCreateLatestChat._guarded) {
+                    if (window.Store.FindOrCreateChat && typeof window.Store.FindOrCreateChat.findOrCreateLatestChat === 'function' && !window.Store.FindOrCreateChat.findOrCreateLatestChat._guardedV5) {
                         const origFindOrCreate = window.Store.FindOrCreateChat.findOrCreateLatestChat.bind(window.Store.FindOrCreateChat);
                         const guardedFindOrCreate = async function(wid) {
                             try {
-                                if (window.Store.Contact && typeof window.Store.Contact.gadd === 'function') {
-                                    try { window.Store.Contact.gadd(wid, { silent: true }); } catch (_) {}
+                                if (window.Store.Contact) {
+                                    window.Store.Contact.get(wid);
                                 }
+                            } catch (_) {}
+
+                            try {
                                 return await origFindOrCreate(wid);
                             } catch (err) {
-                                if (err && err.message && (err.message.includes('Data passed to getter') || err.message.includes('how we memoize'))) {
+                                if (err && err.message && (err.message.includes('Data passed to getter') || err.message.includes('how we memoize') || err.message.includes('memoize'))) {
                                     let chat = window.Store.Chat && window.Store.Chat.get ? window.Store.Chat.get(wid) : null;
                                     if ((!chat || !chat.msgs) && window.Store.Chat && window.Store.Chat.find) {
                                         try {
@@ -778,12 +843,23 @@ async function ensureWWebJSInjected(client) {
                                             if (found && found.msgs) chat = found;
                                         } catch (_) {}
                                     }
+                                    if (!chat || !chat.msgs) {
+                                        try {
+                                            if (window.Store.Chat && window.Store.Chat._modelClass) {
+                                                const newChat = new window.Store.Chat._modelClass({ id: wid });
+                                                if (window.Store.Chat.add) window.Store.Chat.add(newChat);
+                                                chat = window.Store.Chat.get(wid) || newChat;
+                                            } else if (window.Store.Chat && typeof window.Store.Chat.gadd === 'function') {
+                                                chat = window.Store.Chat.gadd({ id: wid }, { silent: true });
+                                            }
+                                        } catch (_) {}
+                                    }
                                     if (chat && chat.msgs) return { chat };
                                 }
                                 throw err;
                             }
                         };
-                        guardedFindOrCreate._guarded = true;
+                        guardedFindOrCreate._guardedV5 = true;
                         window.Store.FindOrCreateChat.findOrCreateLatestChat = guardedFindOrCreate;
                     }
                 }
@@ -3108,6 +3184,17 @@ async function runBulkCampaign() {
             };
 
             const doBulkSend = async () => {
+                try {
+                    await client.pupPage.evaluate((cid) => {
+                        try {
+                            if (window.Store && window.Store.WidFactory && window.Store.Contact) {
+                                const wid = window.Store.WidFactory.createWid(cid);
+                                window.Store.Contact.get(wid);
+                            }
+                        } catch (_) {}
+                    }, formattedNumber);
+                } catch (_) {}
+
                 let lastSent;
                 if (session.attachments && session.attachments.length > 0) {
                     const { mimetype, data, filename } = session.attachments[0];
@@ -3134,6 +3221,16 @@ async function runBulkCampaign() {
                 if (sendErr.message && (sendErr.message.includes("memoize") || sendErr.message.includes("getter") || sendErr.message.includes("getChat") || sendErr.message.includes("WWebJS"))) {
                     console.warn(`[BulkCampaign] Retrying message to ${number} after injecting guards...`, sendErr.message);
                     await ensureWWebJSInjected(client);
+                    try {
+                        await client.pupPage.evaluate((cid) => {
+                            try {
+                                if (window.Store && window.Store.WidFactory && window.Store.Contact) {
+                                    const wid = window.Store.WidFactory.createWid(cid);
+                                    window.Store.Contact.get(wid);
+                                }
+                            } catch (_) {}
+                        }, formattedNumber);
+                    } catch (_) {}
                     if (formattedNumber.includes('@lid')) {
                         const cleanNum = (resolved.number || number).replace(/[^\d]/g, '');
                         if (cleanNum) formattedNumber = `${cleanNum}@c.us`;

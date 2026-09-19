@@ -34,8 +34,8 @@ function patchStore() {
     }
 
     const content = fs.readFileSync(storePath, 'utf8');
-    if (content.includes('wrapModuleGettersSafelyV4')) {
-        console.log('[patch-wwebjs] Store.js already patched with V4 memoized getter guards.');
+    if (content.includes('wrapModuleGettersSafelyV5')) {
+        console.log('[patch-wwebjs] Store.js already patched with V5 memoized getter guards.');
         return true;
     }
 
@@ -96,7 +96,7 @@ exports.ExposeStore = () => {
      * primitives, or objects without an .id property. We only catch errors if origFn
      * actually throws the WhatsApp Web memoize getter error!
      */
-    const wrapModuleGettersSafelyV4 = (mod) => {
+    const wrapModuleGettersSafelyV5 = (mod) => {
         if (!mod || typeof mod !== 'object') return mod;
         const keys = [...new Set([...Object.getOwnPropertyNames(mod), ...Object.keys(mod)])];
         for (const key of keys) {
@@ -113,7 +113,7 @@ exports.ExposeStore = () => {
                 if (!fn && typeof mod[key] === 'function') {
                     fn = mod[key];
                 }
-                if (typeof fn === 'function' && !fn._memoizeGuarded) {
+                if (typeof fn === 'function' && !fn._memoizeGuardedV5) {
                     const origFn = fn;
                     const guarded = function(...args) {
                         try {
@@ -125,7 +125,7 @@ exports.ExposeStore = () => {
                             throw err;
                         }
                     };
-                    guarded._memoizeGuarded = true;
+                    guarded._memoizeGuardedV5 = true;
                     try {
                         Object.defineProperty(mod, key, {
                             value: guarded,
@@ -143,7 +143,7 @@ exports.ExposeStore = () => {
     };
 
     window.WWebJS = window.WWebJS || {};
-    window.WWebJS.wrapModuleGettersSafely = wrapModuleGettersSafelyV4;
+    window.WWebJS.wrapModuleGettersSafely = wrapModuleGettersSafelyV5;
 
     window.Store = Object.assign({}, safeReq('WAWebCollections') || {});
     window.Store.AppState = (safeReq('WAWebSocketModel') || {}).Socket;
@@ -172,18 +172,20 @@ exports.ExposeStore = () => {
     window.Store.BlobCache = safeReq('WAWebMediaInMemoryBlobCache');
     window.Store.SendSeen = safeReq('WAWebUpdateUnreadChatAction');
     window.Store.User = safeReq('WAWebUserPrefsMeUser');
-    window.Store.ContactMethods = wrapModuleGettersSafelyV4({
+    window.Store.ContactMethods = wrapModuleGettersSafelyV5({
         ...(safeReq('WAWebContactGetters') || {}),
         ...(safeReq('WAWebFrontendContactGetters') || {})
     });
-    wrapModuleGettersSafelyV4(safeReq('WAWebContactGetters'));
-    wrapModuleGettersSafelyV4(safeReq('WAWebFrontendContactGetters'));
-    wrapModuleGettersSafelyV4(safeReq('WAWebAddressbookContactGetters'));
-    wrapModuleGettersSafelyV4(safeReq('WAWebBusinessProfileGetters'));
-    wrapModuleGettersSafelyV4(safeReq('WAWebGroupGetters'));
-    wrapModuleGettersSafelyV4(safeReq('WAWebEphemeralFieldsGetters'));
-    wrapModuleGettersSafelyV4(safeReq('WAWebGetEphemeralFieldsMsgActionsUtils'));
-    wrapModuleGettersSafelyV4(safeReq('WAWebChatGetters'));
+    wrapModuleGettersSafelyV5(safeReq('WAWebContactGetters'));
+    wrapModuleGettersSafelyV5(safeReq('WAWebFrontendContactGetters'));
+    wrapModuleGettersSafelyV5(safeReq('WAWebAddressbookContactGetters'));
+    wrapModuleGettersSafelyV5(safeReq('WAWebBusinessProfileGetters'));
+    wrapModuleGettersSafelyV5(safeReq('WAWebGroupGetters'));
+    wrapModuleGettersSafelyV5(safeReq('WAWebEphemeralFieldsGetters'));
+    wrapModuleGettersSafelyV5(safeReq('WAWebGetEphemeralFieldsMsgActionsUtils'));
+    wrapModuleGettersSafelyV5(safeReq('WAWebChatGetters'));
+    wrapModuleGettersSafelyV5(safeReq('WAWebFrontendChatGetters'));
+    wrapModuleGettersSafelyV5(safeReq('WAWebWidUtils'));
     window.Store.UserConstructor = safeReq('WAWebWid');
     window.Store.Validators = safeReq('WALinkify');
     window.Store.WidFactory = safeReq('WAWebWidFactory');
@@ -194,7 +196,7 @@ exports.ExposeStore = () => {
     window.Store.ConversationMsgs = safeReq('WAWebChatLoadMessages');
     window.Store.sendReactionToMsg = (safeReq('WAWebSendReactionMsgAction') || {}).sendReactionToMsg;
     window.Store.createOrUpdateReactionsModule = safeReq('WAWebDBCreateOrUpdateReactions');
-    window.Store.EphemeralFields = wrapModuleGettersSafelyV4(safeReq('WAWebGetEphemeralFieldsMsgActionsUtils'));
+    window.Store.EphemeralFields = wrapModuleGettersSafelyV5(safeReq('WAWebGetEphemeralFieldsMsgActionsUtils'));
     window.Store.MsgActionChecks = safeReq('WAWebMsgActionCapability');
     window.Store.QuotedMsg = safeReq('WAWebQuotedMsgModelUtils');
     window.Store.LinkPreview = safeReq('WAWebLinkPreviewChatAction');
@@ -215,7 +217,7 @@ exports.ExposeStore = () => {
     window.Store.HistorySync = safeReq('WAWebSendNonMessageDataRequest');
     window.Store.AddonReactionTable = (safeReq('WAWebAddonReactionTableMode') || {}).reactionTableMode;
     window.Store.AddonPollVoteTable = (safeReq('WAWebAddonPollVoteTableMode') || {}).pollVoteTableMode;
-    window.Store.ChatGetters = wrapModuleGettersSafelyV4(safeReq('WAWebChatGetters'));
+    window.Store.ChatGetters = wrapModuleGettersSafelyV5(safeReq('WAWebChatGetters'));
     window.Store.UploadUtils = safeReq('WAWebUploadManager');
     window.Store.WAWebStreamModel = safeReq('WAWebStreamModel');
     window.Store.FindOrCreateChat = safeReq('WAWebFindChatAction');
@@ -321,21 +323,81 @@ exports.ExposeStore = () => {
         ...(safeReq('WAWebStatusGatingUtils') || {})
     };
 
+    const syntheticContactCache = new Map();
+    const createSyntheticContact = (wid, col) => {
+        const serialized = typeof wid === 'string'
+            ? wid
+            : (wid && wid._serialized ? wid._serialized : (typeof wid?.toString === 'function' ? wid.toString() : String(wid || '')));
+        if (serialized && syntheticContactCache.has(serialized)) {
+            return syntheticContactCache.get(serialized);
+        }
+        const userPart = serialized ? serialized.split('@')[0] : '';
+        const synthetic = {
+            id: wid,
+            userid: userPart,
+            isContact: false,
+            isUser: true,
+            isGroup: false,
+            isBroadcast: false,
+            isPSA: false,
+            isBusiness: false,
+            isEnterprise: false,
+            isSmb: false,
+            shortName: '',
+            name: '',
+            pushname: '',
+            verifiedName: '',
+            type: 'in',
+            isLid: () => Boolean(wid && (typeof wid.isLid === 'function' ? wid.isLid() : (serialized && serialized.endsWith('@lid')))),
+            isMe: () => false,
+            getCollection: () => col,
+            serialize: () => ({ id: wid, name: '', pushname: '', isBusiness: false }),
+            trigger: () => {},
+            on: () => {},
+            off: () => {},
+            listenTo: () => {},
+            hasChanged: () => false,
+            get: (prop) => synthetic[prop],
+            set: () => synthetic
+        };
+        if (serialized) {
+            syntheticContactCache.set(serialized, synthetic);
+        }
+        return synthetic;
+    };
+
     const protectContactCollection = (col) => {
-        if (!col || typeof col.get !== 'function' || col.get._guarded) return;
+        if (!col || typeof col.get !== 'function' || col.get._guardedV5) return;
         const origGet = col.get.bind(col);
         const guardedGet = function(wid) {
-            const existing = origGet(wid);
+            if (!wid) return origGet(wid);
+            let existing = origGet(wid);
             if (existing) return existing;
-            if (wid && typeof col.gadd === 'function') {
-                try {
-                    col.gadd(wid, { silent: true });
-                    return origGet(wid);
-                } catch (_) {}
-            }
-            return existing;
+
+            try {
+                if (col._modelClass) {
+                    const model = new col._modelClass({ id: wid });
+                    if (typeof col.add === 'function') col.add(model);
+                    existing = origGet(wid);
+                    if (existing) return existing;
+                }
+            } catch (_) {}
+
+            try {
+                if (typeof col.gadd === 'function') {
+                    col.gadd({ id: wid }, { silent: true });
+                    existing = origGet(wid);
+                    if (existing) return existing;
+                }
+            } catch (_) {}
+
+            const syn = createSyntheticContact(wid, col);
+            try {
+                if (typeof col.add === 'function') col.add(syn);
+            } catch (_) {}
+            return syn;
         };
-        guardedGet._guarded = true;
+        guardedGet._guardedV5 = true;
         col.get = guardedGet;
     };
 
@@ -346,18 +408,32 @@ exports.ExposeStore = () => {
         const origFindOrCreate = window.Store.FindOrCreateChat.findOrCreateLatestChat.bind(window.Store.FindOrCreateChat);
         window.Store.FindOrCreateChat.findOrCreateLatestChat = async function(wid) {
             try {
-                if (window.Store.Contact && typeof window.Store.Contact.gadd === 'function') {
-                    try { window.Store.Contact.gadd(wid, { silent: true }); } catch (_) {}
+                if (window.Store.Contact) {
+                    window.Store.Contact.get(wid);
                 }
+            } catch (_) {}
+
+            try {
                 return await origFindOrCreate(wid);
             } catch (err) {
-                if (err && err.message && (err.message.includes('Data passed to getter') || err.message.includes('how we memoize'))) {
-                    console.warn('[WWebJS] findOrCreateLatestChat caught memoize getter error, attempting fallback chat');
+                if (err && err.message && (err.message.includes('Data passed to getter') || err.message.includes('how we memoize') || err.message.includes('memoize'))) {
+                    console.warn('[WWebJS] findOrCreateLatestChat caught memoize getter error, constructing fallback chat for:', wid);
                     let chat = window.Store.Chat && window.Store.Chat.get ? window.Store.Chat.get(wid) : null;
                     if ((!chat || !chat.msgs) && window.Store.Chat && window.Store.Chat.find) {
                         try {
                             const found = await window.Store.Chat.find(wid);
                             if (found && found.msgs) chat = found;
+                        } catch (_) {}
+                    }
+                    if (!chat || !chat.msgs) {
+                        try {
+                            if (window.Store.Chat && window.Store.Chat._modelClass) {
+                                const newChat = new window.Store.Chat._modelClass({ id: wid });
+                                if (window.Store.Chat.add) window.Store.Chat.add(newChat);
+                                chat = window.Store.Chat.get(wid) || newChat;
+                            } else if (window.Store.Chat && typeof window.Store.Chat.gadd === 'function') {
+                                chat = window.Store.Chat.gadd({ id: wid }, { silent: true });
+                            }
                         } catch (_) {}
                     }
                     if (chat && chat.msgs) return { chat };
@@ -405,7 +481,7 @@ exports.ExposeStore = () => {
 `;
 
     fs.writeFileSync(storePath, patchedStore, 'utf8');
-    console.log('[patch-wwebjs] Successfully patched Store.js with V4 safeReq & memoized getter guards.');
+    console.log('[patch-wwebjs] Successfully patched Store.js with V5 safeReq, synthetic contacts & memoized getter guards.');
     return true;
 }
 
@@ -466,7 +542,7 @@ function patchUtils() {
 
     // 6. Patch getChat fallback in Utils.js to validate chat.msgs
     const targetGetChatOrig = `        } else {\n            chat = window.Store.Chat.get(chatWid) || (await window.Store.FindOrCreateChat.findOrCreateLatestChat(chatWid))?.chat;\n        }`;
-    const safeGetChat = `        } else {\n            try {\n                chat = window.Store.Chat.get(chatWid);\n            } catch (_) {}\n            if (!chat || !chat.msgs) {\n                try {\n                    if (window.Store.Contact && typeof window.Store.Contact.gadd === 'function') {\n                        window.Store.Contact.gadd(chatWid, { silent: true });\n                    }\n                    if (window.Store.Contact && typeof window.Store.Contact.find === 'function') {\n                        await window.Store.Contact.find(chatWid).catch(() => {});\n                    }\n                } catch (_) {}\n                try {\n                    if (window.Store.FindOrCreateChat && typeof window.Store.FindOrCreateChat.findOrCreateLatestChat === 'function') {\n                        const res = await window.Store.FindOrCreateChat.findOrCreateLatestChat(chatWid);\n                        const foundChat = res ? (res.chat || res) : null;\n                        if (foundChat && foundChat.msgs) chat = foundChat;\n                    }\n                } catch (err) {\n                    console.warn('[WWebJS] findOrCreateLatestChat fallback:', err?.message || err);\n                }\n            }\n            if (!chat || !chat.msgs) {\n                try {\n                    const c = window.Store.Chat.get(chatWid);\n                    if (c && c.msgs) chat = c;\n                } catch (_) {}\n            }\n            if (!chat || !chat.msgs) {\n                try {\n                    if (window.Store.Chat && typeof window.Store.Chat.find === 'function') {\n                        const c = await window.Store.Chat.find(chatWid);\n                        if (c && c.msgs) chat = c;\n                    }\n                } catch (_) {}\n            }\n        }\n\n        if (chat && !chat.msgs) {\n            chat = null;\n        }`;
+    const safeGetChat = `        } else {\n            try {\n                chat = window.Store.Chat.get(chatWid);\n            } catch (_) {}\n            if (!chat || !chat.msgs) {\n                try {\n                    if (window.Store.Contact && typeof window.Store.Contact.gadd === 'function') {\n                        window.Store.Contact.gadd(chatWid, { silent: true });\n                    }\n                    if (window.Store.Contact && typeof window.Store.Contact.find === 'function') {\n                        await window.Store.Contact.find(chatWid).catch(() => {});\n                    }\n                } catch (_) {}\n                try {\n                    if (window.Store.FindOrCreateChat && typeof window.Store.FindOrCreateChat.findOrCreateLatestChat === 'function') {\n                        const res = await window.Store.FindOrCreateChat.findOrCreateLatestChat(chatWid);\n                        const foundChat = res ? (res.chat || res) : null;\n                        if (foundChat && foundChat.msgs) chat = foundChat;\n                    }\n                } catch (err) {\n                    console.warn('[WWebJS] findOrCreateLatestChat fallback:', err?.message || err);\n                }\n            }\n            if (!chat || !chat.msgs) {\n                try {\n                    const c = window.Store.Chat.get(chatWid);\n                    if (c && c.msgs) chat = c;\n                } catch (_) {}\n            }\n            if (!chat || !chat.msgs) {\n                try {\n                    if (window.Store.Chat && typeof window.Store.Chat.find === 'function') {\n                        const c = await window.Store.Chat.find(chatWid);\n                        if (c && c.msgs) chat = c;\n                    }\n                } catch (_) {}\n            }\n            if (!chat || !chat.msgs) {\n                try {\n                    if (window.Store.Chat && window.Store.Chat._modelClass) {\n                        const newChat = new window.Store.Chat._modelClass({ id: chatWid });\n                        if (window.Store.Chat.add) window.Store.Chat.add(newChat);\n                        const c = window.Store.Chat.get(chatWid) || newChat;\n                        if (c && c.msgs) chat = c;\n                    } else if (window.Store.Chat && typeof window.Store.Chat.gadd === 'function') {\n                        const c = window.Store.Chat.gadd({ id: chatWid }, { silent: true });\n                        if (c && c.msgs) chat = c;\n                    }\n                } catch (_) {}\n            }\n        }\n\n        if (chat && !chat.msgs) {\n            chat = null;\n        }`;
 
     if (content.includes(targetGetChatOrig)) {
         content = content.replace(targetGetChatOrig, safeGetChat);
@@ -564,22 +640,46 @@ function patchClient() {
         console.log('[patch-wwebjs] Patched framenavigated logout guard to prevent premature session wipe.');
     }
 
-    // Robust sendMessage implementation: Never swallow errors, validate chat.msgs, throw on failure
-    const robustSendMessageRegex = /const sentMsg = await this\.pupPage\.evaluate\(async \(chatId, content, options, sendSeen\) => \{[\s\S]*?return sentMsg\s*\?\s*new Message\(this, sentMsg\)\s*:\s*undefined;/m;
+    // Robust sendMessage implementation: Never swallow errors, pre-seed contact, validate chat.msgs, throw on failure
+    const robustSendMessageRegex = /const sentMsg = await this\.pupPage\.evaluate\(async \(chatId, content, options, sendSeen\) => \{[\s\S]*?return (?:sentMsg\s*\?\s*)?new Message\(this, sentMsg\)(?:\s*:\s*undefined)?;/m;
 
     const robustSendMessageReplacement = `const sentMsg = await this.pupPage.evaluate(async (chatId, content, options, sendSeen) => {
+            const chatWid = window.Store.WidFactory.createWid(chatId);
+
+            // Pre-seed recipient in window.Store.Contact to satisfy WhatsApp Web memoize getters
+            try {
+                if (window.Store.Contact) {
+                    let contact = window.Store.Contact.get(chatWid);
+                    if (!contact && window.Store.Contact._modelClass) {
+                        contact = new window.Store.Contact._modelClass({ id: chatWid });
+                        if (window.Store.Contact.add) window.Store.Contact.add(contact);
+                    }
+                    if (!contact && typeof window.Store.Contact.gadd === 'function') {
+                        window.Store.Contact.gadd({ id: chatWid }, { silent: true });
+                    }
+                }
+            } catch (_) {}
+
             let chat = await window.WWebJS.getChat(chatId, { getAsModel: false });
 
             if (!chat || !chat.msgs) {
                 try {
-                    const chatWid = window.Store.WidFactory.createWid(chatId);
-                    if (window.Store.Contact && typeof window.Store.Contact.gadd === 'function') {
-                        window.Store.Contact.gadd(chatWid, { silent: true });
-                    }
                     if (window.Store.FindOrCreateChat && typeof window.Store.FindOrCreateChat.findOrCreateLatestChat === 'function') {
                         const res = await window.Store.FindOrCreateChat.findOrCreateLatestChat(chatWid);
                         const c = res ? (res.chat || res) : null;
                         if (c && c.msgs) chat = c;
+                    }
+                } catch (_) {}
+            }
+
+            if (!chat || !chat.msgs) {
+                try {
+                    if (window.Store.Chat && window.Store.Chat._modelClass) {
+                        const newChat = new window.Store.Chat._modelClass({ id: chatWid });
+                        if (window.Store.Chat.add) window.Store.Chat.add(newChat);
+                        chat = window.Store.Chat.get(chatWid) || newChat;
+                    } else if (window.Store.Chat && typeof window.Store.Chat.gadd === 'function') {
+                        chat = window.Store.Chat.gadd({ id: chatWid }, { silent: true });
                     }
                 } catch (_) {}
             }
