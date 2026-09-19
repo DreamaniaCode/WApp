@@ -695,7 +695,7 @@ async function ensureWWebJSInjected(client) {
                                 }
                             }
                             if (!fn && typeof mod[key] === 'function') fn = mod[key];
-                            if (typeof fn === 'function' && !fn._memoizeGuardedV5) {
+                            if (typeof fn === 'function' && !fn._memoizeGuardedV6) {
                                 const orig = fn;
                                 const guarded = function(...args) {
                                     try {
@@ -707,7 +707,7 @@ async function ensureWWebJSInjected(client) {
                                         throw err;
                                     }
                                 };
-                                guarded._memoizeGuardedV5 = true;
+                                guarded._memoizeGuardedV6 = true;
                                 try {
                                     Object.defineProperty(mod, key, {
                                         value: guarded,
@@ -744,15 +744,42 @@ async function ensureWWebJSInjected(client) {
 
                     const syntheticContactCache = new Map();
                     const createSyntheticContact = (wid, col) => {
+                        if (!wid) return null;
                         const serialized = typeof wid === 'string'
                             ? wid
                             : (wid && wid._serialized ? wid._serialized : (typeof wid?.toString === 'function' ? wid.toString() : String(wid || '')));
                         if (serialized && syntheticContactCache.has(serialized)) {
                             return syntheticContactCache.get(serialized);
                         }
-                        const userPart = serialized ? serialized.split('@')[0] : '';
+                        let widObj = wid;
+                        if (typeof wid === 'string' && window.Store && window.Store.WidFactory && typeof window.Store.WidFactory.createWid === 'function') {
+                            try { widObj = window.Store.WidFactory.createWid(wid); } catch (_) {}
+                        }
+                        const userPart = (widObj && widObj.user) || (serialized ? serialized.split('@')[0] : '');
+
+                        try {
+                            const ModelClass = (col && col._modelClass) || (window.Store && window.Store.Contact && window.Store.Contact._modelClass);
+                            if (ModelClass) {
+                                const model = new ModelClass({
+                                    id: widObj,
+                                    phoneNumber: widObj,
+                                    userid: userPart
+                                });
+                                if (model && model.id) {
+                                    if (col && typeof col.add === 'function') {
+                                        try { col.add(model); } catch (_) {}
+                                    } else if (window.Store && window.Store.Contact && typeof window.Store.Contact.add === 'function') {
+                                        try { window.Store.Contact.add(model); } catch (_) {}
+                                    }
+                                    if (serialized) syntheticContactCache.set(serialized, model);
+                                    return model;
+                                }
+                            }
+                        } catch (_) {}
+
                         const synthetic = {
-                            id: wid,
+                            id: widObj,
+                            phoneNumber: widObj,
                             userid: userPart,
                             isContact: false,
                             isUser: true,
@@ -769,14 +796,14 @@ async function ensureWWebJSInjected(client) {
                             type: 'in',
                             isLid: () => Boolean(wid && (typeof wid.isLid === 'function' ? wid.isLid() : (serialized && serialized.endsWith('@lid')))),
                             isMe: () => false,
-                            getCollection: () => col,
-                            serialize: () => ({ id: wid, name: '', pushname: '', isBusiness: false }),
+                            getCollection: () => col || (window.Store && window.Store.Contact),
+                            serialize: () => ({ id: widObj, phoneNumber: widObj, name: '', pushname: '', isBusiness: false }),
                             trigger: () => {},
                             on: () => {},
                             off: () => {},
                             listenTo: () => {},
                             hasChanged: () => false,
-                            get: (prop) => synthetic[prop],
+                            get: (prop) => (prop === 'id' ? widObj : prop === 'phoneNumber' ? widObj : synthetic[prop]),
                             set: () => synthetic
                         };
                         if (serialized) {
@@ -785,45 +812,94 @@ async function ensureWWebJSInjected(client) {
                         return synthetic;
                     };
 
-                    const protectCol = (col) => {
-                        if (!col || typeof col.get !== 'function' || col.get._guardedV5) return;
-                        const origGet = col.get.bind(col);
-                        const guardedGet = function(wid) {
-                            if (!wid) return origGet(wid);
-                            let found = origGet(wid);
-                            if (found) return found;
+                    if (window.WWebJS) {
+                        window.WWebJS.createSyntheticContact = createSyntheticContact;
+                    }
 
-                            try {
-                                if (col._modelClass) {
-                                    const model = new col._modelClass({ id: wid });
-                                    if (typeof col.add === 'function') col.add(model);
-                                    found = origGet(wid);
-                                    if (found) return found;
-                                }
-                            } catch (_) {}
+                    const patchCollectionProto = (colInstance, colClass) => {
+                        const targets = new Set();
+                        if (colInstance) {
+                            targets.add(colInstance);
+                            const p1 = Object.getPrototypeOf(colInstance);
+                            if (p1) {
+                                targets.add(p1);
+                                const p2 = Object.getPrototypeOf(p1);
+                                if (p2) targets.add(p2);
+                            }
+                        }
+                        if (colClass && colClass.prototype) {
+                            targets.add(colClass.prototype);
+                            const p1 = Object.getPrototypeOf(colClass.prototype);
+                            if (p1) targets.add(p1);
+                        }
 
-                            try {
-                                if (typeof col.gadd === 'function') {
-                                    col.gadd({ id: wid }, { silent: true });
-                                    found = origGet(wid);
-                                    if (found) return found;
-                                }
-                            } catch (_) {}
+                        for (const target of targets) {
+                            if (!target || target._guardedV6) continue;
+                            target._guardedV6 = true;
 
-                            const syn = createSyntheticContact(wid, col);
-                            try {
-                                if (typeof col.add === 'function') col.add(syn);
-                            } catch (_) {}
-                            return syn;
-                        };
-                        guardedGet._guardedV5 = true;
-                        col.get = guardedGet;
+                            const origGet = target.get;
+                            if (typeof origGet === 'function') {
+                                target.get = function(wid) {
+                                    if (!wid) return origGet.apply(this, arguments);
+                                    let found;
+                                    try { found = origGet.apply(this, arguments); } catch (_) {}
+                                    if (found && found.id) return found;
+                                    return createSyntheticContact(wid, this);
+                                };
+                            }
+
+                            const origAssertGet = target.assertGet;
+                            if (typeof origAssertGet === 'function') {
+                                target.assertGet = function(wid) {
+                                    if (!wid) return origAssertGet.apply(this, arguments);
+                                    let found;
+                                    try { found = origAssertGet.apply(this, arguments); } catch (_) {}
+                                    if (found && found.id) return found;
+                                    return createSyntheticContact(wid, this);
+                                };
+                            }
+
+                            const origFind = target.find;
+                            if (typeof origFind === 'function') {
+                                target.find = async function(wid) {
+                                    if (!wid) return origFind.apply(this, arguments);
+                                    let found;
+                                    try { found = await origFind.apply(this, arguments); } catch (_) {}
+                                    if (found && found.id) return found;
+                                    return createSyntheticContact(wid, this);
+                                };
+                            }
+                        }
                     };
 
-                    if (window.Store.Contact) protectCol(window.Store.Contact);
-                    if (window.Store.ContactCollection) protectCol(window.Store.ContactCollection);
+                    if (window.Store.Contact) {
+                        patchCollectionProto(window.Store.Contact, window.Store.ContactCollection);
+                    }
+                    if (window.Store.ContactCollection) {
+                        patchCollectionProto(null, window.Store.ContactCollection);
+                    }
 
-                    if (window.Store.FindOrCreateChat && typeof window.Store.FindOrCreateChat.findOrCreateLatestChat === 'function' && !window.Store.FindOrCreateChat.findOrCreateLatestChat._guardedV5) {
+                    if (window.Store.Chat && window.Store.Chat._modelClass && window.Store.Chat._modelClass.prototype) {
+                        try {
+                            const chatProto = window.Store.Chat._modelClass.prototype;
+                            const origContactDesc = Object.getOwnPropertyDescriptor(chatProto, 'contact');
+                            if (origContactDesc && typeof origContactDesc.get === 'function') {
+                                const origContactGet = origContactDesc.get;
+                                Object.defineProperty(chatProto, 'contact', {
+                                    get: function() {
+                                        let c;
+                                        try { c = origContactGet.apply(this); } catch (_) {}
+                                        if (c && c.id) return c;
+                                        return (window.Store.Contact && window.Store.Contact.get ? window.Store.Contact.get(this.id) : null) || createSyntheticContact(this.id, window.Store.Contact);
+                                    },
+                                    configurable: true,
+                                    enumerable: true
+                                });
+                            }
+                        } catch (_) {}
+                    }
+
+                    if (window.Store.FindOrCreateChat && typeof window.Store.FindOrCreateChat.findOrCreateLatestChat === 'function' && !window.Store.FindOrCreateChat.findOrCreateLatestChat._guardedV6) {
                         const origFindOrCreate = window.Store.FindOrCreateChat.findOrCreateLatestChat.bind(window.Store.FindOrCreateChat);
                         const guardedFindOrCreate = async function(wid) {
                             try {
@@ -835,31 +911,35 @@ async function ensureWWebJSInjected(client) {
                             try {
                                 return await origFindOrCreate(wid);
                             } catch (err) {
-                                if (err && err.message && (err.message.includes('Data passed to getter') || err.message.includes('how we memoize') || err.message.includes('memoize'))) {
-                                    let chat = window.Store.Chat && window.Store.Chat.get ? window.Store.Chat.get(wid) : null;
-                                    if ((!chat || !chat.msgs) && window.Store.Chat && window.Store.Chat.find) {
+                                let chat = window.Store.Chat && window.Store.Chat.get ? window.Store.Chat.get(wid) : null;
+                                if (!chat && window.Store.Chat && window.Store.Chat.find) {
+                                    try { chat = await window.Store.Chat.find(wid); } catch (_) {}
+                                }
+                                if (!chat) {
+                                    try {
+                                        if (window.Store.Chat && window.Store.Chat._modelClass) {
+                                            const newChat = new window.Store.Chat._modelClass({ id: wid });
+                                            if (window.Store.Chat.add) window.Store.Chat.add(newChat);
+                                            chat = window.Store.Chat.get(wid) || newChat;
+                                        } else if (window.Store.Chat && typeof window.Store.Chat.gadd === 'function') {
+                                            chat = window.Store.Chat.gadd({ id: wid }, { silent: true });
+                                        }
+                                    } catch (_) {}
+                                }
+                                if (chat) {
+                                    if (!chat.msgs) {
                                         try {
-                                            const found = await window.Store.Chat.find(wid);
-                                            if (found && found.msgs) chat = found;
-                                        } catch (_) {}
-                                    }
-                                    if (!chat || !chat.msgs) {
-                                        try {
-                                            if (window.Store.Chat && window.Store.Chat._modelClass) {
-                                                const newChat = new window.Store.Chat._modelClass({ id: wid });
-                                                if (window.Store.Chat.add) window.Store.Chat.add(newChat);
-                                                chat = window.Store.Chat.get(wid) || newChat;
-                                            } else if (window.Store.Chat && typeof window.Store.Chat.gadd === 'function') {
-                                                chat = window.Store.Chat.gadd({ id: wid }, { silent: true });
+                                            if (window.Store.MsgCollection) {
+                                                chat.msgs = new window.Store.MsgCollection({ chat });
                                             }
                                         } catch (_) {}
                                     }
-                                    if (chat && chat.msgs) return { chat };
+                                    return { chat };
                                 }
                                 throw err;
                             }
                         };
-                        guardedFindOrCreate._guardedV5 = true;
+                        guardedFindOrCreate._guardedV6 = true;
                         window.Store.FindOrCreateChat.findOrCreateLatestChat = guardedFindOrCreate;
                     }
                 }
@@ -3189,7 +3269,14 @@ async function runBulkCampaign() {
                         try {
                             if (window.Store && window.Store.WidFactory && window.Store.Contact) {
                                 const wid = window.Store.WidFactory.createWid(cid);
-                                window.Store.Contact.get(wid);
+                                let c = window.Store.Contact.get(wid);
+                                if (!c && window.Store.Contact._modelClass) {
+                                    c = new window.Store.Contact._modelClass({ id: wid, phoneNumber: wid });
+                                    if (window.Store.Contact.add) window.Store.Contact.add(c);
+                                }
+                                if (!c && typeof window.Store.Contact.gadd === 'function') {
+                                    window.Store.Contact.gadd({ id: wid, phoneNumber: wid }, { silent: true });
+                                }
                             }
                         } catch (_) {}
                     }, formattedNumber);
@@ -3226,7 +3313,14 @@ async function runBulkCampaign() {
                             try {
                                 if (window.Store && window.Store.WidFactory && window.Store.Contact) {
                                     const wid = window.Store.WidFactory.createWid(cid);
-                                    window.Store.Contact.get(wid);
+                                    let c = window.Store.Contact.get(wid);
+                                    if (!c && window.Store.Contact._modelClass) {
+                                        c = new window.Store.Contact._modelClass({ id: wid, phoneNumber: wid });
+                                        if (window.Store.Contact.add) window.Store.Contact.add(c);
+                                    }
+                                    if (!c && typeof window.Store.Contact.gadd === 'function') {
+                                        window.Store.Contact.gadd({ id: wid, phoneNumber: wid }, { silent: true });
+                                    }
                                 }
                             } catch (_) {}
                         }, formattedNumber);
