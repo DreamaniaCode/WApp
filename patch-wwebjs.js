@@ -5,13 +5,18 @@
  *    - Uses safeReq to prevent "Cannot read properties of undefined (reading 'setPushname')".
  *    - Wraps memoized getters (ChatGetters, ContactMethods, EphemeralFields, etc.) with safe fallbacks
  *      to prevent "Data passed to getter must include an id property (it's how we memoize) but got undefined".
- *    - Guards Store.Contact and Store.ContactCollection to return synthetic contact models for new/unsaved numbers.
+ *      CRITICAL: Does NOT block target when !target.id because Wids and primitives have no .id!
+ *    - Uses col.gadd to add real ContactModel instances instead of broken plain object stubs.
+ *    - Completely removes dummy window.Store.Chat._find = { id: e } stub that broke message sending.
  * 2. Hardens Utils.js:
  *    - Guards isChannel / isStatus checks in sendMessage against missing chat or missing id.
  *    - Protects ephemeralFields retrieval with try/catch.
  *    - Makes sendSeen resilient with try/catch.
- *    - Adds multi-stage fallback in getChat for findOrCreateLatestChat.
+ *    - Validates chat.msgs in getChat so dummy objects are never returned.
+ *    - Guarantees message model return after addAndSendMsgToChat.
  * 3. Hardens Client.js:
+ *    - Never swallows message sending errors. Throws clear, actionable errors when sending fails.
+ *    - Validates chat.msgs and throws if chat could not be found/created.
  *    - Wraps sendSeen in sendMessage evaluate with try/catch.
  *    - Hardens ClientInfo construction against undefined properties.
  *    - Adds UI fallback for ready event.
@@ -29,8 +34,8 @@ function patchStore() {
     }
 
     const content = fs.readFileSync(storePath, 'utf8');
-    if (content.includes('wrapModuleGettersSafely') && content.includes('Object.defineProperty')) {
-        console.log('[patch-wwebjs] Store.js already patched with descriptor-aware memoized getter guards.');
+    if (content.includes('wrapModuleGettersSafelyV4')) {
+        console.log('[patch-wwebjs] Store.js already patched with V4 memoized getter guards.');
         return true;
     }
 
@@ -86,8 +91,12 @@ exports.ExposeStore = () => {
      * Webpack 5 modules export functions using Object.defineProperty(exports, prop, { get: ... }).
      * Simply doing mod[key] = guarded is a SILENT NO-OP on getter-only properties!
      * We must use Object.defineProperty to override the property descriptor directly.
+     * 
+     * CRITICAL: We DO NOT check target.id upfront because many getters accept Wids,
+     * primitives, or objects without an .id property. We only catch errors if origFn
+     * actually throws the WhatsApp Web memoize getter error!
      */
-    const wrapModuleGettersSafely = (mod) => {
+    const wrapModuleGettersSafelyV4 = (mod) => {
         if (!mod || typeof mod !== 'object') return mod;
         const keys = [...new Set([...Object.getOwnPropertyNames(mod), ...Object.keys(mod)])];
         for (const key of keys) {
@@ -108,13 +117,9 @@ exports.ExposeStore = () => {
                     const origFn = fn;
                     const guarded = function(...args) {
                         try {
-                            const target = args[0];
-                            if (args.length > 0 && (!target || typeof target !== 'object' || !target.id)) {
-                                return false;
-                            }
                             return origFn.apply(this, args);
                         } catch (err) {
-                            if (err && err.message && (err.message.includes('Data passed to getter') || err.message.includes('how we memoize'))) {
+                            if (err && err.message && (err.message.includes('Data passed to getter') || err.message.includes('how we memoize') || err.message.includes('memoize'))) {
                                 return false;
                             }
                             throw err;
@@ -138,7 +143,7 @@ exports.ExposeStore = () => {
     };
 
     window.WWebJS = window.WWebJS || {};
-    window.WWebJS.wrapModuleGettersSafely = wrapModuleGettersSafely;
+    window.WWebJS.wrapModuleGettersSafely = wrapModuleGettersSafelyV4;
 
     window.Store = Object.assign({}, safeReq('WAWebCollections') || {});
     window.Store.AppState = (safeReq('WAWebSocketModel') || {}).Socket;
@@ -167,18 +172,18 @@ exports.ExposeStore = () => {
     window.Store.BlobCache = safeReq('WAWebMediaInMemoryBlobCache');
     window.Store.SendSeen = safeReq('WAWebUpdateUnreadChatAction');
     window.Store.User = safeReq('WAWebUserPrefsMeUser');
-    window.Store.ContactMethods = wrapModuleGettersSafely({
+    window.Store.ContactMethods = wrapModuleGettersSafelyV4({
         ...(safeReq('WAWebContactGetters') || {}),
         ...(safeReq('WAWebFrontendContactGetters') || {})
     });
-    wrapModuleGettersSafely(safeReq('WAWebContactGetters'));
-    wrapModuleGettersSafely(safeReq('WAWebFrontendContactGetters'));
-    wrapModuleGettersSafely(safeReq('WAWebAddressbookContactGetters'));
-    wrapModuleGettersSafely(safeReq('WAWebBusinessProfileGetters'));
-    wrapModuleGettersSafely(safeReq('WAWebGroupGetters'));
-    wrapModuleGettersSafely(safeReq('WAWebEphemeralFieldsGetters'));
-    wrapModuleGettersSafely(safeReq('WAWebGetEphemeralFieldsMsgActionsUtils'));
-    wrapModuleGettersSafely(safeReq('WAWebChatGetters'));
+    wrapModuleGettersSafelyV4(safeReq('WAWebContactGetters'));
+    wrapModuleGettersSafelyV4(safeReq('WAWebFrontendContactGetters'));
+    wrapModuleGettersSafelyV4(safeReq('WAWebAddressbookContactGetters'));
+    wrapModuleGettersSafelyV4(safeReq('WAWebBusinessProfileGetters'));
+    wrapModuleGettersSafelyV4(safeReq('WAWebGroupGetters'));
+    wrapModuleGettersSafelyV4(safeReq('WAWebEphemeralFieldsGetters'));
+    wrapModuleGettersSafelyV4(safeReq('WAWebGetEphemeralFieldsMsgActionsUtils'));
+    wrapModuleGettersSafelyV4(safeReq('WAWebChatGetters'));
     window.Store.UserConstructor = safeReq('WAWebWid');
     window.Store.Validators = safeReq('WALinkify');
     window.Store.WidFactory = safeReq('WAWebWidFactory');
@@ -189,7 +194,7 @@ exports.ExposeStore = () => {
     window.Store.ConversationMsgs = safeReq('WAWebChatLoadMessages');
     window.Store.sendReactionToMsg = (safeReq('WAWebSendReactionMsgAction') || {}).sendReactionToMsg;
     window.Store.createOrUpdateReactionsModule = safeReq('WAWebDBCreateOrUpdateReactions');
-    window.Store.EphemeralFields = wrapModuleGettersSafely(safeReq('WAWebGetEphemeralFieldsMsgActionsUtils'));
+    window.Store.EphemeralFields = wrapModuleGettersSafelyV4(safeReq('WAWebGetEphemeralFieldsMsgActionsUtils'));
     window.Store.MsgActionChecks = safeReq('WAWebMsgActionCapability');
     window.Store.QuotedMsg = safeReq('WAWebQuotedMsgModelUtils');
     window.Store.LinkPreview = safeReq('WAWebLinkPreviewChatAction');
@@ -210,7 +215,7 @@ exports.ExposeStore = () => {
     window.Store.HistorySync = safeReq('WAWebSendNonMessageDataRequest');
     window.Store.AddonReactionTable = (safeReq('WAWebAddonReactionTableMode') || {}).reactionTableMode;
     window.Store.AddonPollVoteTable = (safeReq('WAWebAddonPollVoteTableMode') || {}).pollVoteTableMode;
-    window.Store.ChatGetters = wrapModuleGettersSafely(safeReq('WAWebChatGetters'));
+    window.Store.ChatGetters = wrapModuleGettersSafelyV4(safeReq('WAWebChatGetters'));
     window.Store.UploadUtils = safeReq('WAWebUploadManager');
     window.Store.WAWebStreamModel = safeReq('WAWebStreamModel');
     window.Store.FindOrCreateChat = safeReq('WAWebFindChatAction');
@@ -322,25 +327,11 @@ exports.ExposeStore = () => {
         const guardedGet = function(wid) {
             const existing = origGet(wid);
             if (existing) return existing;
-            if (wid) {
-                const serialized = typeof wid === 'string' ? wid : (wid._serialized || (typeof wid.toString === 'function' ? wid.toString() : ''));
-                return {
-                    id: wid,
-                    userid: serialized ? serialized.split('@')[0] : '',
-                    isContact: false,
-                    isUser: true,
-                    isGroup: false,
-                    isBroadcast: false,
-                    isPSA: false,
-                    isBusiness: false,
-                    isEnterprise: false,
-                    isSmb: false,
-                    shortName: '',
-                    name: '',
-                    pushname: '',
-                    verifiedName: '',
-                    type: 'in'
-                };
+            if (wid && typeof col.gadd === 'function') {
+                try {
+                    col.gadd(wid, { silent: true });
+                    return origGet(wid);
+                } catch (_) {}
             }
             return existing;
         };
@@ -363,25 +354,20 @@ exports.ExposeStore = () => {
                 if (err && err.message && (err.message.includes('Data passed to getter') || err.message.includes('how we memoize'))) {
                     console.warn('[WWebJS] findOrCreateLatestChat caught memoize getter error, attempting fallback chat');
                     let chat = window.Store.Chat && window.Store.Chat.get ? window.Store.Chat.get(wid) : null;
-                    if (!chat && window.Store.Chat && window.Store.Chat.find) {
-                        try { chat = await window.Store.Chat.find(wid); } catch (_) {}
+                    if ((!chat || !chat.msgs) && window.Store.Chat && window.Store.Chat.find) {
+                        try {
+                            const found = await window.Store.Chat.find(wid);
+                            if (found && found.msgs) chat = found;
+                        } catch (_) {}
                     }
-                    if (chat) return { chat };
+                    if (chat && chat.msgs) return { chat };
                 }
                 throw err;
             }
         };
     }
 
-    if (window.Store.Chat && (!window.Store.Chat._find || !window.Store.Chat.findImpl)) {
-        window.Store.Chat._find = e => {
-            const target = window.Store.Chat.get ? window.Store.Chat.get(e) : null;
-            return target ? Promise.resolve(target) : Promise.resolve({
-                id: e
-            });
-        };
-        window.Store.Chat.findImpl = window.Store.Chat._find;
-    }
+    // Do NOT stub window.Store.Chat._find = e => ({ id: e }). A real chat model must have .msgs.
 
     window.injectToFunction = (target, callback) => {
         try {
@@ -419,7 +405,7 @@ exports.ExposeStore = () => {
 `;
 
     fs.writeFileSync(storePath, patchedStore, 'utf8');
-    console.log('[patch-wwebjs] Successfully patched Store.js with safeReq & memoized getter guards.');
+    console.log('[patch-wwebjs] Successfully patched Store.js with V4 safeReq & memoized getter guards.');
     return true;
 }
 
@@ -469,23 +455,32 @@ function patchUtils() {
         console.log('[patch-wwebjs] Patched sendSeen in Utils.js.');
     }
 
-    // 5. Patch getChat fallback in Utils.js
-    const targetGetChat = `        } else {\n            chat = window.Store.Chat.get(chatWid) || (await window.Store.FindOrCreateChat.findOrCreateLatestChat(chatWid))?.chat;\n        }`;
-    const safeGetChat = `        } else {\n            try {\n                chat = window.Store.Chat.get(chatWid);\n            } catch (_) {}\n            if (!chat) {\n                try {\n                    if (window.Store.Contact && typeof window.Store.Contact.gadd === 'function') {\n                        window.Store.Contact.gadd(chatWid, { silent: true });\n                    }\n                    if (window.Store.Contact && typeof window.Store.Contact.find === 'function') {\n                        await window.Store.Contact.find(chatWid).catch(() => {});\n                    }\n                } catch (_) {}\n                try {\n                    if (window.Store.FindOrCreateChat && typeof window.Store.FindOrCreateChat.findOrCreateLatestChat === 'function') {\n                        const res = await window.Store.FindOrCreateChat.findOrCreateLatestChat(chatWid);\n                        chat = res ? (res.chat || res) : null;\n                    }\n                } catch (err) {\n                    console.warn('[WWebJS] findOrCreateLatestChat fallback:', err?.message || err);\n                }\n            }\n            if (!chat) {\n                try { chat = window.Store.Chat.get(chatWid); } catch (_) {}\n            }\n            if (!chat && window.Store.Chat && typeof window.Store.Chat.find === 'function') {\n                try { chat = await window.Store.Chat.find(chatWid); } catch (_) {}\n            }\n        }`;
+    // 5. Patch addAndSendMsgToChat return value
+    const targetAddAndSend = `        const [msgPromise, sendMsgResultPromise] = window.Store.SendMessage.addAndSendMsgToChat(chat, message);\n        await msgPromise;\n\n        if (options.waitUntilMsgSent) await sendMsgResultPromise;\n\n        return window.Store.Msg.get(newMsgKey._serialized);`;
+    const safeAddAndSend = `        const [msgPromise, sendMsgResultPromise] = window.Store.SendMessage.addAndSendMsgToChat(chat, message);\n        let resMsg = await msgPromise;\n\n        if (options.waitUntilMsgSent) {\n            await sendMsgResultPromise;\n        }\n\n        let sentMsg = (window.Store.Msg && typeof window.Store.Msg.get === 'function')\n            ? window.Store.Msg.get(newMsgKey._serialized)\n            : null;\n        if (!sentMsg) sentMsg = resMsg;\n        if (!sentMsg) sentMsg = message;\n\n        return sentMsg;`;
 
-    if (content.includes(targetGetChat)) {
-        content = content.replace(targetGetChat, safeGetChat);
-        console.log('[patch-wwebjs] Patched getChat findOrCreateLatestChat in Utils.js.');
+    if (content.includes(targetAddAndSend)) {
+        content = content.replace(targetAddAndSend, safeAddAndSend);
+        console.log('[patch-wwebjs] Patched addAndSendMsgToChat return value in Utils.js.');
+    }
+
+    // 6. Patch getChat fallback in Utils.js to validate chat.msgs
+    const targetGetChatOrig = `        } else {\n            chat = window.Store.Chat.get(chatWid) || (await window.Store.FindOrCreateChat.findOrCreateLatestChat(chatWid))?.chat;\n        }`;
+    const safeGetChat = `        } else {\n            try {\n                chat = window.Store.Chat.get(chatWid);\n            } catch (_) {}\n            if (!chat || !chat.msgs) {\n                try {\n                    if (window.Store.Contact && typeof window.Store.Contact.gadd === 'function') {\n                        window.Store.Contact.gadd(chatWid, { silent: true });\n                    }\n                    if (window.Store.Contact && typeof window.Store.Contact.find === 'function') {\n                        await window.Store.Contact.find(chatWid).catch(() => {});\n                    }\n                } catch (_) {}\n                try {\n                    if (window.Store.FindOrCreateChat && typeof window.Store.FindOrCreateChat.findOrCreateLatestChat === 'function') {\n                        const res = await window.Store.FindOrCreateChat.findOrCreateLatestChat(chatWid);\n                        const foundChat = res ? (res.chat || res) : null;\n                        if (foundChat && foundChat.msgs) chat = foundChat;\n                    }\n                } catch (err) {\n                    console.warn('[WWebJS] findOrCreateLatestChat fallback:', err?.message || err);\n                }\n            }\n            if (!chat || !chat.msgs) {\n                try {\n                    const c = window.Store.Chat.get(chatWid);\n                    if (c && c.msgs) chat = c;\n                } catch (_) {}\n            }\n            if (!chat || !chat.msgs) {\n                try {\n                    if (window.Store.Chat && typeof window.Store.Chat.find === 'function') {\n                        const c = await window.Store.Chat.find(chatWid);\n                        if (c && c.msgs) chat = c;\n                    }\n                } catch (_) {}\n            }\n        }\n\n        if (chat && !chat.msgs) {\n            chat = null;\n        }`;
+
+    if (content.includes(targetGetChatOrig)) {
+        content = content.replace(targetGetChatOrig, safeGetChat);
+        console.log('[patch-wwebjs] Patched original getChat in Utils.js.');
     } else if (content.includes('findOrCreateLatestChat fallback:')) {
-        const currentPart = `            if (!chat) {\n                try {\n                    if (window.Store.FindOrCreateChat && typeof window.Store.FindOrCreateChat.findOrCreateLatestChat === 'function') {\n                        const res = await window.Store.FindOrCreateChat.findOrCreateLatestChat(chatWid);\n                        chat = res ? (res.chat || res) : null;\n                    }\n                } catch (err) {\n                    console.warn('[WWebJS] findOrCreateLatestChat fallback:', err?.message || err);\n                }\n            }`;
-        const updatedPart = `            if (!chat) {\n                try {\n                    if (window.Store.Contact && typeof window.Store.Contact.gadd === 'function') {\n                        window.Store.Contact.gadd(chatWid, { silent: true });\n                    }\n                    if (window.Store.Contact && typeof window.Store.Contact.find === 'function') {\n                        await window.Store.Contact.find(chatWid).catch(() => {});\n                    }\n                } catch (_) {}\n                try {\n                    if (window.Store.FindOrCreateChat && typeof window.Store.FindOrCreateChat.findOrCreateLatestChat === 'function') {\n                        const res = await window.Store.FindOrCreateChat.findOrCreateLatestChat(chatWid);\n                        chat = res ? (res.chat || res) : null;\n                    }\n                } catch (err) {\n                    console.warn('[WWebJS] findOrCreateLatestChat fallback:', err?.message || err);\n                }\n            }`;
-        if (content.includes(currentPart)) {
-            content = content.replace(currentPart, updatedPart);
-            console.log('[patch-wwebjs] Updated getChat with Contact.gadd pre-seed in Utils.js.');
+        // Match and replace any existing patched getChat block up to 'return getAsModel && chat'
+        const existingGetChatRegex = /} else \{\s*try \{\s*chat = window\.Store\.Chat\.get\(chatWid\);[\s\S]*?return getAsModel && chat/m;
+        if (existingGetChatRegex.test(content)) {
+            content = content.replace(existingGetChatRegex, `${safeGetChat}\n\n        return getAsModel && chat`);
+            console.log('[patch-wwebjs] Updated existing getChat with chat.msgs validation in Utils.js.');
         }
     }
 
-    // 6. Patch getMessageModel in Utils.js
+    // 7. Patch getMessageModel in Utils.js
     const targetMsgModel = `    window.WWebJS.getMessageModel = (message) => {\n        const msg = message.serialize();`;
     const safeMsgModel = `    window.WWebJS.getMessageModel = (message) => {\n        if (!message) return null;\n        let msg;\n        try {\n            msg = typeof message.serialize === 'function' ? message.serialize() : message;\n        } catch (_) {\n            msg = {\n                id: message.id || {},\n                ack: message.ack || 0,\n                body: message.body || '',\n                from: message.from,\n                to: message.to,\n                type: message.type || 'chat',\n                t: message.t || parseInt(Date.now() / 1000)\n            };\n        }\n        if (!msg || typeof msg !== 'object') return msg;`;
 
@@ -569,21 +564,50 @@ function patchClient() {
         console.log('[patch-wwebjs] Patched framenavigated logout guard to prevent premature session wipe.');
     }
 
-    // Patch sendSeen in pupPage.evaluate of sendMessage
-    const targetEvalSendSeen = `if (sendSeen) {\n                await window.WWebJS.sendSeen(chatId);\n            }`;
-    const safeEvalSendSeen = `if (sendSeen) {\n                try { await window.WWebJS.sendSeen(chatId); } catch (_) {}\n            }`;
-    if (content.includes(targetEvalSendSeen)) {
-        content = content.replace(targetEvalSendSeen, safeEvalSendSeen);
-        console.log('[patch-wwebjs] Patched sendSeen try/catch in Client.js sendMessage.');
-    }
+    // Robust sendMessage implementation: Never swallow errors, validate chat.msgs, throw on failure
+    const robustSendMessageRegex = /const sentMsg = await this\.pupPage\.evaluate\(async \(chatId, content, options, sendSeen\) => \{[\s\S]*?return sentMsg\s*\?\s*new Message\(this, sentMsg\)\s*:\s*undefined;/m;
 
-    // Patch sendMessage evaluate to handle memoize getter crashes with automatic retry
-    const targetEvalSendMsg = `            const msg = await window.WWebJS.sendMessage(chat, content, options);\n            return msg\n                ? window.WWebJS.getMessageModel(msg)\n                : undefined;`;
-    const safeEvalSendMsg = `            try {\n                const msg = await window.WWebJS.sendMessage(chat, content, options);\n                return msg\n                    ? window.WWebJS.getMessageModel(msg)\n                    : undefined;\n            } catch (sendErr) {\n                if (sendErr && sendErr.message && (sendErr.message.includes('memoize') || sendErr.message.includes('id property') || sendErr.message.includes('getter'))) {\n                    try {\n                        const chatWid = window.Store.WidFactory.createWid(chatId);\n                        if (window.Store.Contact && typeof window.Store.Contact.gadd === 'function') {\n                            window.Store.Contact.gadd(chatWid, { silent: true });\n                        }\n                        if (window.Store.Chat && typeof window.Store.Chat.get === 'function') {\n                            chat = window.Store.Chat.get(chatWid) || chat;\n                        }\n                        const retryMsg = await window.WWebJS.sendMessage(chat, content, options);\n                        return retryMsg ? window.WWebJS.getMessageModel(retryMsg) : undefined;\n                    } catch (_) {}\n                }\n                throw sendErr;\n            }`;
+    const robustSendMessageReplacement = `const sentMsg = await this.pupPage.evaluate(async (chatId, content, options, sendSeen) => {
+            let chat = await window.WWebJS.getChat(chatId, { getAsModel: false });
 
-    if (content.includes(targetEvalSendMsg)) {
-        content = content.replace(targetEvalSendMsg, safeEvalSendMsg);
-        console.log('[patch-wwebjs] Patched sendMessage evaluate with memoize catch and retry in Client.js.');
+            if (!chat || !chat.msgs) {
+                try {
+                    const chatWid = window.Store.WidFactory.createWid(chatId);
+                    if (window.Store.Contact && typeof window.Store.Contact.gadd === 'function') {
+                        window.Store.Contact.gadd(chatWid, { silent: true });
+                    }
+                    if (window.Store.FindOrCreateChat && typeof window.Store.FindOrCreateChat.findOrCreateLatestChat === 'function') {
+                        const res = await window.Store.FindOrCreateChat.findOrCreateLatestChat(chatWid);
+                        const c = res ? (res.chat || res) : null;
+                        if (c && c.msgs) chat = c;
+                    }
+                } catch (_) {}
+            }
+
+            if (!chat || !chat.msgs) {
+                throw new Error(\`Chat could not be loaded or created for recipient: \${chatId}\`);
+            }
+
+            if (sendSeen) {
+                try { await window.WWebJS.sendSeen(chatId); } catch (_) {}
+            }
+
+            const msg = await window.WWebJS.sendMessage(chat, content, options);
+            if (!msg) {
+                throw new Error(\`Message was rejected or returned empty from WhatsApp Web for \${chatId}\`);
+            }
+            return window.WWebJS.getMessageModel(msg);
+        }, chatId, content, internalOptions, sendSeen);
+
+        if (!sentMsg) {
+            throw new Error(\`Message dispatch to \${chatId} produced no result\`);
+        }
+
+        return new Message(this, sentMsg);`;
+
+    if (robustSendMessageRegex.test(content)) {
+        content = content.replace(robustSendMessageRegex, robustSendMessageReplacement);
+        console.log('[patch-wwebjs] Patched sendMessage in Client.js with robust error propagation and chat validation.');
     }
 
     fs.writeFileSync(clientPath, content, 'utf8');

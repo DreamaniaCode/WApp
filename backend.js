@@ -699,13 +699,9 @@ async function ensureWWebJSInjected(client) {
                                 const orig = fn;
                                 const guarded = function(...args) {
                                     try {
-                                        const target = args[0];
-                                        if (args.length > 0 && (!target || typeof target !== 'object' || !target.id)) {
-                                            return false;
-                                        }
                                         return orig.apply(this, args);
                                     } catch (err) {
-                                        if (err && err.message && (err.message.includes('Data passed to getter') || err.message.includes('how we memoize'))) {
+                                        if (err && err.message && (err.message.includes('Data passed to getter') || err.message.includes('how we memoize') || err.message.includes('memoize'))) {
                                             return false;
                                         }
                                         throw err;
@@ -750,25 +746,11 @@ async function ensureWWebJSInjected(client) {
                         const guardedGet = function(wid) {
                             const found = origGet(wid);
                             if (found) return found;
-                            if (wid) {
-                                const serialized = typeof wid === 'string' ? wid : (wid._serialized || (typeof wid.toString === 'function' ? wid.toString() : ''));
-                                return {
-                                    id: wid,
-                                    userid: serialized ? serialized.split('@')[0] : '',
-                                    isContact: false,
-                                    isUser: true,
-                                    isGroup: false,
-                                    isBroadcast: false,
-                                    isPSA: false,
-                                    isBusiness: false,
-                                    isEnterprise: false,
-                                    isSmb: false,
-                                    shortName: '',
-                                    name: '',
-                                    pushname: '',
-                                    verifiedName: '',
-                                    type: 'in'
-                                };
+                            if (wid && typeof col.gadd === 'function') {
+                                try {
+                                    col.gadd(wid, { silent: true });
+                                    return origGet(wid);
+                                } catch (_) {}
                             }
                             return found;
                         };
@@ -790,10 +772,13 @@ async function ensureWWebJSInjected(client) {
                             } catch (err) {
                                 if (err && err.message && (err.message.includes('Data passed to getter') || err.message.includes('how we memoize'))) {
                                     let chat = window.Store.Chat && window.Store.Chat.get ? window.Store.Chat.get(wid) : null;
-                                    if (!chat && window.Store.Chat && window.Store.Chat.find) {
-                                        try { chat = await window.Store.Chat.find(wid); } catch (_) {}
+                                    if ((!chat || !chat.msgs) && window.Store.Chat && window.Store.Chat.find) {
+                                        try {
+                                            const found = await window.Store.Chat.find(wid);
+                                            if (found && found.msgs) chat = found;
+                                        } catch (_) {}
                                     }
-                                    if (chat) return { chat };
+                                    if (chat && chat.msgs) return { chat };
                                 }
                                 throw err;
                             }
@@ -1089,15 +1074,12 @@ async function resolveWhatsAppNumber(rawNumber, client) {
             if (client && typeof client.getNumberId === 'function') {
                 const contactId = await client.getNumberId(num);
                 if (contactId && contactId._serialized) {
-                    let targetJid = contactId._serialized;
-                    if (targetJid.includes('@lid')) {
-                        const phoneNum = contactId.user || num;
-                        targetJid = `${phoneNum}@c.us`;
-                    }
+                    const phoneNum = num;
+                    const targetJid = contactId._serialized.includes('@lid') ? `${phoneNum}@c.us` : contactId._serialized;
                     console.log(`[resolveWhatsAppNumber] Resolved ${rawNumber} -> ${targetJid}`);
                     return {
                         jid: targetJid,
-                        number: contactId.user || num
+                        number: phoneNum
                     };
                 }
             }
@@ -2001,8 +1983,8 @@ function registerDeviceEvents(deviceId, client) {
                     if (callResponderConfig.replyMessage && callResponderConfig.replyMessage.trim()) {
                         await new Promise(r => setTimeout(r, callResponderConfig.autoReplyDelayMs || 1200));
                         try {
-                            await ensureWWebJSInjected(client);
-                            await client.sendMessage(call.from, callResponderConfig.replyMessage.trim(), { sendSeen: false });
+                            const sentReply = await client.sendMessage(call.from, callResponderConfig.replyMessage.trim(), { sendSeen: false });
+                            if (!sentReply || !sentReply.id) throw new Error("Reply message not confirmed by WhatsApp Web");
                             callResponderConfig.stats.repliesSent = (callResponderConfig.stats.repliesSent || 0) + 1;
                             sentAutoReply = true;
                         } catch (msgErr) {
@@ -2064,19 +2046,23 @@ io.on("connection", (socket) => {
             return socket.emit("messageError", { number, error: "No active client" });
         try {
             await ensureWWebJSInjected(activeClient);
-            const formattedNumber = number.includes("@c.us") ? number : `${number}@c.us`;
+            const resolved = await resolveWhatsAppNumber(number, activeClient);
+            const formattedNumber = (resolved && resolved.jid) ? resolved.jid : (number.includes("@") ? number : `${number}@c.us`);
+            let sentResult;
             try {
-                await activeClient.sendMessage(formattedNumber, message, { sendSeen: false });
+                sentResult = await activeClient.sendMessage(formattedNumber, message, { sendSeen: false });
+                if (!sentResult || !sentResult.id) throw new Error("WhatsApp Web did not confirm message dispatch");
             } catch (firstErr) {
                 if (firstErr.message && (firstErr.message.includes("getChat") || firstErr.message.includes("WWebJS") || firstErr.message.includes("memoize") || firstErr.message.includes("getter"))) {
                     await ensureWWebJSInjected(activeClient);
                     await new Promise(r => setTimeout(r, 600));
-                    await activeClient.sendMessage(formattedNumber, message, { sendSeen: false });
+                    sentResult = await activeClient.sendMessage(formattedNumber, message, { sendSeen: false });
+                    if (!sentResult || !sentResult.id) throw new Error("WhatsApp Web did not confirm message dispatch on retry");
                 } else {
                     throw firstErr;
                 }
             }
-            socket.emit("messageSent", { number, status: "success" });
+            socket.emit("messageSent", { number, status: "success", messageId: sentResult?.id?._serialized });
         }
         catch (error) {
             console.error("Error sending message:", error);
@@ -2420,7 +2406,8 @@ async function sendCartRecoveryMessage(cart) {
         targetJid = `${phone}@c.us`;
     }
     await ensureWWebJSInjected(client);
-    await client.sendMessage(targetJid, message, { sendSeen: false });
+    const sent = await client.sendMessage(targetJid, message, { sendSeen: false });
+    if (!sent || !sent.id) throw new Error("WhatsApp Web did not confirm message dispatch");
     cart.status = "contacted";
     cart.contactedAt = new Date().toISOString();
     cart.followUpCount = (cart.followUpCount || 0) + 1;
@@ -3121,17 +3108,24 @@ async function runBulkCampaign() {
             };
 
             const doBulkSend = async () => {
+                let lastSent;
                 if (session.attachments && session.attachments.length > 0) {
                     const { mimetype, data, filename } = session.attachments[0];
                     const media = new whatsapp_web_js_1.MessageMedia(mimetype, data, filename);
-                    await client.sendMessage(formattedNumber, media, sendOptions);
+                    lastSent = await client.sendMessage(formattedNumber, media, sendOptions);
+                    if (!lastSent || !lastSent.id) throw new Error("Attachment send dispatch failed: no confirmation from WhatsApp Web");
                     for (let j = 1; j < session.attachments.length; j++) {
                         const { mimetype: mt, data: d, filename: fn } = session.attachments[j];
-                        await client.sendMessage(formattedNumber, new whatsapp_web_js_1.MessageMedia(mt, d, fn), { sendSeen: false });
+                        const extraSent = await client.sendMessage(formattedNumber, new whatsapp_web_js_1.MessageMedia(mt, d, fn), { sendSeen: false });
+                        if (!extraSent || !extraSent.id) throw new Error(`Extra attachment ${j} dispatch failed`);
                     }
                 } else if (personalizedMessage && personalizedMessage.trim()) {
-                    await client.sendMessage(formattedNumber, personalizedMessage, { sendSeen: false });
+                    lastSent = await client.sendMessage(formattedNumber, personalizedMessage, { sendSeen: false });
+                    if (!lastSent || !lastSent.id) throw new Error("Message send dispatch failed: no confirmation from WhatsApp Web");
+                } else {
+                    throw new Error("Cannot send empty message with no attachments");
                 }
+                return lastSent;
             };
 
             try {
@@ -4176,8 +4170,8 @@ app.post("/api/chat/send", async (req, res) => {
         if (!isReady || !activeClient) return res.status(503).json({ error: "WhatsApp non connecté. Veuillez connecter un appareil." });
 
         const targetJid = chatId.includes("@") ? chatId : `${chatId}@c.us`;
-        await ensureWWebJSInjected(activeClient);
-        await activeClient.sendMessage(targetJid, message.trim(), { sendSeen: false });
+        const sent = await activeClient.sendMessage(targetJid, message.trim(), { sendSeen: false });
+        if (!sent || !sent.id) throw new Error("Échec d'envoi du message : non confirmé par WhatsApp Web");
 
         recordChatMessage({
             id: `msg-${Date.now()}`,
@@ -5937,18 +5931,23 @@ app.post("/api/send-single", async (req, res) => {
         let sentResult;
 
         const doSend = async () => {
+            let sent;
             if (attachment && attachment.data && attachment.mimetype) {
                 const media = new whatsapp_web_js_1.MessageMedia(attachment.mimetype, attachment.data, attachment.filename || 'file');
                 const options = {
                     sendSeen: false,
                     ...(message && message.trim() ? { caption: message.trim() } : {})
                 };
-                return await activeClient.sendMessage(formattedNumber, media, options);
+                sent = await activeClient.sendMessage(formattedNumber, media, options);
             } else if (message && message.trim()) {
-                return await activeClient.sendMessage(formattedNumber, message.trim(), { sendSeen: false });
+                sent = await activeClient.sendMessage(formattedNumber, message.trim(), { sendSeen: false });
             } else {
                 throw new Error("Message text or media attachment is required.");
             }
+            if (!sent || !sent.id) {
+                throw new Error("Message dispatch failed: no confirmation from WhatsApp Web");
+            }
+            return sent;
         };
 
         try {
